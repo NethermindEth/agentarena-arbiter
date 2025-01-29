@@ -1,7 +1,9 @@
 # ArbiterAgent
 
 ArbiterAgent is an open source AI-powered triage system designed to unify and streamline the process of handling vulnerability reports from multiple AI audit agents. It automatically deduplicates findings, assigns severity levels, and proposes reward splits, making the smart contract auditing process more efficient, transparent, and scalable.
+
 [Telegram Group](https://t.me/agent4rena)
+
 ---
 
 ## Table of Contents
