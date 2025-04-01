@@ -8,16 +8,16 @@ from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from dotenv import load_dotenv
 
-from langchain_anthropic import ChatAnthropic
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-
+from app.core.claude_model import create_similarity_chain
 from app.database.mongodb_handler import mongodb
 from app.models.finding_input import FindingInput
-from app.models.finding_db import FindingDB
+from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 
 # Load environment variables
 load_dotenv()
+
+# Default similarity threshold
+DEFAULT_SIMILARITY_THRESHOLD = 0.8
 
 class FindingDeduplication:
     """
@@ -26,71 +26,31 @@ class FindingDeduplication:
     Compares title, description, recommendation and code_references using LangChain and Claude.
     """
     
-    def __init__(self, mongodb_client=None, similarity_threshold=0.8):
+    def __init__(self, mongodb_client=None, similarity_threshold=None):
         """
         Initialize the finding deduplication handler.
         
         Args:
             mongodb_client: MongoDB client instance (uses global instance if None)
             similarity_threshold: Threshold for considering two findings as duplicates (0.0-1.0)
+                                 If None, reads from SIMILARITY_THRESHOLD env var or uses default
         """
         self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
+        
+        # Get similarity threshold from param, env var, or default
+        if similarity_threshold is None:
+            try:
+                similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", DEFAULT_SIMILARITY_THRESHOLD))
+            except (ValueError, TypeError):
+                similarity_threshold = DEFAULT_SIMILARITY_THRESHOLD
+        
+        # Validate similarity threshold
+        if not 0.0 <= similarity_threshold <= 1.0:
+            raise ValueError("similarity_threshold must be between 0.0 and 1.0")
         self.similarity_threshold = similarity_threshold
-        self.similarity_chain = self._setup_similarity_chain()
-    
-    def _setup_similarity_chain(self) -> LLMChain:
-        """
-        Setup LangChain components for similarity comparison.
         
-        Returns:
-            LLMChain configured to compare findings similarity
-        """
-        # Get API key directly from environment
-        api_key = os.getenv("CLAUDE_API_KEY")
-        if not api_key:
-            raise ValueError("CLAUDE_API_KEY environment variable is not set")
-            
-        print(f"Using API key: {api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else api_key)
-        
-        # Verify API key format (should start with "sk-ant-")
-        if not api_key.startswith("sk-ant-"):
-            print(f"WARNING: API key may be invalid. Key starts with: {api_key[:10]}...")
-            # For testing purposes, you can set a fallback key or continue with warning
-            # api_key = "your_claude_api_key_here"  # This could be the source of the problem
-            
-        # Initialize Claude model
-        model = ChatAnthropic(
-            model="claude-3-opus-20240229",
-            anthropic_api_key=api_key,
-            temperature=0
-        )
-        
-        # Create similarity prompt template
-        similarity_template = """
-        Compare these two security findings and determine their similarity on a scale from 0 to 1.
-        
-        Finding 1:
-        {finding1}
-        
-        Finding 2:
-        {finding2}
-        
-        Analyze the similarity in these aspects:
-        1. Title similarity
-        2. Description similarity
-        3. Recommendation similarity
-        4. Code references overlap
-        
-        First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1.
-        """
-        
-        prompt = PromptTemplate(
-            input_variables=["finding1", "finding2"],
-            template=similarity_template
-        )
-        
-        # Create and return chain
-        return LLMChain(llm=model, prompt=prompt, output_key="similarity")
+        # Initialize similarity chain
+        self.similarity_chain = create_similarity_chain()
     
     def get_finding_content(self, finding: FindingInput) -> str:
         """
@@ -159,20 +119,25 @@ class FindingDeduplication:
         Returns:
             Tuple of (similarity score between 0 and 1, explanation text)
         """
-        # Extract content
-        content1 = self.get_finding_content(finding1)
-        content2 = self.get_finding_content(finding2)
-        
-        # Run similarity chain
-        response = await self.similarity_chain.arun(finding1=content1, finding2=content2)
-        
-        # Parse similarity score from response
-        similarity_score = self._parse_similarity_score(response)
-        
-        # Extract explanation
-        explanation = self._extract_explanation(response)
-        
-        return similarity_score, explanation
+        try:
+            # Extract content
+            content1 = self.get_finding_content(finding1)
+            content2 = self.get_finding_content(finding2)
+            
+            # Run similarity chain
+            response = await self.similarity_chain.arun(finding1=content1, finding2=content2)
+            
+            # Parse similarity score from response
+            similarity_score = self._parse_similarity_score(response)
+            
+            # Extract explanation
+            explanation = self._extract_explanation(response)
+            
+            return similarity_score, explanation
+        except Exception as e:
+            # Log the error and return low similarity score
+            print(f"Error comparing findings: {str(e)}")
+            return 0.0, f"Error during comparison: {str(e)}"
     
     async def _get_agent_findings(self, project_id: str, agent_id: str, exclude_reported: bool = True) -> List[FindingDB]:
         """
@@ -186,17 +151,21 @@ class FindingDeduplication:
         Returns:
             List of findings from the specified agent
         """
-        # Get all findings for the project
-        all_findings = await self.mongodb.get_project_findings(project_id)
-        
-        # Filter for the specific agent
-        agent_findings = [finding for finding in all_findings if finding.reported_by_agent == agent_id]
-        
-        # Optionally exclude findings already marked as duplicates
-        if exclude_reported:
-            return [finding for finding in agent_findings if finding.category != "already_reported"]
-        
-        return agent_findings
+        try:
+            # Get all findings for the project
+            all_findings = await self.mongodb.get_project_findings(project_id)
+            
+            # Filter for the specific agent
+            agent_findings = [finding for finding in all_findings if finding.reported_by_agent == agent_id]
+            
+            # Optionally exclude findings already marked as duplicates
+            if exclude_reported:
+                return [finding for finding in agent_findings if finding.status != Status.ALREADY_REPORTED]
+            
+            return agent_findings
+        except Exception as e:
+            print(f"Error getting agent findings: {str(e)}")
+            return []
     
     async def process_findings(self, project_id: str, agent_id: str, new_findings: List[FindingInput]) -> Dict[str, Any]:
         """
@@ -214,130 +183,87 @@ class FindingDeduplication:
         # Filter out findings that are not from the specified agent
         filtered_findings = [f for f in new_findings if f.reported_by_agent == agent_id]
         
-        # Get existing findings from same agent, excluding already reported ones
-        existing_findings = await self._get_agent_findings(project_id, agent_id, exclude_reported=True)
+        if not filtered_findings:
+            return {
+                "total": 0,
+                "duplicates": 0,
+                "new": 0,
+                "duplicate_ids": [],
+                "new_ids": []
+            }
         
-        # Initialize known findings list with existing findings
-        known_findings = list(existing_findings)
-        
-        results = {
-            "total": len(filtered_findings),
-            "duplicates": 0,
-            "new": 0,
-            "duplicate_ids": [],
-            "new_ids": []
-        }
-        
-        # List to collect all processed findings for batch processing
-        all_processed_findings = []
-        
-        # Process each finding to determine if it's a duplicate or new
-        for finding in filtered_findings:
-            is_duplicate = False
-            similarity_explanation = ""
-            similar_to = None
+        try:
+            # Get existing findings from same agent, excluding already reported ones
+            existing_findings = await self._get_agent_findings(project_id, agent_id, exclude_reported=True)
             
-            # Compare with all known findings (non-duplicate ones from the same agent)
-            for known_finding in known_findings:
-                similarity_score, explanation = await self.compare_findings_with_langchain(finding, known_finding)
-                
-                if similarity_score >= self.similarity_threshold:
-                    is_duplicate = True
-                    similarity_explanation = explanation
-                    similar_to = known_finding.finding_id
-                    break
+            # Initialize known findings list with existing findings
+            known_findings = list(existing_findings)
             
-            if is_duplicate:
-                # Prepare finding with already_reported category
-                finding_dict = finding.model_dump()
-                finding_dict["category"] = "already_reported"
-                finding_dict["evaluation_comment"] = f"Similar to finding {similar_to}. {similarity_explanation}"
-                duplicate_finding = FindingDB(**finding_dict)
-                
-                # Add to the consolidated findings list
-                all_processed_findings.append(duplicate_finding)
-                
-                results["duplicates"] += 1
-                results["duplicate_ids"].append(finding.finding_id)
-            else:
-                # Prepare as new finding
-                new_finding = FindingDB(**finding.model_dump())
-                
-                # Add to the consolidated findings list
-                all_processed_findings.append(new_finding)
-                
-                # Add to known findings for subsequent comparisons
-                known_findings.append(new_finding)
-                
-                results["new"] += 1
-                results["new_ids"].append(finding.finding_id)
-        
-        # Batch create all findings together to ensure they share the same submission_id
-        if all_processed_findings:
-            await self.mongodb.create_finding_batch(all_processed_findings)
-        
-        return results
-    
-    async def deduplicate_agent_findings(self, project_id: str, agent_id: str) -> Dict[str, Any]:
-        """
-        Run deduplication on all findings from a specific agent in a project.
-        This is useful for retroactive deduplication.
-        
-        Args:
-            project_id: Project identifier
-            agent_id: Agent identifier
+            results = {
+                "total": len(filtered_findings),
+                "duplicates": 0,
+                "new": 0,
+                "duplicate_ids": [],
+                "new_ids": []
+            }
             
-        Returns:
-            Statistics about deduplication results
-        """
-        # Get all findings for this agent (including reported ones since we're reprocessing)
-        agent_findings = await self._get_agent_findings(project_id, agent_id, exclude_reported=False)
-        
-        results = {
-            "total": len(agent_findings),
-            "duplicates": 0,
-            "unique": 0,
-            "duplicate_ids": []
-        }
-        
-        # Initialize known findings with empty list
-        known_findings = []
-        
-        for finding in agent_findings:
-            # Skip findings that are already marked as duplicates
-            if finding.category == "already_reported":
-                continue
-                
-            is_duplicate = False
-            similarity_explanation = ""
-            similar_to = None
+            # List to collect all processed findings for batch processing
+            all_processed_findings = []
             
-            # Compare with processed findings
-            for known_finding in known_findings:
-                similarity_score, explanation = await self.compare_findings_with_langchain(finding, known_finding)
+            # Process each finding to determine if it's a duplicate or new
+            for finding in filtered_findings:
+                is_duplicate = False
+                similarity_explanation = ""
+                similar_to = None
                 
-                if similarity_score >= self.similarity_threshold:
-                    is_duplicate = True
-                    similarity_explanation = explanation
-                    similar_to = known_finding.finding_id
-                    break
+                # Compare with all known findings (non-duplicate ones from the same agent)
+                for known_finding in known_findings:
+                    similarity_score, explanation = await self.compare_findings_with_langchain(finding, known_finding)
+                    
+                    if similarity_score >= self.similarity_threshold:
+                        is_duplicate = True
+                        similarity_explanation = explanation
+                        similar_to = known_finding.finding_id
+                        break
+                
+                if is_duplicate:
+                    # Prepare finding with already_reported status
+                    finding_dict = finding.model_dump()
+                    finding_dict["status"] = Status.ALREADY_REPORTED
+                    finding_dict["evaluation_comment"] = f"Similar to finding {similar_to}. {similarity_explanation}"
+                    duplicate_finding = FindingDB(**finding_dict)
+                    
+                    # Add to the consolidated findings list
+                    all_processed_findings.append(duplicate_finding)
+                    
+                    results["duplicates"] += 1
+                    results["duplicate_ids"].append(finding.finding_id)
+                else:
+                    # Prepare as new finding
+                    new_finding = FindingDB(**finding.model_dump())
+                    
+                    # Add to the consolidated findings list
+                    all_processed_findings.append(new_finding)
+                    
+                    # Add to known findings for subsequent comparisons
+                    known_findings.append(new_finding)
+                    
+                    results["new"] += 1
+                    results["new_ids"].append(finding.finding_id)
             
-            if is_duplicate:
-                # Format evaluation comment
-                evaluation_comment = f"Similar to finding {similar_to}. {similarity_explanation}"
-                
-                # Mark as already reported
-                await self.mongodb.update_finding_category(
-                    project_id, 
-                    finding.finding_id,
-                    category="already_reported",
-                    evaluation_comment=evaluation_comment
-                )
-                results["duplicates"] += 1
-                results["duplicate_ids"].append(finding.finding_id)
-            else:
-                # Add to known findings
-                results["unique"] += 1
-                known_findings.append(finding)
+            # Batch create all findings together to ensure they share the same submission_id
+            if all_processed_findings:
+                await self.mongodb.create_finding_batch(all_processed_findings)
+            
+            return results
         
-        return results 
+        except Exception as e:
+            print(f"Error processing findings: {str(e)}")
+            return {
+                "total": len(filtered_findings),
+                "duplicates": 0,
+                "new": 0,
+                "duplicate_ids": [],
+                "new_ids": [],
+                "error": str(e)
+            } 

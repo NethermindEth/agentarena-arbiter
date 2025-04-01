@@ -1,85 +1,122 @@
-# Audit Findings Workflow
+# Smart Contract Audit Findings Workflow
 
-## Audit Agent Submission
+## Submission Process
 
-- After submission, it adds these additional fields to findings:
-    - **submission_id** (starting at 1)
-    - **category** (defaulted to "pending")
-    - **severity_after_evaluation**
-    - **evaluation_comment**
+- When a new finding is submitted, the system adds these additional fields:
+    - **submission_id** (assigned automatically)
+    - **status** (initialized as `Status.PENDING`)
+    - **evaluation_comment** (initially empty)
 
 ## Self-Deduplication Process
 
-- The arbiter agent identifies duplicates within the same agent's submissions (either in this submission or in early submissions by this agent)
-- Similarity is determined by comparing: Title, Description, Recommendation, and Code References
-- Duplicates are marked as **already_submitted** with explanatory evaluation comments
+- The system identifies duplicates within the same agent's submissions
+- Similarity is determined by comparing title, description, recommendation, and code references
+- Similarity threshold is configurable via `SIMILARITY_THRESHOLD` environment variable (default: 0.8)
+- Duplicates are marked as `Status.ALREADY_REPORTED` with explanatory evaluation comments
 
 ## Cross-Agent Comparison
 
-- Non-duplicate findings are compared against **unique_valid** or **similar_valid** findings from other agents
-- If similar to another agent's valid finding, the current finding is categorized as **similar_valid**
-- When this occurs, any related **unique_valid** finding must be recategorized as **similar_valid**
-- All similar findings inherit the severity level from the first evaluated **unique_valid** finding
-- These grouped findings are aggregated for bounty distribution
+- Non-duplicate findings are compared against findings with `Status.UNIQUE_VALID` or `Status.SIMILAR_VALID` from other agents
+- Similar findings are marked as `Status.SIMILAR_VALID` and inherit attributes from the original finding
+- All similar findings inherit the same **category**, **category_id**, and **evaluated_severity**
+- When a finding is marked as similar, any related `UNIQUE_VALID` finding is recategorized as `SIMILAR_VALID`
+- Findings with the same **category_id** are aggregated for reporting and analysis
 
 ## Final Evaluation
 
-- Remaining findings (not duplicates or similar to existing findings) undergo final evaluation
-- The arbiter agent assesses both content and severity:
-    - Valid findings → **unique_valid** category with assigned severity
-    - Invalid/illogical findings → **disputed** category with **disputed** severity
-    - Valid but incorrectly assessed findings → **unique_valid** with corrected severity
+- Remaining `PENDING` findings undergo evaluation using the Claude AI model
+- The evaluation assesses:
+    - Validity: determines if the finding is a genuine smart contract vulnerability
+    - Category: assigns a standard smart contract vulnerability category
+    - Severity: evaluates severity as `EvaluatedSeverity.LOW`, `MEDIUM`, or `HIGH`
+- Results are applied as follows:
+    - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
+    - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
+- Each unique category receives a distinct **category_id** for tracking similar issues
 
-## Input Format
-{
-  "project_id": "string",
-  "reported_by_agent": "string",
-  "finding_id": "string",
-  "title": "string",
-  "description": "string",
-  "severity": "string",
-  "recommendation": "string",
-  "code_references": ["string"]
-}
+## Automated Smart Contract Vulnerability Analysis
 
-{
-  "project_id": "string",
-  "reported_by_agent": "string",
-  "finding_id": "string",
-  "title": "string",
-  "description": "string",
-  "severity": "string",
-  "recommendation": "string",
-  "code_references": ["string"]
-}
+The system includes a specialized evaluation module that:
+- Uses a blockchain-focused prompt for Claude to analyze smart contract vulnerabilities
+- Considers blockchain-specific context, impact on funds, exploitation difficulty
+- Applies consistent processing of results with robust handling of edge cases
+- Ensures data model consistency (e.g., disputed findings have no category or severity)
+- Generates unique category IDs that group similar issues together
 
-## Findings in DB
-{
-  "project_id": "string",
-  "reported_by_agent": "string",
-  "finding_id": "string",
-  "title": "string",
-  "description": "string",
-  "severity": "string",
-  "recommendation": "string",
-  "code_references": ["string"],
-   "submission_id": "int",
-   "category": "string",
-   "evaluation comment": "string",
-   "severity_after_evaluation": "string"
-}
+## Data Models
 
-{
-  "project_id": "string",
-  "reported_by_agent": "string",
-  "finding_id": "string",
-  "title": "string",
-  "description": "string",
-  "severity": "string",
-  "recommendation": "string",
-  "code_references": ["string"],
-   "submission_id": "int",
-   "category": "string",
-   "evaluation comment": "string",
-   "severity_after_evaluation": "string"
-}
+### Finding Input Format
+```python
+class FindingInput(BaseModel):
+    project_id: str
+    reported_by_agent: str
+    finding_id: str
+    title: str
+    description: str
+    severity: Severity  # Enum: HIGH or MEDIUM
+    recommendation: str
+    code_references: List[str]
+```
+
+### Finding in Database
+```python
+class FindingDB(BaseModel):
+    project_id: str
+    reported_by_agent: str
+    finding_id: str
+    title: str
+    description: str
+    severity: Severity  # Original reported severity
+    recommendation: str
+    code_references: List[str]
+    submission_id: int
+    status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, UNIQUE_VALID, DISPUTED
+    category: Optional[str]  # None for disputed findings
+    category_id: Optional[str]  # None for disputed findings
+    evaluated_severity: Optional[EvaluatedSeverity]  # Enum: LOW, MEDIUM, HIGH, None for disputed
+    evaluation_comment: Optional[str]
+```
+
+## Configuration
+
+- `CLAUDE_API_KEY`: API key for Claude AI model
+- `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
+
+## Setup and Installation
+
+### Prerequisites
+- Python 3.8+
+- MongoDB instance
+- Anthropic API key for Claude
+
+### Environment Setup
+1. Create a `.env` file in the project root with the following variables:
+   ```
+   CLAUDE_API_KEY=your_api_key_here
+   MONGODB_URI=mongodb://localhost:27017
+   SIMILARITY_THRESHOLD=0.8
+   ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Running Tests
+
+### Unit Tests
+The project includes various unit tests to verify the functionality of individual components:
+
+```bash
+
+# Run specific test modules
+# For example
+python -m app.test.test_finding_deduplication
+python -m app.test.test_cross_agent_comparison
+```

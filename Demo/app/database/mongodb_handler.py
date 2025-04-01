@@ -3,7 +3,7 @@ from typing import Optional, List
 import os
 from dotenv import load_dotenv
 from app.models.finding_input import FindingInput
-from app.models.finding_db import FindingDB
+from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 from datetime import datetime
 
 load_dotenv()
@@ -65,7 +65,7 @@ class MongoDBHandler:
     async def create_finding(self, finding_input: FindingInput, submission_id: Optional[int] = None) -> str:
         """
         Create a new finding from input data
-        Automatically adds system-managed fields (category, timestamps)
+        Automatically adds system-managed fields (status, timestamps)
         
         Args:
             finding_input: The finding input data
@@ -191,24 +191,28 @@ class MongoDBHandler:
         )
         return result.modified_count > 0
     
-    async def update_finding_category(self, project_id: str, finding_id: str, 
-                                     category: str, 
-                                     severity_after_evaluation: Optional[str] = None,
+    async def update_finding_status(self, project_id: str, finding_id: str, 
+                                     status: Status, 
+                                     category: Optional[str] = None,
+                                     evaluated_severity: Optional[EvaluatedSeverity] = None,
                                      evaluation_comment: Optional[str] = None) -> bool:
         """
-        Update a finding's evaluation data (category, severity, comment)
+        Update a finding's evaluation data (status, category, severity, comment)
         """
         if self.db is None:
             await self.connect()
         collection_name = self.get_collection_name(project_id)
         
         update_data = {
-            "category": category,
+            "status": status.value,
             "updated_at": datetime.utcnow()
         }
         
-        if severity_after_evaluation is not None:
-            update_data["severity_after_evaluation"] = severity_after_evaluation
+        if category is not None:
+            update_data["category"] = category
+            
+        if evaluated_severity is not None:
+            update_data["evaluated_severity"] = evaluated_severity.value
             
         if evaluation_comment is not None:
             update_data["evaluation_comment"] = evaluation_comment
