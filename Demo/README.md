@@ -34,15 +34,6 @@
     - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
 - Each unique category receives a distinct **category_id** for tracking similar issues
 
-## Automated Smart Contract Vulnerability Analysis
-
-The system includes a specialized evaluation module that:
-- Uses a blockchain-focused prompt for Claude to analyze smart contract vulnerabilities
-- Considers blockchain-specific context, impact on funds, exploitation difficulty
-- Applies consistent processing of results with robust handling of edge cases
-- Ensures data model consistency (e.g., disputed findings have no category or severity)
-- Generates unique category IDs that group similar issues together
-
 ## Data Models
 
 ### Finding Input Format
