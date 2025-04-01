@@ -1,4 +1,4 @@
-# Smart Contract Audit Findings Workflow
+# Arbiter Agent Workflow
 
 ## Submission Process
 
