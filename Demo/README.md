@@ -62,8 +62,8 @@ class FindingDB(BaseModel):
     code_references: List[str]
     submission_id: int
     status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, UNIQUE_VALID, DISPUTED
-    category: Optional[str]  # None for disputed findings
-    category_id: Optional[str]  # None for disputed findings
+    category: Optional[str]  # None for disputed/already_reported findings
+    category_id: Optional[str]  # None for disputed/already_reported findings
     evaluated_severity: Optional[EvaluatedSeverity]  # Enum: LOW, MEDIUM, HIGH, None for disputed
     evaluation_comment: Optional[str]
 ```
