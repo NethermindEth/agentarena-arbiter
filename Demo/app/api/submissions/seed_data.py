@@ -1,3 +1,5 @@
+# This script is for test purposes only.
+# It creates test data in the MongoDB database for the smart contract vulnerability submissions API.
 from pymongo import MongoClient
 from datetime import datetime
 
