@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 import re
 from pymongo import MongoClient
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+
 from app.core.cross_agent_comparison import CrossAgentComparison
 
 # Load environment variables
@@ -120,5 +124,5 @@ async def health_check():
 # Run the application with uvicorn when executed directly
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("vulnerability_submissions:app",
+    uvicorn.run("submissions:app",
                 host="0.0.0.0", port=8001, reload=True)
