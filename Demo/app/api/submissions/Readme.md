@@ -34,7 +34,7 @@ SIMILARITY_THRESHOLD=0.8
 
 3. **Ensure MongoDB is running**
 
-The API requires MongoDB for task validation and finding storage.
+The API requires MongoDB for project validation and finding storage.
 
 ```bash
 # Check if MongoDB is running
