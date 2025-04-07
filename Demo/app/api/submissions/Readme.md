@@ -41,23 +41,31 @@ The API requires MongoDB for project validation and finding storage.
 mongo --eval "db.version()" || mongosh --eval "db.version()"
 ```
 
+Make sure to add `seed_data` to mongoDB for testing purposes by running `python seed_data.py` from submissions directory.
+
 4. **Integrate with arbiter agent code**
 
-This API is designed to be integrated directly with the arbiter agent codebase. Ensure that the arbiter agent's modules (particularly `app.core.cross_agent_comparison`) are available in the Python path.
+This API is designed to be integrated directly with the arbiter agent codebase. Ensure that the arbiter agent's modules (particularly `app.core.cross_agent_comparison`) are available in the Python path. For testing purposes, a `test_api` has been created without cross_agent_comparison module.
 
 5. **Start the API server**
 
 ```bash
-python -m uvicorn vulnerability_submissions:app --reload
+python -m uvicorn submissions:app --reload
 ```
 
-This will start the server on http://127.0.0.1:8001
+OR for `test_api` 
+
+```bash
+python -m uvicorn test_api:app --reload
+```
+
+This will start the server on http://127.0.0.1:8000
 
 ## API Documentation
 
 Once the server is running, interactive API documentation is available at:
 
-- http://127.0.0.1:8001/docs
+- http://127.0.0.1:8000/docs
 
 ## API Endpoints
 
