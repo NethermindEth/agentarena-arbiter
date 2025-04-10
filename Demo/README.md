@@ -1,5 +1,3 @@
-# Arbiter Agent Workflow
-
 ## Submission Process
 
 - When a new finding is submitted, the system adds these additional fields:
@@ -32,17 +30,6 @@
     - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
     - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
 - Each unique category receives a distinct **category_id** for tracking similar issues
-
-<<<<<<< HEAD
-=======
-## Automated Smart Contract Vulnerability Analysis
-
-The system includes a specialized evaluation module that:
-- Uses a blockchain-focused prompt for Claude to analyze smart contract vulnerabilities
-- Considers blockchain-specific context, impact on funds, exploitation difficulty
-- Applies consistent processing of results with robust handling of edge cases
-- Ensures data model consistency (e.g., disputed findings have no category or severity)
-- Generates unique category IDs that group similar issues together
 
 ## Setup and Installation
 
@@ -87,7 +74,6 @@ The test confirms the system's ability to:
 
 **Note:** A valid Claude API key is required to run this test.
 
->>>>>>> 6a02f3b (Update finding format and add endpoints)
 ## Data Models
 
 ### Finding Input Format
@@ -108,8 +94,8 @@ class FindingInput(BaseModel):
 class FindingDB(Finding):
     agent_id: str
     status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, UNIQUE_VALID, DISPUTED
-    category: Optional[str]  # None for disputed/already_reported findings
-    category_id: Optional[str]  # None for disputed/already_reported findings
+    category: Optional[str]  # None for disputed findings
+    category_id: Optional[str]  # None for disputed findings
     evaluated_severity: Optional[EvaluatedSeverity]  # Enum: LOW, MEDIUM, HIGH, None for disputed
     evaluation_comment: Optional[str]
     created_at: datetime
@@ -126,31 +112,3 @@ class FindingDB(Finding):
 
 - `POST /process_findings`: Submit batch of findings for processing, deduplication, and evaluation
 - `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task
-
-## LangChain Integration
-
-The system uses LangChain to integrate with Claude AI models for:
-- Finding similarity comparison
-- Smart contract vulnerability evaluation
-
-<<<<<<< HEAD
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Running Tests
-
-### Unit Tests
-The project includes various unit tests to verify the functionality of individual components:
-
-```bash
-
-# Run specific test modules
-# For example
-python -m app.test.test_finding_deduplication
-python -m app.test.test_cross_agent_comparison
-```
-=======
-**Note:** The code has been updated to use the latest LangChain API (`ainvoke` instead of deprecated `arun` method).
->>>>>>> 6a02f3b (Update finding format and add endpoints)
