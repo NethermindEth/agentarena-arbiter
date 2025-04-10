@@ -85,7 +85,7 @@ async def test_process_findings():
                     
                     # Verify auto evaluation results
                     auto_eval = result.get("auto_evaluation", {})
-                    if auto_eval.get("evaluated", False):
+                    if auto_eval:
                         print(f"\n✅ Automatic evaluation completed")
                         print(f"  Total pending: {auto_eval.get('total_pending', 'N/A')}")
                         print(f"  Evaluated as valid: {auto_eval.get('evaluated_as_valid', 'N/A')}")
@@ -174,7 +174,7 @@ async def test_process_findings():
                     
                     # Verify auto evaluation results (should only evaluate the 1 new finding)
                     auto_eval = result.get("auto_evaluation", {})
-                    if auto_eval.get("evaluated", False):
+                    if auto_eval:
                         print(f"\n✅ Automatic evaluation completed")
                         assert auto_eval.get("total_pending", 0) == 1, "Should evaluate exactly 1 new finding"
                         
@@ -251,7 +251,7 @@ async def test_process_findings():
                     
                     # Verify auto evaluation results
                     auto_eval = result.get("auto_evaluation", {})
-                    if auto_eval.get("evaluated", False):
+                    if auto_eval:
                         print(f"\n✅ Automatic evaluation completed")
                         print(f"  Total pending: {auto_eval.get('total_pending', 'N/A')}")
                         print(f"  Evaluated as valid: {auto_eval.get('evaluated_as_valid', 'N/A')}")

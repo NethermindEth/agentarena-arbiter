@@ -95,10 +95,7 @@ async def process_findings(input_data: FindingInput):
         combined_results = {
             "deduplication": dedup_results,
             "cross_comparison": cross_comparison_results,
-            "auto_evaluation": evaluation_results if evaluation_results else {
-                "message": "No new findings to evaluate or evaluation skipped",
-                "evaluated": False
-            }
+            "auto_evaluation": evaluation_results
         }
         
         return combined_results
