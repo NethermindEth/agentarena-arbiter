@@ -7,10 +7,11 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from dotenv import load_dotenv
+from datetime import datetime
 
 from app.core.claude_model import create_similarity_chain
 from app.database.mongodb_handler import mongodb
-from app.models.finding_input import FindingInput
+from app.models.finding_input import Finding, FindingInput
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 
 # Load environment variables
@@ -23,7 +24,7 @@ class FindingDeduplication:
     """
     Handles deduplication of findings submitted by the same agent.
     Identifies findings that have already been reported by the agent.
-    Compares title, description, recommendation and code_references using LangChain and Claude.
+    Compares title and description using LangChain and Claude.
     """
     
     def __init__(self, mongodb_client=None, similarity_threshold=None):
@@ -52,7 +53,7 @@ class FindingDeduplication:
         # Initialize similarity chain
         self.similarity_chain = create_similarity_chain()
     
-    def get_finding_content(self, finding: FindingInput) -> str:
+    def get_finding_content(self, finding: Finding) -> str:
         """
         Extract content to be used for similarity comparison from a finding.
         
@@ -65,8 +66,6 @@ class FindingDeduplication:
         content = [
             f"Title: {finding.title}",
             f"Description: {finding.description}",
-            f"Recommendation: {finding.recommendation}",
-            f"Code References: {', '.join(finding.code_references)}"
         ]
         return "\n".join(content)
     
@@ -108,7 +107,7 @@ class FindingDeduplication:
         else:
             return response.strip()
     
-    async def compare_findings_with_langchain(self, finding1: FindingInput, finding2: FindingInput) -> Tuple[float, str]:
+    async def compare_findings_with_langchain(self, finding1: Finding, finding2: Finding) -> Tuple[float, str]:
         """
         Compare two findings using LangChain and Claude to determine similarity.
         
@@ -125,7 +124,8 @@ class FindingDeduplication:
             content2 = self.get_finding_content(finding2)
             
             # Run similarity chain
-            response = await self.similarity_chain.arun(finding1=content1, finding2=content2)
+            response_dict = await self.similarity_chain.ainvoke({"finding1": content1, "finding2": content2})
+            response = response_dict["similarity"]  # Extract the response string from output_key
             
             # Parse similarity score from response
             similarity_score = self._parse_similarity_score(response)
@@ -139,12 +139,12 @@ class FindingDeduplication:
             print(f"Error comparing findings: {str(e)}")
             return 0.0, f"Error during comparison: {str(e)}"
     
-    async def _get_agent_findings(self, project_id: str, agent_id: str, exclude_reported: bool = True) -> List[FindingDB]:
+    async def _get_agent_findings(self, task_id: str, agent_id: str, exclude_reported: bool = True) -> List[FindingDB]:
         """
-        Get all findings submitted by a specific agent for a project.
+        Get all findings submitted by a specific agent for a task.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             agent_id: Agent identifier
             exclude_reported: If True, exclude findings already marked as 'already_reported'
             
@@ -152,11 +152,11 @@ class FindingDeduplication:
             List of findings from the specified agent
         """
         try:
-            # Get all findings for the project
-            all_findings = await self.mongodb.get_project_findings(project_id)
+            # Get all findings for the task
+            all_findings = await self.mongodb.get_task_findings(task_id)
             
             # Filter for the specific agent
-            agent_findings = [finding for finding in all_findings if finding.reported_by_agent == agent_id]
+            agent_findings = [finding for finding in all_findings if finding.agent_id == agent_id]
             
             # Optionally exclude findings already marked as duplicates
             if exclude_reported:
@@ -167,51 +167,50 @@ class FindingDeduplication:
             print(f"Error getting agent findings: {str(e)}")
             return []
     
-    async def process_findings(self, project_id: str, agent_id: str, new_findings: List[FindingInput]) -> Dict[str, Any]:
+    async def process_findings(self, input_data: FindingInput) -> Dict[str, Any]:
         """
         Process a batch of new findings, detect duplicates and mark them as already reported.
         Only compares with non-duplicate findings from the same agent.
         
         Args:
-            project_id: Project identifier
-            agent_id: Agent identifier
-            new_findings: List of new findings to process
+            input_data: FindingInput containing task_id, agent_id and a list of findings
             
         Returns:
             Statistics about processed findings
         """
-        # Filter out findings that are not from the specified agent
-        filtered_findings = [f for f in new_findings if f.reported_by_agent == agent_id]
+        task_id = input_data.task_id
+        agent_id = input_data.agent_id
+        new_findings = input_data.findings
         
-        if not filtered_findings:
+        if not new_findings:
             return {
                 "total": 0,
                 "duplicates": 0,
                 "new": 0,
-                "duplicate_ids": [],
-                "new_ids": []
+                "duplicate_titles": [],
+                "new_titles": []
             }
         
         try:
             # Get existing findings from same agent, excluding already reported ones
-            existing_findings = await self._get_agent_findings(project_id, agent_id, exclude_reported=True)
+            existing_findings = await self._get_agent_findings(task_id, agent_id, exclude_reported=True)
             
             # Initialize known findings list with existing findings
             known_findings = list(existing_findings)
             
             results = {
-                "total": len(filtered_findings),
+                "total": len(new_findings),
                 "duplicates": 0,
                 "new": 0,
-                "duplicate_ids": [],
-                "new_ids": []
+                "duplicate_titles": [],
+                "new_titles": []
             }
             
             # List to collect all processed findings for batch processing
             all_processed_findings = []
             
             # Process each finding to determine if it's a duplicate or new
-            for finding in filtered_findings:
+            for finding in new_findings:
                 is_duplicate = False
                 similarity_explanation = ""
                 similar_to = None
@@ -223,24 +222,29 @@ class FindingDeduplication:
                     if similarity_score >= self.similarity_threshold:
                         is_duplicate = True
                         similarity_explanation = explanation
-                        similar_to = known_finding.finding_id
+                        similar_to = known_finding.title
                         break
                 
                 if is_duplicate:
                     # Prepare finding with already_reported status
-                    finding_dict = finding.model_dump()
-                    finding_dict["status"] = Status.ALREADY_REPORTED
-                    finding_dict["evaluation_comment"] = f"Similar to finding {similar_to}. {similarity_explanation}"
-                    duplicate_finding = FindingDB(**finding_dict)
+                    duplicate_finding = FindingDB(
+                        **finding.model_dump(),
+                        agent_id=agent_id,
+                        status=Status.ALREADY_REPORTED,
+                        evaluation_comment=f"Similar to finding '{similar_to}'. {similarity_explanation}"
+                    )
                     
                     # Add to the consolidated findings list
                     all_processed_findings.append(duplicate_finding)
                     
                     results["duplicates"] += 1
-                    results["duplicate_ids"].append(finding.finding_id)
+                    results["duplicate_titles"].append(finding.title)
                 else:
                     # Prepare as new finding
-                    new_finding = FindingDB(**finding.model_dump())
+                    new_finding = FindingDB(
+                        **finding.model_dump(),
+                        agent_id=agent_id
+                    )
                     
                     # Add to the consolidated findings list
                     all_processed_findings.append(new_finding)
@@ -249,21 +253,28 @@ class FindingDeduplication:
                     known_findings.append(new_finding)
                     
                     results["new"] += 1
-                    results["new_ids"].append(finding.finding_id)
+                    results["new_titles"].append(finding.title)
             
-            # Batch create all findings together to ensure they share the same submission_id
+            # Batch create all findings
             if all_processed_findings:
-                await self.mongodb.create_finding_batch(all_processed_findings)
+                collection = self.mongodb.get_collection_name(task_id)
+                docs = [finding.model_dump() for finding in all_processed_findings]
+                
+                for doc in docs:
+                    doc["created_at"] = datetime.utcnow()
+                    doc["updated_at"] = datetime.utcnow()
+                    
+                await self.mongodb.db[collection].insert_many(docs)
             
             return results
         
         except Exception as e:
             print(f"Error processing findings: {str(e)}")
             return {
-                "total": len(filtered_findings),
+                "total": len(new_findings),
                 "duplicates": 0,
                 "new": 0,
-                "duplicate_ids": [],
-                "new_ids": [],
+                "duplicate_titles": [],
+                "new_titles": [],
                 "error": str(e)
             } 

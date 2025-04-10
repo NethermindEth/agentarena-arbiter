@@ -49,34 +49,34 @@ class CrossAgentComparison:
         # Reuse deduplication module for similarity comparison
         self.deduplication = FindingDeduplication(mongodb_client, similarity_threshold)
     
-    async def _get_other_agents_valid_findings(self, project_id: str, exclude_agent_id: str) -> List[FindingDB]:
+    async def _get_other_agents_valid_findings(self, task_id: str, exclude_agent_id: str) -> List[FindingDB]:
         """
         Get valid findings (unique_valid or similar_valid) from agents other than the specified one.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             exclude_agent_id: Agent identifier to exclude
             
         Returns:
             List of valid findings from other agents
         """
-        # Get all findings for the project
-        all_findings = await self.mongodb.get_project_findings(project_id)
+        # Get all findings for the task
+        all_findings = await self.mongodb.get_task_findings(task_id)
         
         # Filter for valid findings from other agents
         valid_statuses = [Status.UNIQUE_VALID, Status.SIMILAR_VALID]
         return [
             finding for finding in all_findings
-            if finding.reported_by_agent != exclude_agent_id and finding.status in valid_statuses
+            if finding.agent_id != exclude_agent_id and finding.status in valid_statuses
         ]
     
-    async def _update_finding(self, project_id: str, finding: FindingDB, 
+    async def _update_finding(self, task_id: str, finding: FindingDB, 
                              updated_fields: Dict[str, Any]) -> FindingDB:
         """
         Helper method to update a finding with new fields.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             finding: Finding to update
             updated_fields: Dictionary of fields to update
             
@@ -98,26 +98,26 @@ class CrossAgentComparison:
         
         # Update in database
         await self.mongodb.update_finding(
-            project_id,
-            finding.finding_id,
+            task_id,
+            finding.title,
             new_finding
         )
         
         return new_finding
     
-    async def _mark_as_similar_valid(self, project_id: str, finding: FindingDB, 
+    async def _mark_as_similar_valid(self, task_id: str, finding: FindingDB, 
                                     similar_to: FindingDB, explanation: str) -> None:
         """
         Mark a finding as similar_valid and inherit category and severity from the similar finding.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             finding: Finding to mark as similar_valid
             similar_to: Similar finding to inherit from
             explanation: Explanation of the similarity
         """
         # Format comment with similarity explanation
-        comment = f"Similar to finding {similar_to.finding_id} from agent {similar_to.reported_by_agent}. {explanation}"
+        comment = f"Similar to finding '{similar_to.title}' from agent {similar_to.agent_id}. {explanation}"
         
         # Prepare updated fields
         updated_fields = {
@@ -138,7 +138,7 @@ class CrossAgentComparison:
             updated_fields["evaluated_severity"] = similar_to.evaluated_severity
         
         # Update the finding
-        await self._update_finding(project_id, finding, updated_fields)
+        await self._update_finding(task_id, finding, updated_fields)
         
         # If the similar finding is unique_valid, change its status to similar_valid
         if similar_to.status == Status.UNIQUE_VALID:
@@ -147,7 +147,7 @@ class CrossAgentComparison:
             
             # Update the similar finding
             await self._update_finding(
-                project_id, 
+                task_id, 
                 similar_to, 
                 {
                     "status": Status.SIMILAR_VALID,
@@ -156,14 +156,14 @@ class CrossAgentComparison:
                 }
             )
     
-    async def compare_with_other_agents(self, project_id: str, agent_id: str, 
+    async def compare_with_other_agents(self, task_id: str, agent_id: str, 
                                       findings: List[FindingDB]) -> Dict[str, Any]:
         """
         Compare a list of findings from one agent with the valid findings from other agents.
         Mark similar findings appropriately and inherit attributes.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             agent_id: Agent identifier for the current findings
             findings: List of findings to compare
             
@@ -171,15 +171,15 @@ class CrossAgentComparison:
             Statistics about the comparison results
         """
         # Get valid findings from other agents
-        other_valid_findings = await self._get_other_agents_valid_findings(project_id, agent_id)
+        other_valid_findings = await self._get_other_agents_valid_findings(task_id, agent_id)
         
         results = {
             "total": len(findings),
             "similar_valid": 0,
             "pending_evaluation": 0,
             "already_reported": 0,
-            "similar_ids": [],
-            "pending_ids": []
+            "similar_titles": [],
+            "pending_titles": []
         }
         
         # Process each finding
@@ -208,27 +208,27 @@ class CrossAgentComparison:
             if similar_valid_finding:
                 # Mark as similar_valid and inherit attributes
                 await self._mark_as_similar_valid(
-                    project_id, 
+                    task_id, 
                     finding, 
                     similar_valid_finding, 
                     similarity_explanation
                 )
                 results["similar_valid"] += 1
-                results["similar_ids"].append(finding.finding_id)
+                results["similar_titles"].append(finding.title)
             else:
                 # Keep as pending for final evaluation
                 results["pending_evaluation"] += 1
-                results["pending_ids"].append(finding.finding_id)
+                results["pending_titles"].append(finding.title)
         
         return results
     
-    async def process_new_findings(self, project_id: str, agent_id: str, 
+    async def process_new_findings(self, task_id: str, agent_id: str, 
                                  new_findings: List[FindingInput]) -> Dict[str, Any]:
         """
         Process new findings from an agent through self-deduplication and cross-agent comparison.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             agent_id: Agent identifier
             new_findings: List of new findings to process
             
@@ -236,18 +236,18 @@ class CrossAgentComparison:
             Complete processing results
         """
         # Step 1: Self-deduplication - use existing instance
-        dedup_results = await self.deduplication.process_findings(project_id, agent_id, new_findings)
+        dedup_results = await self.deduplication.process_findings(task_id, agent_id, new_findings)
         
         # Get created non-duplicate findings
         non_duplicate_findings = []
-        for finding_id in dedup_results.get("new_ids", []):
-            finding = await self.mongodb.get_finding(project_id, finding_id)
+        for title in dedup_results.get("new_titles", []):
+            finding = await self.mongodb.get_finding(task_id, title)
             if finding:
                 non_duplicate_findings.append(finding)
         
         # Step 2: Cross-agent comparison
         comparison_results = await self.compare_with_other_agents(
-            project_id, agent_id, non_duplicate_findings
+            task_id, agent_id, non_duplicate_findings
         )
         
         # Combine results
@@ -256,7 +256,7 @@ class CrossAgentComparison:
             "cross_comparison": comparison_results
         }
     
-    async def perform_final_evaluation(self, project_id: str, finding_id: str, 
+    async def perform_final_evaluation(self, task_id: str, title: str, 
                                      status: Status, category: Optional[str], 
                                      evaluated_severity: Optional[EvaluatedSeverity], 
                                      evaluation_comment: str) -> Dict[str, Any]:
@@ -265,8 +265,8 @@ class CrossAgentComparison:
         Generates a unique category_id for new categories.
         
         Args:
-            project_id: Project identifier
-            finding_id: Finding identifier
+            task_id: Task identifier
+            title: Finding title
             status: Final status (usually Status.UNIQUE_VALID or Status.DISPUTED)
             category: Security issue category, None for DISPUTED findings
             evaluated_severity: Evaluated severity level
@@ -276,9 +276,9 @@ class CrossAgentComparison:
             Updated finding information
         """
         # Get current finding
-        finding = await self.mongodb.get_finding(project_id, finding_id)
+        finding = await self.mongodb.get_finding(task_id, title)
         if not finding:
-            return {"error": f"Finding {finding_id} not found"}
+            return {"error": f"Finding '{title}' not found"}
         
         # Initialize updated fields with status and comment
         updated_fields = {
@@ -294,7 +294,7 @@ class CrossAgentComparison:
         category_id = None
         if category is not None:
             # Get all findings with the same category
-            all_findings = await self.mongodb.get_project_findings(project_id)
+            all_findings = await self.mongodb.get_task_findings(task_id)
             category_findings = [f for f in all_findings 
                                if getattr(f, 'category', None) == category 
                                and getattr(f, 'category_id', None) is not None]
@@ -316,10 +316,10 @@ class CrossAgentComparison:
             updated_fields["category"] = None
             updated_fields["category_id"] = None
         
-        await self._update_finding(project_id, finding, updated_fields)
+        await self._update_finding(task_id, finding, updated_fields)
         
         return {
-            "finding_id": finding_id,
+            "title": title,
             "status": status,
             "category": category,
             "category_id": category_id,

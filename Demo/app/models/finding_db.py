@@ -2,7 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
-from app.models.finding_input import FindingInput
+from app.models.finding_input import Finding, Severity
 
 class Status(str, Enum):
     PENDING = "pending"
@@ -16,14 +16,14 @@ class EvaluatedSeverity(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
-class FindingDB(FindingInput):
+class FindingDB(Finding):
     """
     Model representing a processed security finding stored in the database.
-    Extends the input model with additional system-managed fields.
+    Extends the Finding model with additional system-managed fields.
     """
-    # Submission batch identifier (sequential counter per agent)
-    submission_id: int = 1  # Default to 1, will be assigned by the system
-
+    # Additional required fields
+    agent_id: str
+    
     # System-added fields
     status: Status = Status.PENDING  # Default status
     category: Optional[str] = None  # Security issue category (e.g., "SQL Injection", "XSS")

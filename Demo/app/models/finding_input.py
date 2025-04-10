@@ -7,13 +7,14 @@ class Severity(str, Enum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
 
-class FindingInput(BaseModel):
-    """Model representing an input security finding submission"""
-    project_id: str
-    reported_by_agent: str
-    finding_id: str
+class Finding(BaseModel):
+    """Model representing a single finding"""
     title: str
     description: str
-    severity: Severity
-    recommendation: str
-    code_references: List[str] 
+    severity: Severity 
+
+class FindingInput(BaseModel):
+    """Model representing an input security finding submission"""
+    task_id: str
+    agent_id: str
+    findings: List[Finding] 

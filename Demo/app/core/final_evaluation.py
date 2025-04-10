@@ -66,14 +66,11 @@ class FindingEvaluator:
         Title: {title}
         Description: {description}
         Reported Severity: {severity}
-        Recommendation: {recommendation}
-        Code References: {code_references}
 
         Analyze the provided information thoroughly. Consider:
         - Technical accuracy and feasibility in blockchain context
         - Potential impact on contract funds, operations, or users
         - Exploitation difficulty and prerequisites
-        - Quality of the description and recommendation
         
         Provide your evaluation in this exact format:
         IS_VALID: yes/no
@@ -83,7 +80,7 @@ class FindingEvaluator:
         """
         
         prompt = PromptTemplate(
-            input_variables=["title", "description", "severity", "recommendation", "code_references"],
+            input_variables=["title", "description", "severity"],
             template=evaluation_template
         )
         
@@ -159,26 +156,25 @@ class FindingEvaluator:
             "title": finding.title,
             "description": finding.description,
             "severity": finding.severity,
-            "recommendation": finding.recommendation,
-            "code_references": ", ".join(finding.code_references)
         }
         
         # Run evaluation chain
-        response = await self.evaluation_chain.arun(**eval_input)
+        response_dict = await self.evaluation_chain.ainvoke(eval_input)
+        response = response_dict["evaluation"]  # Extract the response string from output_key
         
         # Parse results
         evaluation_result = self._parse_evaluation_result(response)
         
         return evaluation_result
     
-    async def apply_evaluation(self, project_id: str, finding_id: str, 
+    async def apply_evaluation(self, task_id: str, title: str, 
                              evaluation_result: Dict[str, Any]) -> Dict[str, Any]:
         """
         Apply evaluation results to a finding by updating its status, category, and severity.
         
         Args:
-            project_id: Project identifier
-            finding_id: Finding identifier
+            task_id: Task identifier
+            title: Finding title
             evaluation_result: Evaluation results from LLM
             
         Returns:
@@ -202,8 +198,8 @@ class FindingEvaluator:
         
         # Use cross comparison method to update finding with proper category_id handling
         update_result = await self.cross_comparison.perform_final_evaluation(
-            project_id,
-            finding_id,
+            task_id,
+            title,
             status,
             category,
             evaluated_severity,
@@ -212,31 +208,31 @@ class FindingEvaluator:
         
         return update_result
     
-    async def get_pending_findings(self, project_id: str) -> List[FindingDB]:
+    async def get_pending_findings(self, task_id: str) -> List[FindingDB]:
         """
-        Get all findings with pending status from a project.
+        Get all findings with pending status from a task.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             
         Returns:
             List of pending findings
         """
-        all_findings = await self.mongodb.get_project_findings(project_id)
+        all_findings = await self.mongodb.get_task_findings(task_id)
         return [f for f in all_findings if f.status == Status.PENDING]
     
-    async def evaluate_all_pending(self, project_id: str) -> Dict[str, Any]:
+    async def evaluate_all_pending(self, task_id: str) -> Dict[str, Any]:
         """
-        Evaluate all pending findings in a project.
+        Evaluate all pending findings in a task.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             
         Returns:
             Summary of evaluation results
         """
         # Get all pending findings
-        pending_findings = await self.get_pending_findings(project_id)
+        pending_findings = await self.get_pending_findings(task_id)
         
         results = {
             "total_pending": len(pending_findings),
@@ -252,8 +248,8 @@ class FindingEvaluator:
             
             # Apply the evaluation
             update_result = await self.apply_evaluation(
-                project_id,
-                finding.finding_id,
+                task_id,
+                finding.title,
                 evaluation_result
             )
             
@@ -265,7 +261,6 @@ class FindingEvaluator:
             
             # Add to results with correct severity handling
             evaluation_entry = {
-                "finding_id": finding.finding_id,
                 "title": finding.title,
                 "status": Status.UNIQUE_VALID if evaluation_result["is_valid"] else Status.DISPUTED,
                 "evaluation_comment": evaluation_result["evaluation_comment"]
@@ -283,18 +278,18 @@ class FindingEvaluator:
         
         return results
     
-    async def count_issues_by_category(self, project_id: str) -> Dict[str, Any]:
+    async def count_issues_by_category(self, task_id: str) -> Dict[str, Any]:
         """
-        Count unique security issues by category in a project.
+        Count unique security issues by category in a task.
         Groups similar findings together based on category_id.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             
         Returns:
             Dictionary of categories with count and finding IDs
         """
-        all_findings = await self.mongodb.get_project_findings(project_id)
+        all_findings = await self.mongodb.get_task_findings(task_id)
         
         # Filter for valid findings
         valid_findings = [f for f in all_findings 
@@ -322,22 +317,22 @@ class FindingEvaluator:
                 }
             
             issues_by_category[category_id]["count"] += 1
-            issues_by_category[category_id]["findings"].append(finding.finding_id)
+            issues_by_category[category_id]["findings"].append(finding.title)
         
         return issues_by_category
     
-    async def generate_summary_report(self, project_id: str) -> Dict[str, Any]:
+    async def generate_summary_report(self, task_id: str) -> Dict[str, Any]:
         """
-        Generate a summary report of all security findings in a project.
+        Generate a summary report of all security findings in a task.
         Includes counts by status, severity, and category.
         
         Args:
-            project_id: Project identifier
+            task_id: Task identifier
             
         Returns:
             Summary report data
         """
-        all_findings = await self.mongodb.get_project_findings(project_id)
+        all_findings = await self.mongodb.get_task_findings(task_id)
         
         # Count by status
         status_counts = {}
@@ -348,11 +343,11 @@ class FindingEvaluator:
             status_counts[status] += 1
         
         # Get category counts
-        category_data = await self.count_issues_by_category(project_id)
+        category_data = await self.count_issues_by_category(task_id)
         
         # Generate summary
         summary = {
-            "project_id": project_id,
+            "task_id": task_id,
             "total_findings": len(all_findings),
             "status_distribution": status_counts,
             "categories": category_data,
