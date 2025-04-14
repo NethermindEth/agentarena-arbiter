@@ -1,3 +1,4 @@
+# Workflow
 ## Submission Process
 
 - When a new finding is submitted, the system adds these additional fields:
@@ -45,6 +46,8 @@
 4. Set desired similarity threshold (default: 0.8)
 
 ### Installation
+
+#### Local Setup
 ```bash
 # Create virtual environment
 python -m venv venv
@@ -52,13 +55,42 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Start Application
+python -m app.main
+```
+
+#### Docker Setup
+```bash
+# Build and start the services
+docker-compose build
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+```
+
+The API will be available at http://localhost:8000.
+
+**Note:** When running with Docker, the system automatically connects to the MongoDB container. No additional configuration is needed.
+
+### Stopping Docker Services
+```bash
+docker-compose down
 ```
 
 ## Running Tests
 
 ### Process Findings Test
 ```bash
+# For local environment
 python -m app.test.test_process_findings
+
+# For Docker environment
+docker-compose exec api python -m app.test.test_process_findings
 ```
 
 This test verifies the complete workflow with three scenarios:
@@ -73,6 +105,30 @@ The test confirms the system's ability to:
 - Classify findings with appropriate status, category, and severity
 
 **Note:** A valid Claude API key is required to run this test.
+
+## API Usage
+
+### Submit Findings
+```bash
+curl -X POST http://localhost:8000/process_findings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "test-task-1",
+    "agent_id": "agent-1",
+    "findings": [
+      {
+        "title": "Integer Overflow",
+        "description": "Function X is vulnerable to integer overflow",
+        "severity": "HIGH"
+      }
+    ]
+  }'
+```
+
+### Retrieve Findings
+```bash
+curl http://localhost:8000/tasks/test-task-1/findings | python -m json.tool
+```
 
 ## Data Models
 

@@ -5,6 +5,7 @@ Handles storage and retrieval of findings in MongoDB.
 from typing import List, Dict, Any, Optional
 import motor.motor_asyncio
 from datetime import datetime
+import os
 from pydantic import BaseModel
 
 from app.models.finding_input import FindingInput, Finding
@@ -16,7 +17,7 @@ class MongoDBHandler:
     Handles connection and operations on the MongoDB database.
     """
     
-    def __init__(self, connection_string: str = "mongodb://localhost:27017"):
+    def __init__(self, connection_string: str = None):
         """
         Initialize MongoDB handler with a connection string.
         
@@ -25,7 +26,12 @@ class MongoDBHandler:
         """
         self.client = None
         self.db = None
-        self.connection_string = connection_string
+        
+        # Automatically select MongoDB URL based on environment
+        is_docker = os.path.exists("/.dockerenv")  # Docker environment detection
+        default_mongo_url = "mongodb://mongodb:27017" if is_docker else "mongodb://localhost:27017"
+        
+        self.connection_string = connection_string or os.getenv("MONGODB_URL", default_mongo_url)
         self.database_name = "security_findings"
     
     async def connect(self):
