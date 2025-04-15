@@ -4,14 +4,16 @@ from enum import Enum
 
 # Only High and Medium risks should be submitted.
 class Severity(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
+    HIGH = "High"
+    MEDIUM = "Medium"
+    LOW = "Low"
+    INFO = "Info"
 
 class Finding(BaseModel):
     """Model representing a single finding"""
     title: str
     description: str
-    severity: Severity 
+    severity: Severity
 
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""

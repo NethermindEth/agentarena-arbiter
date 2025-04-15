@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from typing import Dict, Any, List
 import os
 from dotenv import load_dotenv
+import httpx
 
 from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
@@ -56,6 +57,8 @@ async def process_findings(input_data: FindingInput):
         Processing results with statistics and evaluation results
     """
     try:
+        print(f"Processing findings for task_id: {input_data.task_id}")
+
         # 1. Process findings with deduplication
         dedup_results = await deduplicator.process_findings(input_data)
         
@@ -77,6 +80,8 @@ async def process_findings(input_data: FindingInput):
                     new_findings
                 )
         
+        print(f"Cross comparison results: {cross_comparison_results}")
+
         # 2. Only perform evaluation if new findings were added and not marked as similar_valid
         evaluation_results = {}
         if dedup_results['new'] > 0:
@@ -91,12 +96,51 @@ async def process_findings(input_data: FindingInput):
                 summary_report = await evaluator.generate_summary_report(input_data.task_id)
                 evaluation_results["summary"] = summary_report
         
+        print(f"Evaluation results: {evaluation_results}")
+
         # 3. Combine results
         combined_results = {
             "deduplication": dedup_results,
             "cross_comparison": cross_comparison_results,
             "auto_evaluation": evaluation_results
         }
+
+        # 4. Post results to another endpoint
+        try:
+            # Fetch all findings for this task to include in the payload
+            findings = await mongodb.get_task_findings(input_data.task_id)
+            
+            # Format findings data for the external endpoint
+            formatted_findings = []
+            for finding in findings:
+                formatted_findings.append({
+                    "title": finding.title,
+                    "description": finding.description,
+                    "severity": finding.severity,
+                    "status": finding.status
+                })
+            
+            # Prepare payload for external endpoint
+            payload = {
+                "project_id": input_data.task_id,
+                "reported_by_agent": input_data.agent_id,
+                "findings": formatted_findings
+            }
+            
+            # Post to external endpoint
+            external_endpoint = os.getenv("BACKEND_FINDINGS_ENDPOINT")
+            if external_endpoint:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(external_endpoint, json=payload)
+                    print(f"Posted results to external endpoint: {response.status_code}")
+            else:
+                print("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
+                
+        except Exception as post_error:
+            print(f"Error posting results to external endpoint: {str(post_error)}")
+            # Continue execution even if posting fails
+        
+        print(f"Combined results: {combined_results}")
         
         return combined_results
     except Exception as e:
@@ -125,4 +169,4 @@ async def get_task_findings(task_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8004, reload=True) 
