@@ -108,7 +108,7 @@ async def process_findings(input_data: FindingInput):
         # 4. Post results to another endpoint
         try:
             # Fetch all findings for this task to include in the payload
-            findings = await mongodb.get_task_findings(input_data.task_id)
+            findings = await mongodb.get_agent_findings(input_data.task_id, input_data.agent_id)
             
             # Format findings data for the external endpoint
             formatted_findings = []
@@ -117,13 +117,14 @@ async def process_findings(input_data: FindingInput):
                     "title": finding.title,
                     "description": finding.description,
                     "severity": finding.severity,
-                    "status": finding.status
+                    "status": finding.status,
+                    "file_path": finding.file_path
                 })
             
             # Prepare payload for external endpoint
             payload = {
-                "project_id": input_data.task_id,
-                "reported_by_agent": input_data.agent_id,
+                "task_id": input_data.task_id,
+                "agent_id": input_data.agent_id,
                 "findings": formatted_findings
             }
             
@@ -169,4 +170,4 @@ async def get_task_findings(task_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8004, reload=True) 
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
