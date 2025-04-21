@@ -19,5 +19,4 @@ class Finding(BaseModel):
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""
     task_id: str
-    agent_id: Optional[str] = None
     findings: List[Finding] 

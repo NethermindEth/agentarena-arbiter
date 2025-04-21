@@ -88,12 +88,13 @@ class MongoDBHandler:
         # Return the finding title
         return finding.title
     
-    async def create_findings_batch(self, input_data: FindingInput) -> List[str]:
+    async def create_findings_batch(self, agent_id: str, input_data: FindingInput) -> List[str]:
         """
         Create multiple findings in batch from a FindingInput.
         
         Args:
-            input_data: FindingInput containing task_id, agent_id and a list of findings
+            agent_id: Agent identifier
+            input_data: FindingInput containing task_id and a list of findings
             
         Returns:
             List of created finding titles
@@ -101,9 +102,8 @@ class MongoDBHandler:
         if not input_data.findings:
             return []
             
-        # Extract task_id and agent_id
+        # Extract task_id
         task_id = input_data.task_id
-        agent_id = input_data.agent_id
         
         # Get collection
         collection = self.get_collection_name(task_id)

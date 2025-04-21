@@ -51,7 +51,6 @@ async def test_process_findings():
         # Create FindingInput
         input_batch1 = FindingInput(
             task_id=task_id,
-            agent_id="agent1",
             findings=findings_batch1
         )
         
@@ -140,7 +139,6 @@ async def test_process_findings():
         # Create FindingInput
         input_batch2 = FindingInput(
             task_id=task_id,
-            agent_id="agent1",
             findings=findings_batch2
         )
         
@@ -223,7 +221,6 @@ async def test_process_findings():
         # Create FindingInput
         input_batch3 = FindingInput(
             task_id=task_id,
-            agent_id="agent2",  # Different agent
             findings=findings_batch3
         )
         

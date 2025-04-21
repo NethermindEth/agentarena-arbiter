@@ -126,9 +126,6 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # Replace the agent_id from input with the one from the API key
         print(f"Processing findings for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
-        # Use agent_id from API key rather than from the request
-        input_data.agent_id = agent_id
-
         # 1. Process findings with deduplication
         dedup_results = await deduplicator.process_findings(input_data)
         
@@ -146,7 +143,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
             if new_findings:
                 cross_comparison_results = await evaluator.cross_comparison.compare_with_other_agents(
                     input_data.task_id,
-                    input_data.agent_id,
+                    agent_id,
                     new_findings
                 )
         
@@ -178,7 +175,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # 4. Post results to another endpoint
         try:
             # Fetch all findings for this task to include in the payload
-            findings = await mongodb.get_agent_findings(input_data.task_id, input_data.agent_id)
+            findings = await mongodb.get_agent_findings(input_data.task_id, agent_id)
             
             # Format findings data for the external endpoint
             formatted_findings = []
@@ -194,7 +191,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
             # Prepare payload for external endpoint
             payload = {
                 "task_id": input_data.task_id,
-                "agent_id": input_data.agent_id,
+                "agent_id": agent_id,
                 "findings": formatted_findings
             }
             

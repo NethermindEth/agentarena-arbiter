@@ -176,19 +176,19 @@ class FindingDeduplication:
             print(f"Error getting agent findings: {str(e)}")
             return []
     
-    async def process_findings(self, input_data: FindingInput) -> Dict[str, Any]:
+    async def process_findings(self, agent_id: str, input_data: FindingInput) -> Dict[str, Any]:
         """
         Process a batch of new findings, detect duplicates and mark them as already reported.
         Only compares with non-duplicate findings from the same agent.
         
         Args:
-            input_data: FindingInput containing task_id, agent_id and a list of findings
+            agent_id: Agent identifier
+            input_data: FindingInput containing task_id and a list of findings
             
         Returns:
             Statistics about processed findings
         """
         task_id = input_data.task_id
-        agent_id = input_data.agent_id
         new_findings = input_data.findings
         
         if not new_findings:
