@@ -16,6 +16,7 @@ from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 from app.core.cross_agent_comparison import CrossAgentComparison
 from app.core.claude_model import create_claude_model
+from app.core.prompt_manager import PromptManager
 
 class FindingEvaluator:
     """
@@ -23,15 +24,17 @@ class FindingEvaluator:
     Analyzes findings content to determine validity, categorize, and assess severity.
     """
     
-    def __init__(self, mongodb_client=None):
+    def __init__(self, mongodb_client=None, prompt_manager=None):
         """
         Initialize the finding evaluator.
         
         Args:
             mongodb_client: MongoDB client instance (uses global instance if None)
+            prompt_manager: PromptManager instance (creates new one if None)
         """
         self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
         self.cross_comparison = CrossAgentComparison(mongodb_client)
+        self.prompt_manager = prompt_manager or PromptManager()
         self.evaluation_chain = self._setup_evaluation_chain()
     
     def _setup_evaluation_chain(self) -> LLMChain:
@@ -44,37 +47,8 @@ class FindingEvaluator:
         # Initialize Claude model using the centralized function
         model = create_claude_model()
         
-        # Create evaluation prompt template focused on smart contract vulnerabilities
-        evaluation_template = """
-        You are a blockchain security expert tasked with evaluating the validity and severity of smart contract vulnerabilities.
-        Please analyze the following security finding and determine:
-
-        1. Is it a valid smart contract security issue? Evaluate the technical accuracy and impact.
-        2. What security category does it belong to? Use standard categories for smart contracts (e.g., Reentrancy, Integer Overflow/Underflow, Access Control, Logic Error, etc.).
-        3. What is the appropriate severity level (low, medium, high, critical)?
-        4. Provide a brief explanation of your evaluation.
-
-        Finding details:
-        Title: {title}
-        Description: {description}
-        Reported Severity: {severity}
-
-        Analyze the provided information thoroughly. Consider:
-        - Technical accuracy and feasibility in blockchain context
-        - Potential impact on contract funds, operations, or users
-        - Exploitation difficulty and prerequisites
-        
-        Provide your evaluation in this exact format:
-        IS_VALID: yes/no
-        CATEGORY: category_name
-        SEVERITY: severity_level
-        COMMENT: Your explanation (2-3 sentences maximum)
-        """
-        
-        prompt = PromptTemplate(
-            input_variables=["title", "description", "severity"],
-            template=evaluation_template
-        )
+        # Load evaluation prompt template from prompt manager
+        prompt = self.prompt_manager.get_prompt_template("finding_evaluation")
         
         # Create and return chain
         return LLMChain(llm=model, prompt=prompt, output_key="evaluation")

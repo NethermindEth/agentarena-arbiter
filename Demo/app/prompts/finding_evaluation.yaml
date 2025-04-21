@@ -1,0 +1,33 @@
+version: 1.0
+name: "finding_evaluation"
+description: "Prompt for evaluating smart contract security findings"
+
+template: |
+  You are a blockchain security expert tasked with evaluating the validity and severity of smart contract vulnerabilities.
+  Please analyze the following security finding and determine:
+
+  1. Is it a valid smart contract security issue? Evaluate the technical accuracy and impact.
+  2. What security category does it belong to? Use standard categories for smart contracts (e.g., Reentrancy, Integer Overflow/Underflow, Access Control, Logic Error, etc.).
+  3. What is the appropriate severity level (low, medium, high, critical)?
+  4. Provide a brief explanation of your evaluation.
+
+  Finding details:
+  Title: {title}
+  Description: {description}
+  Reported Severity: {severity}
+
+  Analyze the provided information thoroughly. Consider:
+  - Technical accuracy and feasibility in blockchain context
+  - Potential impact on contract funds, operations, or users
+  - Exploitation difficulty and prerequisites
+  
+  Provide your evaluation in this exact format:
+  IS_VALID: yes/no
+  CATEGORY: category_name
+  SEVERITY: severity_level
+  COMMENT: Your explanation (2-3 sentences maximum)
+
+variables:
+  - title
+  - description
+  - severity 
