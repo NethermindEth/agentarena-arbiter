@@ -148,19 +148,19 @@ class FindingEvaluator:
         """
         if not evaluation_result["is_valid"]:
             status = Status.DISPUTED
-            evaluated_severity = None  # 清除严重性评级
-            category = None  # 清除分类信息
+            evaluated_severity = None  # Clear severity rating
+            category = None  # Clear category information
         else:
             status = Status.UNIQUE_VALID
             evaluated_severity = evaluation_result["evaluated_severity"]
             category = evaluation_result["category"]
             
-            # 确保有效的漏洞有分类和严重性评级
+            # Ensure valid vulnerabilities have category and severity rating
             if evaluated_severity is None:
-                evaluated_severity = EvaluatedSeverity.MEDIUM  # 仅对有效漏洞设置默认值
+                evaluated_severity = EvaluatedSeverity.MEDIUM  # Only set default value for valid findings
                 
             if category is None or category.strip() == "":
-                category = "Uncategorized"  # 仅对有效漏洞设置默认分类
+                category = "Uncategorized"  # Only set default category for valid findings
         
         # Use cross comparison method to update finding with proper category_id handling
         update_result = await self.cross_comparison.perform_final_evaluation(
