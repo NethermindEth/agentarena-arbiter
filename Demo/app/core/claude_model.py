@@ -13,7 +13,7 @@ from langchain.chains import LLMChain
 load_dotenv()
 
 # Default values
-DEFAULT_MODEL = "claude-3-opus-20240229"
+DEFAULT_MODEL = "claude-3-7-sonnet-latest"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 1000
 
@@ -109,8 +109,6 @@ def create_similarity_chain(
         Analyze the similarity in these aspects:
         1. Title similarity
         2. Description similarity
-        3. Recommendation similarity
-        4. Code references overlap
         
         First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1.
         """

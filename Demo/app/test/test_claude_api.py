@@ -20,6 +20,9 @@ except ImportError:
         print("   Run: pip install anthropic langchain-anthropic")
         sys.exit(1)
 
+# Default model if environment variable is not set
+DEFAULT_MODEL = "claude-3-7-sonnet-latest"
+
 async def test_claude_api():
     """Test the Claude API connection with the configured API key."""
     try:
@@ -35,6 +38,9 @@ async def test_claude_api():
             print("❌ CLAUDE_API_KEY not found in environment variables")
             return False
         
+        # Get model name from environment variable
+        model_name = os.getenv("CLAUDE_MODEL", DEFAULT_MODEL).strip()
+        
         # Basic validation
         if not api_key.startswith("sk-ant-"):
             print("❌ Invalid API key format - should start with 'sk-ant-'")
@@ -42,22 +48,23 @@ async def test_claude_api():
             
         masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "[too short]"
         print(f"🔑 Using API key: {masked_key}")
+        print(f"🤖 Using model: {model_name}")
         
         # Test API using available client
         if USING_LANGCHAIN:
-            return await test_with_langchain(api_key)
+            return await test_with_langchain(api_key, model_name)
         else:
-            return await test_with_anthropic(api_key)
+            return await test_with_anthropic(api_key, model_name)
             
     except Exception as e:
         print(f"❌ Error during API test: {str(e)}")
         return False
 
-async def test_with_langchain(api_key):
+async def test_with_langchain(api_key, model_name):
     """Test with LangChain Anthropic integration."""
     try:
         client = ChatAnthropic(
-            model="claude-3-opus-20240229",
+            model=model_name,
             anthropic_api_key=api_key,
             temperature=0
         )
@@ -76,14 +83,14 @@ async def test_with_langchain(api_key):
         print(f"❌ API request failed: {str(e)}")
         return False
 
-async def test_with_anthropic(api_key):
+async def test_with_anthropic(api_key, model_name):
     """Test with native Anthropic SDK."""
     try:
         client = anthropic.Anthropic(api_key=api_key)
         
         print("🔄 Testing with Anthropic SDK...")
         message = await client.messages.create(
-            model="claude-3-opus-20240229",
+            model=model_name,
             max_tokens=100,
             messages=[{"role": "user", "content": "Hello, please respond with the word 'Working'"}]
         )
