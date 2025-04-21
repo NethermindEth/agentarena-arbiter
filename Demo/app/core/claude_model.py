@@ -106,11 +106,24 @@ def create_similarity_chain(
         Finding 2:
         {finding2}
         
-        Analyze the similarity in these aspects:
-        1. Title similarity
-        2. Description similarity
+        Follow these steps to analyze their similarity:
         
-        First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1.
+        1. First, determine if the findings describe the SAME TYPE of vulnerability (e.g., SQL injection vs. reentrancy are DIFFERENT types).
+           - If they describe completely different vulnerability types, the similarity score should be LOW (0.0-0.3).
+           - Only if they describe the same or closely related vulnerability types, proceed to analyze further similarities.
+           
+        2. For findings of the same vulnerability type, analyze:
+           - Specific vulnerability details (affected function, root cause)
+           - Impact and severity 
+           - Description wording and specificity
+        
+        3. Similarity scale guidance:
+           - 0.0-0.3: Different vulnerability types or completely different issues
+           - 0.4-0.6: Same vulnerability type but significant differences in details
+           - 0.7-0.9: Same vulnerability with minor variations in description or affected components
+           - 0.9-1.0: Nearly identical findings (same vulnerability, same location, very similar descriptions)
+        
+        First explain your comparison focusing on vulnerability type and details, then output a single decimal number between 0 and 1 representing the similarity score.
         """
     
     # Create prompt

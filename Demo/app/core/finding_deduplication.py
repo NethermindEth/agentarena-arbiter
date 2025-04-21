@@ -18,7 +18,7 @@ from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 load_dotenv()
 
 # Default similarity threshold
-DEFAULT_SIMILARITY_THRESHOLD = 0.8
+DEFAULT_SIMILARITY_THRESHOLD = 0.85
 
 class FindingDeduplication:
     """
@@ -72,6 +72,7 @@ class FindingDeduplication:
     def _parse_similarity_score(self, response: str) -> float:
         """
         Parse the similarity score from the LLM response.
+        If the response mentions different vulnerability types, return a low score.
         
         Args:
             response: Text response from LLM
@@ -79,6 +80,19 @@ class FindingDeduplication:
         Returns:
             Similarity score as a float between 0 and 1
         """
+        # Check for keywords indicating different vulnerability types
+        lower_response = response.lower()
+        different_type_indicators = [
+            "different type", "different vulnerability type", 
+            "completely different", "not the same type",
+            "different categories", "distinct vulnerability"
+        ]
+        
+        for indicator in different_type_indicators:
+            if indicator in lower_response:
+                # Return a very low score for findings of different types
+                return 0.2
+        
         # Look for a floating point number in the response
         match = re.search(r'(\d+\.\d+|\d+)', response)
         if match:
