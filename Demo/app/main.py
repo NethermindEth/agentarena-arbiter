@@ -127,7 +127,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         print(f"Processing findings for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
         # 1. Process findings with deduplication
-        dedup_results = await deduplicator.process_findings(input_data)
+        dedup_results = await deduplicator.process_findings(agent_id, input_data)
         
         # 1.5. Perform cross-agent comparison for newly added findings
         cross_comparison_results = {}
