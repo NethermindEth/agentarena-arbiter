@@ -99,20 +99,24 @@ def create_similarity_chain(
     if not prompt_template:
         prompt_template = """
         Compare these two security findings and determine their similarity on a scale from 0 to 1.
-        
+
         Finding 1:
         {finding1}
-        
+
         Finding 2:
         {finding2}
-        
+
         Analyze the similarity in these aspects:
-        1. Title similarity
-        2. Description similarity
-        3. Recommendation similarity
-        4. Code references overlap
-        
-        First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1.
+        1. Title similarity (0.25 weight)
+        2. Description similarity (0.35 weight)
+        3. Vulnerability type (0.25 weight)
+        4. File path and code references (0.15 weight)
+
+        For two findings to be considered similar, they should describe the same underlying security issue.
+        Even if the descriptions are somewhat similar but they point to different vulnerabilities, they should receive a low similarity score.
+
+        First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1 on a separate line.
+        Format your final answer as: "Similarity score: 0.XX"
         """
     
     # Create prompt

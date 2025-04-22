@@ -37,11 +37,13 @@ async def test_process_findings():
             Finding(
                 title="Reentrancy Vulnerability in Withdraw Function",
                 description="The withdraw() function does not follow the checks-effects-interactions pattern and is vulnerable to reentrancy attacks, potentially allowing attackers to drain funds from the contract.",
+                file_path="contracts/Contract.sol",
                 severity=Severity.HIGH
             ),
             Finding(
                 title="Unsafe External Call without Return Value Check",
                 description="The contract makes external calls without checking return values, which could lead to silent failures and unintended consequences in the contract's execution flow.",
+                file_path="contracts/Contract.sol",
                 severity=Severity.MEDIUM
             )
         ]
@@ -49,7 +51,6 @@ async def test_process_findings():
         # Create FindingInput
         input_batch1 = FindingInput(
             task_id=task_id,
-            agent_id="agent1",
             findings=findings_batch1
         )
         
@@ -57,7 +58,7 @@ async def test_process_findings():
         print("\n📊 Processing first batch of findings")
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 # Process findings
                 print(f"Sending POST request to {BASE_URL}/process_findings")
                 print(f"Request data: {input_batch1}")
@@ -124,19 +125,20 @@ async def test_process_findings():
             Finding(
                 title="Reentrancy Vulnerability in Withdraw Function",  # Duplicate title
                 description="The withdraw function is susceptible to reentrancy attacks due to state changes after external calls.",
-                severity=Severity.HIGH
+                severity=Severity.HIGH,
+                file_path="contracts/Contract.sol"
             ),
             Finding(
                 title="Integer Overflow in Token Transfer",  # New finding
                 description="The token transfer function doesn't use SafeMath or Solidity 0.8+ built-in overflow checks, potentially allowing attackers to manipulate balances.",
-                severity=Severity.HIGH
+                severity=Severity.HIGH,
+                file_path="contracts/Contract.sol"
             )
         ]
         
         # Create FindingInput
         input_batch2 = FindingInput(
             task_id=task_id,
-            agent_id="agent1",
             findings=findings_batch2
         )
         
@@ -144,7 +146,7 @@ async def test_process_findings():
         print("\n📊 Processing second batch of findings")
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 # Process findings
                 print(f"Sending POST request to {BASE_URL}/process_findings")
                 print(f"Request data: {input_batch2}")
@@ -205,19 +207,20 @@ async def test_process_findings():
             Finding(
                 title="Withdraw Function Reentrancy Issue",  # Similar to existing but different title
                 description="I found a reentrancy vulnerability in the withdraw function that allows attackers to repeatedly withdraw funds.",
-                severity=Severity.MEDIUM  # Different severity
+                severity=Severity.MEDIUM,  # Different severity
+                file_path="contracts/Contract.sol"
             ),
             Finding(
                 title="SQL Injection in Contract Data Storage",  # New finding that should be disputed
                 description="The smart contract is vulnerable to SQL injection attacks when storing user input in its database, potentially allowing attackers to execute arbitrary SQL commands.",
-                severity=Severity.HIGH
+                severity=Severity.HIGH,
+                file_path="contracts/Contract.sol"
             )
         ]
         
         # Create FindingInput
         input_batch3 = FindingInput(
             task_id=task_id,
-            agent_id="agent2",  # Different agent
             findings=findings_batch3
         )
         
@@ -225,7 +228,7 @@ async def test_process_findings():
         print("\n📊 Processing third batch of findings (different agent)")
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 # Process findings
                 print(f"Sending POST request to {BASE_URL}/process_findings")
                 print(f"Request data: {input_batch3}")

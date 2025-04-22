@@ -66,6 +66,7 @@ class FindingDeduplication:
         content = [
             f"Title: {finding.title}",
             f"Description: {finding.description}",
+            f"File Path: {finding.file_path}",
         ]
         return "\n".join(content)
     
@@ -79,15 +80,23 @@ class FindingDeduplication:
         Returns:
             Similarity score as a float between 0 and 1
         """
-        # Look for a floating point number in the response
-        match = re.search(r'(\d+\.\d+|\d+)', response)
+        # Look for a floating point number at the end of the response
+        # This helps avoid picking up other numbers in the explanation
+        match = re.search(r'(\d+\.\d+|\d+)\s*$', response)
         if match:
-            score = float(match.group(0))
+            score = float(match.group(1))
             # Ensure score is between 0 and 1
             return min(max(score, 0.0), 1.0)
-        else:
-            # Default to 0 if no number found
-            return 0.0
+        
+        # Look for any decimal number if the end-of-string match fails
+        match = re.search(r'(\d+\.\d+|\d+)', response)
+        if match:
+            score = float(match.group(1))
+            # Ensure score is between 0 and 1
+            return min(max(score, 0.0), 1.0)
+        
+        # Default to 0 if no number found
+        return 0.0
             
     def _extract_explanation(self, response: str) -> str:
         """
@@ -167,19 +176,19 @@ class FindingDeduplication:
             print(f"Error getting agent findings: {str(e)}")
             return []
     
-    async def process_findings(self, input_data: FindingInput) -> Dict[str, Any]:
+    async def process_findings(self, agent_id: str, input_data: FindingInput) -> Dict[str, Any]:
         """
         Process a batch of new findings, detect duplicates and mark them as already reported.
         Only compares with non-duplicate findings from the same agent.
         
         Args:
-            input_data: FindingInput containing task_id, agent_id and a list of findings
+            agent_id: Agent identifier
+            input_data: FindingInput containing task_id and a list of findings
             
         Returns:
             Statistics about processed findings
         """
         task_id = input_data.task_id
-        agent_id = input_data.agent_id
         new_findings = input_data.findings
         
         if not new_findings:

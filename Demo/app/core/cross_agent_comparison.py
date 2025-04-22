@@ -222,40 +222,6 @@ class CrossAgentComparison:
         
         return results
     
-    async def process_new_findings(self, task_id: str, agent_id: str, 
-                                 new_findings: List[FindingInput]) -> Dict[str, Any]:
-        """
-        Process new findings from an agent through self-deduplication and cross-agent comparison.
-        
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier
-            new_findings: List of new findings to process
-            
-        Returns:
-            Complete processing results
-        """
-        # Step 1: Self-deduplication - use existing instance
-        dedup_results = await self.deduplication.process_findings(task_id, agent_id, new_findings)
-        
-        # Get created non-duplicate findings
-        non_duplicate_findings = []
-        for title in dedup_results.get("new_titles", []):
-            finding = await self.mongodb.get_finding(task_id, title)
-            if finding:
-                non_duplicate_findings.append(finding)
-        
-        # Step 2: Cross-agent comparison
-        comparison_results = await self.compare_with_other_agents(
-            task_id, agent_id, non_duplicate_findings
-        )
-        
-        # Combine results
-        return {
-            "deduplication": dedup_results,
-            "cross_comparison": comparison_results
-        }
-    
     async def perform_final_evaluation(self, task_id: str, title: str, 
                                      status: Status, category: Optional[str], 
                                      evaluated_severity: Optional[EvaluatedSeverity], 

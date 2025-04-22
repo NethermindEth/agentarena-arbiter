@@ -156,6 +156,7 @@ class FindingEvaluator:
             "title": finding.title,
             "description": finding.description,
             "severity": finding.severity,
+            "file_path": finding.file_path,
         }
         
         # Run evaluation chain
