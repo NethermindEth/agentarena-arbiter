@@ -119,7 +119,8 @@ curl -X POST http://localhost:8000/process_findings \
       {
         "title": "Integer Overflow",
         "description": "Function X is vulnerable to integer overflow",
-        "severity": "HIGH"
+        "severity": "HIGH",
+        "file_paths": ["contracts/Contract.sol", "contracts/Token.sol"]
       }
     ]
   }'
@@ -137,11 +138,11 @@ curl http://localhost:8000/tasks/test-task-1/findings | python -m json.tool
 class Finding(BaseModel):
     title: str
     description: str
-    severity: Severity  # Enum: HIGH or MEDIUM
+    severity: Severity  # Enum: HIGH, MEDIUM, LOW, INFO
+    file_paths: List[str]
 
 class FindingInput(BaseModel):
     task_id: str
-    agent_id: str
     findings: List[Finding]
 ```
 
@@ -160,9 +161,18 @@ class FindingDB(Finding):
 
 ## Configuration
 
+- `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: API key for Claude AI model
 - `CLAUDE_MODEL`: Model version to use (default: claude-3-opus-20240229)
+- `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
+- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
+- `DEBUG`: Enable debug mode (default: true)
 - `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
+- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
+- `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
+- `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from Agent4rena backend
+- `BACKEND_API_KEY`: API key for Agent4rena backend
+- `TASK_ID`: Task ID from Agent4rena backend
 
 ## API Endpoints
 
