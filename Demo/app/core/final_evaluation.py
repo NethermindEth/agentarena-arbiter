@@ -15,6 +15,7 @@ from langchain.chains import LLMChain
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 from app.core.cross_agent_comparison import CrossAgentComparison
+from app.core.claude_model import create_claude_model
 
 class FindingEvaluator:
     """
@@ -40,17 +41,8 @@ class FindingEvaluator:
         Returns:
             LLMChain configured to evaluate findings
         """
-        # Get API key directly from environment
-        api_key = os.getenv("CLAUDE_API_KEY")
-        if not api_key:
-            raise ValueError("CLAUDE_API_KEY environment variable is not set")
-        
-        # Initialize Claude model
-        model = ChatAnthropic(
-            model="claude-3-opus-20240229",
-            anthropic_api_key=api_key,
-            temperature=0
-        )
+        # Initialize Claude model using centralized configuration
+        model = create_claude_model()
         
         # Create evaluation prompt template focused on smart contract vulnerabilities
         evaluation_template = """
