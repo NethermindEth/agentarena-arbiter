@@ -156,7 +156,7 @@ class FindingEvaluator:
             "title": finding.title,
             "description": finding.description,
             "severity": finding.severity,
-            "file_path": finding.file_path,
+            "file_paths": finding.file_paths,
         }
         
         # Run evaluation chain
@@ -183,8 +183,8 @@ class FindingEvaluator:
         """
         if not evaluation_result["is_valid"]:
             status = Status.DISPUTED
-            evaluated_severity = None  
-            category = None  
+            evaluated_severity = None
+            category = None
         else:
             status = Status.UNIQUE_VALID
             evaluated_severity = evaluation_result["evaluated_severity"]

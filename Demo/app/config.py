@@ -19,13 +19,10 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 # Finding deduplication settings
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.8))
 
-# External results endpoint
+# Agent4rena Backend Configuration
 BACKEND_FINDINGS_ENDPOINT = os.getenv("BACKEND_FINDINGS_ENDPOINT")
+BACKEND_FILES_ENDPOINT = os.getenv("BACKEND_FILES_ENDPOINT")
+BACKEND_AGENTS_ENDPOINT = os.getenv("BACKEND_AGENTS_ENDPOINT")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
 
-# External files endpoint
-BACKEND_FILES_ENDPOINT = os.getenv("BACKEND_FILES_ENDPOINT")
 TASK_ID = os.getenv("TASK_ID")
-
-# External agents endpoint
-BACKEND_AGENTS_ENDPOINT = os.getenv("BACKEND_AGENTS_ENDPOINT")
