@@ -13,7 +13,7 @@ from langchain.chains import LLMChain
 load_dotenv()
 
 # Default values
-DEFAULT_MODEL = "claude-3-opus-20240229"
+DEFAULT_MODEL = "claude-3-7-sonnet-latest"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 1000
 
