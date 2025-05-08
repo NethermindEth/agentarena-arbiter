@@ -37,13 +37,13 @@ async def test_process_findings():
             Finding(
                 title="Reentrancy Vulnerability in Withdraw Function",
                 description="The withdraw() function does not follow the checks-effects-interactions pattern and is vulnerable to reentrancy attacks, potentially allowing attackers to drain funds from the contract.",
-                file_path="contracts/Contract.sol",
+                file_paths=["contracts/Contract.sol"],
                 severity=Severity.HIGH
             ),
             Finding(
                 title="Unsafe External Call without Return Value Check",
                 description="The contract makes external calls without checking return values, which could lead to silent failures and unintended consequences in the contract's execution flow.",
-                file_path="contracts/Contract.sol",
+                file_paths=["contracts/Contract.sol"],
                 severity=Severity.MEDIUM
             )
         ]
@@ -126,13 +126,13 @@ async def test_process_findings():
                 title="Reentrancy Vulnerability in Withdraw Function",  # Duplicate title
                 description="The withdraw function is susceptible to reentrancy attacks due to state changes after external calls.",
                 severity=Severity.HIGH,
-                file_path="contracts/Contract.sol"
+                file_paths=["contracts/Contract.sol"]
             ),
             Finding(
                 title="Integer Overflow in Token Transfer",  # New finding
                 description="The token transfer function doesn't use SafeMath or Solidity 0.8+ built-in overflow checks, potentially allowing attackers to manipulate balances.",
                 severity=Severity.HIGH,
-                file_path="contracts/Contract.sol"
+                file_paths=["contracts/Contract.sol", "contracts/Token.sol"]
             )
         ]
         
@@ -208,13 +208,13 @@ async def test_process_findings():
                 title="Withdraw Function Reentrancy Issue",  # Similar to existing but different title
                 description="I found a reentrancy vulnerability in the withdraw function that allows attackers to repeatedly withdraw funds.",
                 severity=Severity.MEDIUM,  # Different severity
-                file_path="contracts/Contract.sol"
+                file_paths=["contracts/Contract.sol"]
             ),
             Finding(
                 title="SQL Injection in Contract Data Storage",  # New finding that should be disputed
                 description="The smart contract is vulnerable to SQL injection attacks when storing user input in its database, potentially allowing attackers to execute arbitrary SQL commands.",
                 severity=Severity.HIGH,
-                file_path="contracts/Contract.sol"
+                file_paths=["contracts/Contract.sol"]
             )
         ]
         

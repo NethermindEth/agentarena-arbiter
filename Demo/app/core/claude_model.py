@@ -1,21 +1,14 @@
-"""
-Claude model configuration and initialization module.
-Provides functions to create and configure Claude models with parameters from environment variables.
-"""
-import os
 from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+from app.config import CLAUDE_MODEL, CLAUDE_TEMPERATURE, CLAUDE_MAX_TOKENS, CLAUDE_API_KEY
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
-# Load environment variables
-load_dotenv()
 
-# Default values
-DEFAULT_MODEL = "claude-3-7-sonnet-latest"
-DEFAULT_TEMPERATURE = 0.0
-DEFAULT_MAX_TOKENS = 1000
+"""
+Claude model configuration and initialization module.
+Provides functions to create and configure Claude models with parameters from environment variables.
+"""
 
 def get_model_config() -> Dict[str, Any]:
     """
@@ -25,10 +18,10 @@ def get_model_config() -> Dict[str, Any]:
         Dictionary with model configuration parameters
     """
     return {
-        "model_name": os.getenv("CLAUDE_MODEL", DEFAULT_MODEL),
-        "temperature": float(os.getenv("CLAUDE_TEMPERATURE", DEFAULT_TEMPERATURE)),
-        "max_tokens": int(os.getenv("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
-        "anthropic_api_key": os.getenv("CLAUDE_API_KEY")
+        "model_name": CLAUDE_MODEL,
+        "temperature": CLAUDE_TEMPERATURE,
+        "max_tokens": CLAUDE_MAX_TOKENS,
+        "anthropic_api_key": CLAUDE_API_KEY
     }
 
 def create_claude_model(

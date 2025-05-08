@@ -66,7 +66,7 @@ class FindingDeduplication:
         content = [
             f"Title: {finding.title}",
             f"Description: {finding.description}",
-            f"File Path: {finding.file_path}",
+            f"File Paths: {', '.join(finding.file_paths)}",
         ]
         return "\n".join(content)
     

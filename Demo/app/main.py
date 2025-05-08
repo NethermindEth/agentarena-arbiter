@@ -3,10 +3,12 @@ Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
 from fastapi import FastAPI, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
-from app.config import BACKEND_AGENTS_ENDPOINT, BACKEND_API_KEY, BACKEND_FILES_ENDPOINT, BACKEND_FINDINGS_ENDPOINT, TASK_ID
 import httpx
 
+from app.models.finding_db import Status
+from app.config import BACKEND_AGENTS_ENDPOINT, BACKEND_API_KEY, BACKEND_FILES_ENDPOINT, BACKEND_FINDINGS_ENDPOINT, TASK_ID
 from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.finding_deduplication import FindingDeduplication
@@ -17,6 +19,19 @@ app = FastAPI(
     title="Security Findings API",
     description="API for managing security findings and deduplication",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Initialize handlers
@@ -33,8 +48,9 @@ async def startup():
     await mongodb.connect()
     print("✅ Connected to MongoDB")
     
+    # TODO: Update to use repository download and task details
     # Fetch and cache file contents
-    await fetch_file_contents()
+    # await fetch_file_contents()
     
     # Fetch and cache agent data
     await fetch_agent_data()
@@ -99,7 +115,7 @@ async def root():
     """Root endpoint."""
     return {"message": "Welcome to the Security Findings API"}
 
-@app.post("/process_findings", response_model=Dict[str, Any])
+@app.post("/process_findings", response_model=Dict[str, int])
 async def process_findings(input_data: FindingInput, x_api_key: str = Header(..., alias="X-API-Key")):
     """
     Submit security findings for processing.
@@ -129,6 +145,8 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # 1. Process findings with deduplication
         dedup_results = await deduplicator.process_findings(agent_id, input_data)
         
+        print(f"Deduplication results: {dedup_results}")
+
         # 1.5. Perform cross-agent comparison for newly added findings
         cross_comparison_results = {}
         if dedup_results['new'] > 0:
@@ -165,13 +183,6 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         
         print(f"Evaluation results: {evaluation_results}")
 
-        # 3. Combine results
-        combined_results = {
-            "deduplication": dedup_results,
-            "cross_comparison": cross_comparison_results,
-            "auto_evaluation": evaluation_results
-        }
-
         # 4. Post results to another endpoint
         try:
             # Fetch all findings for this task to include in the payload
@@ -179,15 +190,23 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
             
             # Format findings data for the external endpoint
             formatted_findings = []
+            summary = { "valid": 0, "already_reported": 0, "disputed": 0 }
             for finding in findings:
                 formatted_findings.append({
                     "title": finding.title,
                     "description": finding.description,
                     "severity": finding.severity,
                     "status": finding.status,
-                    "file_path": finding.file_path
+                    "file_paths": finding.file_paths
                 })
-            
+
+                if finding.status == Status.UNIQUE_VALID or finding.status == Status.SIMILAR_VALID:
+                    summary["valid"] += 1
+                elif finding.status == Status.ALREADY_REPORTED:
+                    summary["already_reported"] += 1
+                elif finding.status == Status.DISPUTED:
+                    summary["disputed"] += 1
+
             # Prepare payload for external endpoint
             payload = {
                 "task_id": input_data.task_id,
@@ -204,13 +223,10 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
             else:
                 print("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
                 
+            return summary
         except Exception as post_error:
             print(f"Error posting results to external endpoint: {str(post_error)}")
-            # Continue execution even if posting fails
-        
-        print(f"Combined results: {combined_results}")
-        
-        return combined_results
+            raise HTTPException(status_code=500, detail=f"Error posting results to external endpoint: {str(post_error)}")
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
