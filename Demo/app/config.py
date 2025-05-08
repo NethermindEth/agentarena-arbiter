@@ -9,7 +9,7 @@ MONGODB_URL = os.getenv("MONGODB_URL")
 
 # Claude API configuration
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-7-sonnet-20250219")
 CLAUDE_TEMPERATURE = float(os.getenv("CLAUDE_TEMPERATURE", 0.0))
 CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", 20000))
 
