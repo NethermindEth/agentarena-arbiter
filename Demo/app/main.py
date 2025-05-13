@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 import httpx
 
 from app.models.finding_db import Status
-from app.config import BACKEND_AGENTS_ENDPOINT, BACKEND_API_KEY, BACKEND_FILES_ENDPOINT, BACKEND_FINDINGS_ENDPOINT, TASK_ID
+from app.config import BACKEND_AGENTS_ENDPOINT, BACKEND_API_KEY, BACKEND_FILES_ENDPOINT, BACKEND_FINDINGS_ENDPOINT, TASK_ID, TESTING
 from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.finding_deduplication import FindingDeduplication
@@ -132,10 +132,13 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # Verify API key and get agent_id from agents_cache
         agent_id = None
         
-        # If agents_cache is empty (no external agents configured), accept any API key for testing
-        if not agents_cache:
+        # Check if testing mode is enabled and agents_cache is empty
+        if TESTING and not agents_cache:
             agent_id = "test-agent"
-            print(f"No agents configured, using test agent_id: {agent_id}")
+            print(f"Testing mode enabled, using test agent_id: {agent_id}")
+        elif not agents_cache:
+            # If not in testing mode and agents_cache is empty, reject the request
+            raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
         else:
             # Verify API key against known agents
             for agent in agents_cache:

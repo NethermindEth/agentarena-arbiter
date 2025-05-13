@@ -12,7 +12,7 @@ services:
       - CLAUDE_TEMPERATURE=${CLAUDE_TEMPERATURE}
       - CLAUDE_MAX_TOKENS=${CLAUDE_MAX_TOKENS}
       - DEBUG=${DEBUG}
-      - TESTING=true
+      - TESTING=${TESTING}
     env_file:
       - .env
     networks:

@@ -87,6 +87,18 @@ docker-compose down
 ### Prerequisites for Testing
 - MongoDB connection (local or Atlas)
 - Claude API key (for automatic evaluation tests)
+- Set `TESTING=true` in your environment variables
+
+### Testing Modes
+The system supports a special testing mode that simplifies API authentication for development and testing:
+
+#### Testing Mode Features
+- When `TESTING=true` and no agents are configured, any API key will be accepted
+- All requests will be attributed to a "test-agent" for easier debugging
+- This makes local development and testing possible without setting up the Agent4rena backend
+
+#### Security Note
+In production environments, make sure `TESTING` is set to `false` or not set at all. When testing mode is disabled and no agents are configured, the API will return a 503 error to prevent unauthorized access.
 
 ### Process Findings Test
 ```bash
