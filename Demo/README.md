@@ -73,9 +73,9 @@ docker-compose ps
 docker-compose logs -f
 ```
 
-The API will be available at http://localhost:8000.
+The API will be available at http://localhost:8004.
 
-**Note:** When running with Docker, the system automatically connects to the MongoDB container. No additional configuration is needed.
+**Note:** When running with Docker, you need to configure the MongoDB connection string in your `.env` file. This allows you to use either a local MongoDB instance or a MongoDB Atlas cluster.
 
 ### Stopping Docker Services
 ```bash
@@ -83,6 +83,10 @@ docker-compose down
 ```
 
 ## Running Tests
+
+### Prerequisites for Testing
+- MongoDB connection (local or Atlas)
+- Claude API key (for automatic evaluation tests)
 
 ### Process Findings Test
 ```bash
@@ -110,11 +114,11 @@ The test confirms the system's ability to:
 
 ### Submit Findings
 ```bash
-curl -X POST http://localhost:8000/process_findings \
+curl -X POST http://localhost:8004/process_findings \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
   -d '{
     "task_id": "test-task-1",
-    "agent_id": "agent-1",
     "findings": [
       {
         "title": "Integer Overflow",
@@ -128,7 +132,7 @@ curl -X POST http://localhost:8000/process_findings \
 
 ### Retrieve Findings
 ```bash
-curl http://localhost:8000/tasks/test-task-1/findings | python -m json.tool
+curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
 ```
 
 ## Data Models
@@ -163,7 +167,7 @@ class FindingDB(Finding):
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: API key for Claude AI model
-- `CLAUDE_MODEL`: Model version to use (default: claude-3-opus-20240229)
+- `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
 - `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
 - `DEBUG`: Enable debug mode (default: true)
