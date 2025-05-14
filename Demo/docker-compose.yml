@@ -4,36 +4,21 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "8004:8004"
     environment:
-      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_URL=${MONGODB_URL}
       - CLAUDE_API_KEY=${CLAUDE_API_KEY}
       - CLAUDE_MODEL=${CLAUDE_MODEL}
       - CLAUDE_TEMPERATURE=${CLAUDE_TEMPERATURE}
       - CLAUDE_MAX_TOKENS=${CLAUDE_MAX_TOKENS}
       - DEBUG=${DEBUG}
+      - TESTING=${TESTING}
     env_file:
       - .env
-    depends_on:
-      - mongodb
-    networks:
-      - app-network
-    restart: unless-stopped
-
-  mongodb:
-    image: mongo:latest
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
     networks:
       - app-network
     restart: unless-stopped
 
 networks:
   app-network:
-    driver: bridge
-
-volumes:
-  mongodb_data:
-    driver: local 
+    driver: bridge 

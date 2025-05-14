@@ -15,6 +15,7 @@ CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", 20000))
 
 # Application settings
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+TESTING = os.getenv("TESTING", "false").lower() == "true"
 
 # Finding deduplication settings
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.8))
