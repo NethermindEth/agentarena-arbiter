@@ -2,6 +2,7 @@
 Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
+import json
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
@@ -207,7 +208,8 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
                     "description": finding.description,
                     "severity": finding.severity,
                     "status": finding.status,
-                    "file_paths": finding.file_paths
+                    "file_paths": finding.file_paths,
+                    "created_at": finding.created_at.isoformat()
                 })
 
                 if finding.status == Status.UNIQUE_VALID or finding.status == Status.SIMILAR_VALID:
@@ -228,8 +230,10 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
             external_endpoint = BACKEND_FINDINGS_ENDPOINT
             if external_endpoint:
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(external_endpoint, json=payload)
-                    print(f"Posted results to external endpoint: {response.status_code}")
+                    headers = {"X-API-Key": BACKEND_API_KEY}
+                    response = await client.post(external_endpoint, json=payload, headers=headers)
+                    print(f"Response: {response.json()}")
+                    print(f"Status code: {response.status_code}")
             else:
                 print("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
                 

@@ -13,8 +13,8 @@ class Finding(BaseModel):
     """Model representing a single finding"""
     title: str
     description: str
-    file_paths: List[str]
     severity: Severity
+    file_paths: List[str]
 
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""
