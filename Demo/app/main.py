@@ -14,6 +14,13 @@ from app.database.mongodb_handler import mongodb
 from app.core.finding_deduplication import FindingDeduplication
 from app.core.final_evaluation import FindingEvaluator
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+max_findings_per_submission = int(os.getenv("MAX_FINDINGS_PER_SUBMISSION", 20))
+
 # Initialize FastAPI
 app = FastAPI(
     title="Security Findings API",
@@ -129,6 +136,13 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         Processing results with statistics and evaluation results
     """
     try:
+        # Limit the number of findings per submission
+        if len(input_data.findings) > max_findings_per_submission:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Submission contains too many findings. Maximum allowed: {max_findings_per_submission} findings per submission."
+            )
+            
         # Verify API key and get agent_id from agents_cache
         agent_id = None
         

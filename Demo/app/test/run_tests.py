@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 # Import test modules
 from app.test.test_process_findings import test_process_findings
+from app.test.test_max_findings_limit import test_max_findings_limit
 
 async def run_all_tests():
     """Run all test functions in sequence."""
@@ -26,6 +27,12 @@ async def run_all_tests():
     print("TEST : PROCESS FINDINGS API")
     print("=" * 40)
     await test_process_findings()
+    
+    # Test: Maximum findings limit
+    print("\n\n" + "=" * 40)
+    print("TEST : MAXIMUM FINDINGS LIMIT")
+    print("=" * 40)
+    await test_max_findings_limit()
     
     print("\n\n" + "=" * 40)
     print("ALL TESTS COMPLETED")
