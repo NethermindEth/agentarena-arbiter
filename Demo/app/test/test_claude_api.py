@@ -5,7 +5,9 @@ import os
 import asyncio
 import sys
 from pathlib import Path
-from dotenv import load_dotenv, find_dotenv
+
+# Import config directly instead of using dotenv
+from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, CLAUDE_TEMPERATURE, CLAUDE_MAX_TOKENS
 
 # Import Claude API client
 try:
@@ -23,16 +25,10 @@ except ImportError:
 async def test_claude_api():
     """Test the Claude API connection with the configured API key."""
     try:
-        # Load environment variables
-        dotenv_path = find_dotenv()
-        if dotenv_path:
-            load_dotenv(dotenv_path, override=True)
-            print(f"📂 Loaded .env from: {dotenv_path}")
-        
-        # Get API key
-        api_key = os.getenv("CLAUDE_API_KEY", "").strip()
+        # Get API key from config
+        api_key = CLAUDE_API_KEY
         if not api_key:
-            print("❌ CLAUDE_API_KEY not found in environment variables")
+            print("❌ CLAUDE_API_KEY not found in configuration")
             return False
         
         # Basic validation
@@ -42,6 +38,7 @@ async def test_claude_api():
             
         masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "[too short]"
         print(f"🔑 Using API key: {masked_key}")
+        print(f"🤖 Using model: {CLAUDE_MODEL}")
         
         # Test API using available client
         if USING_LANGCHAIN:
@@ -57,9 +54,9 @@ async def test_with_langchain(api_key):
     """Test with LangChain Anthropic integration."""
     try:
         client = ChatAnthropic(
-            model="claude-3-opus-20240229",
+            model=CLAUDE_MODEL,
             anthropic_api_key=api_key,
-            temperature=0
+            temperature=CLAUDE_TEMPERATURE
         )
         
         print("🔄 Testing with LangChain...")
@@ -83,8 +80,8 @@ async def test_with_anthropic(api_key):
         
         print("🔄 Testing with Anthropic SDK...")
         message = await client.messages.create(
-            model="claude-3-opus-20240229",
-            max_tokens=100,
+            model=CLAUDE_MODEL,
+            max_tokens=CLAUDE_MAX_TOKENS,
             messages=[{"role": "user", "content": "Hello, please respond with the word 'Working'"}]
         )
         

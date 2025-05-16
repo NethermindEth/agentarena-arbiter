@@ -7,14 +7,15 @@ import httpx
 import traceback
 from app.models.finding_input import FindingInput, Finding, Severity
 from app.database.mongodb_handler import mongodb
+from app.config import TESTING, MAX_FINDINGS_PER_SUBMISSION
 
-# API base URL
+# API base URL - this could be moved to a config file too
 BASE_URL = "http://localhost:8004"
 # API key for authentication
 API_KEY = "test-api-key"
 
 async def test_max_findings_limit():
-    """Test that submissions with more than 20 findings are rejected with a 400 error."""
+    """Test that submissions with more than MAX_FINDINGS_PER_SUBMISSION findings are rejected with a 400 error."""
     try:
         # Connect to MongoDB for cleanup (optional)
         await mongodb.connect()
@@ -22,12 +23,12 @@ async def test_max_findings_limit():
 
         task_id = "test-max-findings-limit"
         
-        # SCENARIO: Submission with 21 findings (should be rejected)
-        print("\n📋 SCENARIO: Submission with 21 findings (should be rejected)")
+        # SCENARIO: Submission with too many findings (should be rejected)
+        print(f"\n📋 SCENARIO: Submission with {MAX_FINDINGS_PER_SUBMISSION + 1} findings (should be rejected)")
         
-        # Create 21 findings
+        # Create MAX_FINDINGS_PER_SUBMISSION + 1 findings
         findings_invalid = []
-        for i in range(21):
+        for i in range(MAX_FINDINGS_PER_SUBMISSION + 1):
             findings_invalid.append(
                 Finding(
                     title=f"Test Finding {i+1}",
@@ -61,7 +62,7 @@ async def test_max_findings_limit():
                 if response.status_code == 400:
                     print(f"✅ Submission with {len(findings_invalid)} findings was rejected as expected")
                     print(f"Error message: {response.json()['detail']}")
-                    assert "Maximum allowed: 20 findings" in response.text, "Expected error message about maximum findings"
+                    assert f"Maximum allowed: {MAX_FINDINGS_PER_SUBMISSION} findings" in response.text, "Expected error message about maximum findings"
                 else:
                     print(f"❌ Submission with {len(findings_invalid)} findings was accepted unexpectedly")
                     print(f"Response text: {response.text}")
