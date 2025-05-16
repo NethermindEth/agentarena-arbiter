@@ -10,6 +10,7 @@ from datetime import datetime
 from app.database.mongodb_handler import mongodb
 from app.models.finding_input import FindingInput, Finding, Severity
 from app.models.finding_db import Status
+from app.config import TESTING, MAX_FINDINGS_PER_SUBMISSION
 
 # API base URL
 BASE_URL = "http://localhost:8004"
@@ -152,7 +153,7 @@ async def test_process_findings():
                     # Verify second batch results
                     # We expect at least one already_reported due to the duplicate
                     assert result.get("already_reported", 0) >= 1, "At least one already_reported finding expected in second batch"
-                    
+                        
                     print(f"  Valid findings: {result.get('valid', 'N/A')}")
                     print(f"  Already reported: {result.get('already_reported', 'N/A')}")
                     print(f"  Disputed: {result.get('disputed', 'N/A')}")

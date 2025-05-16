@@ -27,3 +27,6 @@ BACKEND_AGENTS_ENDPOINT = os.getenv("BACKEND_AGENTS_ENDPOINT")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
 
 TASK_ID = os.getenv("TASK_ID")
+
+# Finding submission settings
+MAX_FINDINGS_PER_SUBMISSION = int(os.getenv("MAX_FINDINGS_PER_SUBMISSION", 20))

@@ -13,6 +13,7 @@ services:
       - CLAUDE_MAX_TOKENS=${CLAUDE_MAX_TOKENS}
       - DEBUG=${DEBUG}
       - TESTING=${TESTING}
+      - MAX_FINDINGS_PER_SUBMISSION=${MAX_FINDINGS_PER_SUBMISSION}
     env_file:
       - .env
     networks:
@@ -21,4 +22,4 @@ services:
 
 networks:
   app-network:
-    driver: bridge 
+    driver: bridge

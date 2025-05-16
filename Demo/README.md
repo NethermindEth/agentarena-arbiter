@@ -183,12 +183,14 @@ class FindingDB(Finding):
 - `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
 - `DEBUG`: Enable debug mode (default: true)
+- `TESTING`: Enable testing mode (default: true)
 - `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
 - `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
 - `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from Agent4rena backend
 - `BACKEND_API_KEY`: API key for Agent4rena backend
 - `TASK_ID`: Task ID from Agent4rena backend
+- `MAX_FINDINGS_PER_SUBMISSION`: Maximum findings for one submission
 
 ## API Endpoints
 
