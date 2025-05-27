@@ -9,6 +9,8 @@ from typing import Dict, Any, List
 import httpx
 import shutil
 import os
+from datetime import datetime
+
 from app.models.finding_db import Status
 from app.config import config, Settings
 from app.models.finding_input import FindingInput
@@ -260,12 +262,36 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
 
         # 4. Post results to another endpoint
         try:
-            # Fetch all findings for this task to include in the payload
-            findings = await mongodb.get_agent_findings(input_data.task_id, agent_id)
+            # Get the timestamp of the last sync (will be None if not found)
+            last_sync_key = f"last_sync_{input_data.task_id}_{agent_id}"
+            last_sync = await mongodb.get_metadata(last_sync_key)
+            last_sync_time = last_sync.get("timestamp") if last_sync else None
+            
+            # Fetch findings created after the last sync time
+            if last_sync_time:
+                # Get findings created after the last sync
+                findings = await mongodb.get_agent_findings_since(
+                    input_data.task_id, 
+                    agent_id, 
+                    last_sync_time
+                )
+                print(f"Found {len(findings)} new findings since last sync at {last_sync_time}")
+            else:
+                # If there's no last sync time, get all findings
+                findings = await mongodb.get_agent_findings(input_data.task_id, agent_id)
+                print(f"No previous sync found. Syncing all {len(findings)} findings")
             
             # Format findings data for the external endpoint
             formatted_findings = []
             summary = { "valid": 0, "already_reported": 0, "disputed": 0 }
+            
+            # Skip if there are no findings to sync
+            if not findings:
+                print("No new findings to sync with external endpoint")
+                return summary
+                
+            current_sync_time = datetime.utcnow()
+            
             for finding in findings:
                 formatted_findings.append({
                     "title": finding.title,
@@ -298,8 +324,18 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
                     response = await client.post(external_endpoint, json=payload, headers=headers)
                     logger.info(f"Response: {response.json()}")
                     logger.info(f"Status code: {response.status_code}")
+                    
+                    # If successful, update the last sync timestamp
+                    if response.status_code == 200:
+                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                        logger.info(f"Updated last sync timestamp to {current_sync_time}")
             else:
-                logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
+                # If external API is not configured but in testing mode, still update timestamp
+                if config.testing:
+                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                    logger.info(f"TESTING MODE: No external API configured, but updated sync timestamp to {current_sync_time}")
+                else:
+                    logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
                 
             return summary
         except Exception as post_error:
