@@ -49,13 +49,12 @@
 
 #### Local Setup
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Navigate to Demo directory and activate virtual environment
+cd Demo
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
-cd Demo
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Start Application
 python -m app.main
