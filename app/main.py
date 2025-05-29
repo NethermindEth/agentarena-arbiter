@@ -202,19 +202,15 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # Verify API key and get agent_id from agents_cache
         agent_id = None
         
-        # Check if testing mode is enabled and agents_cache is empty
-        if config.testing and not agents_cache:
-            agent_id = "test-agent"
-            logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
-        elif not agents_cache:
-            # If not in testing mode and agents_cache is empty, reject the request
+        # Check if agents_cache is empty
+        if not agents_cache:
             raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
-        else:
-            # Verify API key against known agents
-            for agent in agents_cache:
-                if agent.get("api_key") == x_api_key:
-                    agent_id = agent.get("agent_id")
-                    break
+        
+        # Verify API key against known agents
+        for agent in agents_cache:
+            if agent.get("api_key") == x_api_key:
+                agent_id = agent.get("agent_id")
+                break
 
         if not agent_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
@@ -333,12 +329,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
                         await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
                         logger.info(f"Updated last sync timestamp to {current_sync_time}")
             else:
-                # If external API is not configured but in testing mode, still update timestamp
-                if config.testing:
-                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                    logger.info(f"TESTING MODE: No external API configured, but updated sync timestamp to {current_sync_time}")
-                else:
-                    logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
+                logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
                 
             return summary
         except Exception as post_error:

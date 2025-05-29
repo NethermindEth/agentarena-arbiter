@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     claude_temperature: float = Field(0.0, env="CLAUDE_TEMPERATURE")
     claude_max_tokens: int = Field(20000, env="CLAUDE_MAX_TOKENS")
     debug: bool = Field(False, env="DEBUG")
-    testing: bool = Field(False, env="TESTING")
     similarity_threshold: float = Field(0.8, env="SIMILARITY_THRESHOLD")
     backend_findings_endpoint: str = Field(..., env="BACKEND_FINDINGS_ENDPOINT")
     backend_task_repository_endpoint: str = Field(..., env="BACKEND_TASK_REPOSITORY_ENDPOINT")
