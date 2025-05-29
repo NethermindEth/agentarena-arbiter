@@ -131,14 +131,19 @@ class FindingDeduplication:
             content2 = self.get_finding_content(finding2)
             
             # Run similarity chain
-            response_dict = await self.similarity_chain.ainvoke({"finding1": content1, "finding2": content2})
-            response = response_dict["similarity"]  # Extract the response string from output_key
+            response = await self.similarity_chain.ainvoke({"finding1": content1, "finding2": content2})
+            
+            # For RunnableSequence (prompt | model), the response is directly the model output
+            if hasattr(response, 'content'):
+                response_text = response.content
+            else:
+                response_text = str(response)
             
             # Parse similarity score from response
-            similarity_score = self._parse_similarity_score(response)
+            similarity_score = self._parse_similarity_score(response_text)
             
             # Extract explanation
-            explanation = self._extract_explanation(response)
+            explanation = self._extract_explanation(response_text)
             
             return similarity_score, explanation
         except Exception as e:

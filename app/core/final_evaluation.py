@@ -1,7 +1,6 @@
 """
 Final evaluation module for security findings.
-Evaluates pending findings to determine validity, category, and severity.
-Uses LLM to analyze and categorize security issues.
+Provides functionality to evaluate findings using LLM and update their status.
 """
 import os
 import re
@@ -10,7 +9,7 @@ from datetime import datetime
 
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.runnables import RunnableSequence
 
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
@@ -19,13 +18,12 @@ from app.core.claude_model import create_claude_model
 
 class FindingEvaluator:
     """
-    Handles final evaluation of security findings.
-    Analyzes findings content to determine validity, categorize, and assess severity.
+    Evaluates security findings using LLM analysis.
     """
     
     def __init__(self, mongodb_client=None):
         """
-        Initialize the finding evaluator.
+        Initialize the FindingEvaluator.
         
         Args:
             mongodb_client: MongoDB client instance (uses global instance if None)
@@ -34,12 +32,12 @@ class FindingEvaluator:
         self.cross_comparison = CrossAgentComparison(mongodb_client)
         self.evaluation_chain = self._setup_evaluation_chain()
     
-    def _setup_evaluation_chain(self) -> LLMChain:
+    def _setup_evaluation_chain(self) -> RunnableSequence:
         """
-        Setup LangChain components for finding evaluation.
+        Setup RunnableSequence components for finding evaluation.
         
         Returns:
-            LLMChain configured to evaluate findings
+            RunnableSequence configured to evaluate findings
         """
         # Initialize Claude model using centralized configuration
         model = create_claude_model()
@@ -76,8 +74,8 @@ class FindingEvaluator:
             template=evaluation_template
         )
         
-        # Create and return chain
-        return LLMChain(llm=model, prompt=prompt, output_key="evaluation")
+        # Create and return RunnableSequence (prompt | model)
+        return prompt | model
     
     def _parse_evaluation_result(self, evaluation_text: str) -> Dict[str, Any]:
         """
@@ -152,11 +150,16 @@ class FindingEvaluator:
         }
         
         # Run evaluation chain
-        response_dict = await self.evaluation_chain.ainvoke(eval_input)
-        response = response_dict["evaluation"]  # Extract the response string from output_key
+        response = await self.evaluation_chain.ainvoke(eval_input)
+        
+        # For RunnableSequence (prompt | model), the response is directly the model output
+        if hasattr(response, 'content'):
+            response_text = response.content
+        else:
+            response_text = str(response)
         
         # Parse results
-        evaluation_result = self._parse_evaluation_result(response)
+        evaluation_result = self._parse_evaluation_result(response_text)
         
         return evaluation_result
     
