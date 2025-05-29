@@ -19,7 +19,7 @@ from app.core.finding_deduplication import FindingDeduplication
 from app.core.final_evaluation import FindingEvaluator
 from app.task_utils import fetch_task_details, download_repository, read_and_concatenate_files
 import logging
-from app.types import TaskCache
+from app.schemas import TaskCache
 
 # Initialize logger
 logger = logging.getLogger(__name__)
