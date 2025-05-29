@@ -35,7 +35,7 @@
 ## Setup and Installation
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.9+
 - MongoDB
 - Claude API key
 
@@ -47,17 +47,16 @@
 
 ### Installation
 
-#### Local Setup
+#### Local Setup with uv
 ```bash
-# Navigate to Demo directory and activate virtual environment
-cd Demo
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install dependencies
-python -m pip install -r requirements.txt
+# Install dependencies and create virtual environment
+uv sync
 
 # Start Application
-python -m app.main
+uv run python app/main.py
 ```
 
 #### Docker Setup
@@ -81,46 +80,6 @@ The API will be available at http://localhost:8004.
 ```bash
 docker-compose down
 ```
-
-## Running Tests
-
-### Prerequisites for Testing
-- MongoDB connection (local or Atlas)
-- Claude API key (for automatic evaluation tests)
-- Set `TESTING=true` in your environment variables
-
-### Testing Modes
-The system supports a special testing mode that simplifies API authentication for development and testing:
-
-#### Testing Mode Features
-- When `TESTING=true` and no agents are configured, any API key will be accepted
-- All requests will be attributed to a "test-agent" for easier debugging
-- This makes local development and testing possible without setting up the Agent4rena backend
-
-#### Security Note
-In production environments, make sure `TESTING` is set to `false` or not set at all. When testing mode is disabled and no agents are configured, the API will return a 503 error to prevent unauthorized access.
-
-### Process Findings Test
-```bash
-# For local environment
-python -m app.test.test_process_findings
-
-# For Docker environment
-docker-compose exec api python -m app.test.test_process_findings
-```
-
-This test verifies the complete workflow with three scenarios:
-1. First submission - all new findings
-2. Second submission - mix of duplicate and new findings
-3. Different agent submission - similar and unique findings
-
-The test confirms the system's ability to:
-- Detect duplicates within the same agent's submissions
-- Recognize similar findings across different agents
-- Properly mark findings as disputed when they are invalid
-- Classify findings with appropriate status, category, and severity
-
-**Note:** A valid Claude API key is required to run this test.
 
 ## API Usage
 
@@ -182,8 +141,6 @@ class FindingDB(Finding):
 - `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
 - `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
-- `DEBUG`: Enable debug mode (default: true)
-- `TESTING`: Enable testing mode (default: true)
 - `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
 - `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
