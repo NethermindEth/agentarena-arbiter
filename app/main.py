@@ -3,6 +3,7 @@ Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
@@ -35,11 +36,40 @@ logging.basicConfig(
     ]
 )
 
-# Initialize FastAPI
+# Initialize task cache and agents cache
+task_cache = TaskCache()
+agents_cache = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for FastAPI application."""
+    # Startup
+    try:
+        await mongodb.connect()
+        logger.info("✅ Connected to MongoDB")
+        
+        # Fetch and cache file contents
+        await set_task_cache(config)
+
+        # Fetch and cache agent data
+        await set_agent_data(config)
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        import sys
+        sys.exit(1)  # Exit the application with a non-zero status to indicate an error
+    
+    yield
+    
+    # Shutdown
+    await mongodb.close()
+    logger.info("✅ Disconnected from MongoDB")
+
+# Initialize FastAPI with lifespan
 app = FastAPI(
     title="Security Findings API",
     description="API for managing security findings and deduplication",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -58,27 +88,6 @@ app.add_middleware(
 # Initialize handlers
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
-
-# Initialize task cache
-task_cache = TaskCache()
-agents_cache = []
-
-@app.on_event("startup")
-async def startup():
-    """Connect to MongoDB on startup and fetch initial data."""
-    try:
-        await mongodb.connect()
-        logger.info("✅ Connected to MongoDB")
-        
-        # Fetch and cache file contents
-        await set_task_cache(config)
-
-        # Fetch and cache agent data
-        await set_agent_data(config)
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        import sys
-        sys.exit(1)  # Exit the application with a non-zero status to indicate an error
 
 async def set_task_cache(config: Settings):
     """Fetch file contents from external API and cache in memory."""
@@ -163,12 +172,6 @@ async def set_agent_data(config: Settings):
             logger.info(f"Agent data fetched and cached. Count: {len(agents_cache)}")
         else:
             logger.warning(f"Failed to fetch agent data. Status code: {response.status_code}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Disconnect from MongoDB on shutdown."""
-    await mongodb.close()
-    logger.info("✅ Disconnected from MongoDB")
 
 @app.get("/")
 async def root():
