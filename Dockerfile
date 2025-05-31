@@ -23,13 +23,13 @@ WORKDIR /app
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies
+# Install dependencies using uv
 RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY app/ ./app/
 
-# Create data directory for task caching
+# Create data directory and set ownership
 RUN mkdir -p /app/task_data && chown -R appuser:appuser /app
 
 # Switch to non-root user
@@ -42,5 +42,5 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8004/ || exit 1
 
-# Run the application
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"] 
+# Run the application directly from venv (simple and reliable)
+CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"] 
