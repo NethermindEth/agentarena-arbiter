@@ -1,5 +1,5 @@
 import httpx
-from app.types import TaskResponse
+from app.schemas import TaskResponse
 from app.config import Settings
 import os
 import tempfile

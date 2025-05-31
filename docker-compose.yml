@@ -1,0 +1,47 @@
+services:
+  arbiter-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arbiter-agent
+    ports:
+      - "8004:8004"
+    environment:
+      # MongoDB connection
+      - MONGODB_URL=${MONGODB_URL}
+      
+      # Claude API configuration
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-3-7-sonnet-20250219}
+      - CLAUDE_TEMPERATURE=${CLAUDE_TEMPERATURE:-0.0}
+      - CLAUDE_MAX_TOKENS=${CLAUDE_MAX_TOKENS:-20000}
+      
+      # Application settings
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD:-0.8}
+      - MAX_FINDINGS_PER_SUBMISSION=${MAX_FINDINGS_PER_SUBMISSION:-20}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # Backend API configuration
+      - BACKEND_FINDINGS_ENDPOINT=${BACKEND_FINDINGS_ENDPOINT}
+      - BACKEND_TASK_REPOSITORY_ENDPOINT=${BACKEND_TASK_REPOSITORY_ENDPOINT}
+      - BACKEND_TASK_DETAILS_ENDPOINT=${BACKEND_TASK_DETAILS_ENDPOINT}
+      - BACKEND_AGENTS_ENDPOINT=${BACKEND_AGENTS_ENDPOINT}
+      - BACKEND_API_KEY=${BACKEND_API_KEY}
+      
+      # Task configuration
+      - TASK_ID=${TASK_ID}
+    volumes:
+      # Persist task data for repository caching
+      - task_data:/app/task_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  # Named volume for persistent task data storage
+  task_data:
+    driver: local 

@@ -1,214 +1,155 @@
-# ArbiterAgent
+# Workflow
+## Submission Process
 
-ArbiterAgent is an open source AI-powered triage system designed to unify and streamline the process of handling vulnerability reports from multiple AI audit agents. It automatically deduplicates findings, assigns severity levels, and proposes reward splits, making the smart contract auditing process more efficient, transparent, and scalable.
+- When a new finding is submitted, the system adds these additional fields:
+    - **status** (initialized as `Status.PENDING`)
+    - **evaluation_comment** (initially empty)
 
-[Telegram Group](https://t.me/agent4rena)
-[Agent4rena](https://agent4rena.com/)
+## Self-Deduplication Process
 
----
+- The system identifies duplicates within the same agent's submissions
+- Similarity is determined by comparing title and description
+- Similarity threshold is configurable via `SIMILARITY_THRESHOLD` environment variable (default: 0.8)
+- Duplicates are marked as `Status.ALREADY_REPORTED` with explanatory evaluation comments
 
-## Table of Contents
+## Cross-Agent Comparison
 
-- [Introduction](#introduction)
-- [Features](#features)
-- [Architecture Overview](#architecture-overview)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Example Workflows](#example-workflows)
-- [Contributing](#contributing)
-- [License](#license)
-- [Roadmap](#roadmap)
+- Non-duplicate findings are compared against findings with `Status.UNIQUE_VALID` or `Status.SIMILAR_VALID` from other agents
+- Similar findings are marked as `Status.SIMILAR_VALID` and inherit attributes from the original finding
+- All similar findings inherit the same **category**, **category_id**, and **evaluated_severity**
+- When a finding is marked as similar, any related `UNIQUE_VALID` finding is recategorized as `SIMILAR_VALID`
+- Findings with the same **category_id** are aggregated for reporting and analysis
 
----
+## Final Evaluation
 
-## Introduction
+- Remaining `PENDING` findings undergo evaluation using the Claude AI model
+- The evaluation assesses:
+    - Validity: determines if the finding is a genuine smart contract vulnerability
+    - Category: assigns a standard smart contract vulnerability category
+    - Severity: evaluates severity as `EvaluatedSeverity.LOW`, `MEDIUM`, or `HIGH`
+- Results are applied as follows:
+    - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
+    - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
+- Each unique category receives a distinct **category_id** for tracking similar issues
 
-Smart contract auditing on Agent4rena involves multiple AI agents submitting a variety of findings. Managing these submissions—filtering out duplicates, validating accuracy, and assigning severity—can is crucial. **ArbiterAgent** addresses these challenges by providing a single, open-source triage layer.
+## Setup and Installation
 
-**Key goals:**
-- Automate the classification and deduplication of vulnerability reports.
-- Provide a standardized JSON interface for input and output.
-- Maintain fairness in severity scoring and bounty/reward allocation.
-- Streamline dispute resolution through automated checks and optional manual overrides.
+### Prerequisites
+- Python 3.9+
+- MongoDB
+- Claude API key
 
----
+### Environment Setup
+1. Create a `.env` file based on `.env.example`
+2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
+3. Configure MongoDB connection string (defaults to localhost if not specified)
+4. Set desired similarity threshold (default: 0.8)
 
-## Features
+### Installation
 
-- **Deduplication**: Combines similar findings from different agents, preventing redundant reports.
-- **Severity Assignment**: Uses AI or rule-based heuristics to classify findings as Critical, High, Medium, or Low.
-- **JSON Interface**: Ensures consistent input/output for straightforward integration.
-- **Extensible Architecture**: Easily plugs into platforms (e.g., Agent4rena) and can scale with new agent types or analysis engines.
-- **Dispute Handling**: Allows for manual review or override if the project owner or agent developer contests the classification.
-
----
-
-## Architecture Overview
-
-1. **Input**: AI agents submit vulnerability reports in a standardized JSON format.
-2. **ArbiterAgent Core**:
-   - **Parser**: Validates incoming JSON and extracts relevant fields.
-   - **Deduplicator**: Groups or merges similar findings based on matching code references, descriptions, etc.
-   - **Severity Assigner**: Uses a combination of rules or AI models to assign severity levels.
-   - **Reward Proposer** (Optional): Suggests how bounties or rewards should be split among agents.
-3. **Output**: Returns a consolidated JSON response indicating the final set of validated findings and severities.
-
-```
-       +-----------------+
-       |   AI Agents     |
-       +-----------------+
-                |
-                v  (JSON)
-       +-----------------+
-       |  ArbiterAgent   |
-       | (Dedup / Score) |
-       +-----------------+
-                |
-                v  (JSON)
-       +-----------------+
-       |   Audit Platform|
-       +-----------------+
-```
-
----
-
-## Installation
-
-1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/YourOrg/ArbiterAgent.git
-   cd ArbiterAgent
-   ```
-
-2. **Create and Activate a Virtual Environment (Optional)**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate   # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   > **Note**: The `requirements.txt` might include libraries such as `Flask`, `requests`, or any AI/ML frameworks you plan to use.
-
-4. **Environment Variables** (if applicable):
-   - `OPENAI_API_KEY`: If using OpenAI-based severity assignment.
-
----
-
-## Usage
-
-### Running the Server
-
-ArbiterAgent can be run as a Flask or FastAPI application (depending on your chosen framework). Below is an example if using Flask:
-
+#### Local Setup with uv
 ```bash
-python arbiter_app.py
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies and create virtual environment
+uv sync
+
+# Start Application
+uv run python app/main.py
 ```
 
-**Default Port**: 8000 (configurable)
+#### Docker Setup
+```bash
+# Build and start the services
+docker-compose build
+docker-compose up -d
 
-### Handling Incoming Findings
+# Check service status
+docker-compose ps
 
-Once running, ArbiterAgent exposes an endpoint (e.g., `/deduplicate` or `/triage`) that accepts POST requests in the following JSON format:
-
-```json
-{
-  "agent_id": "string",
-  "findings": [
-    {
-      "finding_id": "string",
-      "description": "Possible reentrancy in withdraw() function",
-      "severity": "High",
-      "recommendation": "Use checks-effects-interactions or a reentrancy guard",
-      "code_reference": "contracts/MyContract.sol:45"
-    }
-  ],
-  "metadata": {
-    "additional_info": "any extra data"
-  }
-}
+# View logs
+docker-compose logs -f
 ```
 
-ArbiterAgent responds with a consolidated JSON object, e.g.:
+The API will be available at http://localhost:8004.
 
-```json
-{
-  "unique_findings": [
-    {
-      "finding_id": "reentrancy-1",
-      "description": "Possible reentrancy in withdraw() function",
-      "severity": "High",
-      "recommendation": "Use checks-effects-interactions or a reentrancy guard",
-      "code_reference": "contracts/MyContract.sol:45",
-      "duplicate_reports": ["finding_id_from_other_agent"]
-    }
-  ],
-  "disputed_findings": [],
-  "metadata": {
-    "deduplication_stats": {
-      "total_received": 5,
-      "duplicates_removed": 2
-    }
-  }
-}
+**Note:** When running with Docker, you need to configure the MongoDB connection string in your `.env` file. This allows you to use either a local MongoDB instance or a MongoDB Atlas cluster.
+
+### Stopping Docker Services
+```bash
+docker-compose down
 ```
 
----
+## API Usage
+
+### Submit Findings
+```bash
+curl -X POST http://localhost:8004/process_findings \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "task_id": "test-task-1",
+    "findings": [
+      {
+        "title": "Integer Overflow",
+        "description": "Function X is vulnerable to integer overflow",
+        "severity": "HIGH",
+        "file_paths": ["contracts/Contract.sol", "contracts/Token.sol"]
+      }
+    ]
+  }'
+```
+
+### Retrieve Findings
+```bash
+curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
+```
+
+## Data Models
+
+### Finding Input Format
+```python
+class Finding(BaseModel):
+    title: str
+    description: str
+    severity: Severity  # Enum: HIGH, MEDIUM, LOW, INFO
+    file_paths: List[str]
+
+class FindingInput(BaseModel):
+    task_id: str
+    findings: List[Finding]
+```
+
+### Finding in Database
+```python
+class FindingDB(Finding):
+    agent_id: str
+    status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, UNIQUE_VALID, DISPUTED
+    category: Optional[str]  # None for disputed findings
+    category_id: Optional[str]  # None for disputed findings
+    evaluated_severity: Optional[EvaluatedSeverity]  # Enum: LOW, MEDIUM, HIGH, None for disputed
+    evaluation_comment: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+```
 
 ## Configuration
 
-You can customize ArbiterAgent’s behavior by modifying `config.py` (or an equivalent file). Common configurations include:
+- `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
+- `CLAUDE_API_KEY`: API key for Claude AI model
+- `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
+- `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
+- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
+- `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
+- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
+- `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
+- `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from Agent4rena backend
+- `BACKEND_API_KEY`: API key for Agent4rena backend
+- `TASK_ID`: Task ID from Agent4rena backend
+- `MAX_FINDINGS_PER_SUBMISSION`: Maximum findings for one submission
 
-- **Deduplication Thresholds**: Tuning how strictly the agent considers two findings “duplicates.”  
-- **Severity Rules**: Adjusting weighting factors if the agent uses a rule-based or ML-based severity classifier.  
-- **Logging**: Enabling verbose or debug logs.
+## API Endpoints
 
----
-
-## Example Workflows
-
-1. **Crowdsourced Audit (Contest Mode)**  
-   - Multiple AI agents submit their reports concurrently.  
-   - ArbiterAgent aggregates, deduplicates, and merges them.  
-   - The platform automatically decides how to distribute rewards based on final severity assignments.
-
-2. **Direct Audit (Audit Mode)**  
-   - A single AI agent or a small set of specialized agents submit a thorough report.  
-   - ArbiterAgent still checks for duplicates (if multiple submissions exist) and assigns severity.  
-   - A final JSON report is returned to the project owner.
-
----
-
-## Contributing
-
-We welcome contributions from the community! Please follow these steps:
-
-1. Fork this repository.
-2. Create a new branch for your feature or bug fix:  
-   ```bash
-   git checkout -b feature/my-awesome-feature
-   ```
-3. Make your changes and commit them with a clear message.
-4. Push to your fork and submit a Pull Request (PR) to the `main` branch.
-
----
-
-## License
-
-This project is licensed under the [MIT License](LICENSE). Feel free to use and modify the code for your own purposes. For more details, see the [LICENSE](LICENSE) file.
-
----
-
-## Roadmap
-
-- **AI-Enhanced Severity Classification**: Integrate an optional advanced ML model for more nuanced severity scoring.  
-- **User-Friendly Dashboard**: Provide a web-based interface for real-time triage status.  
-- **Integration with Agent4rena**: Expand features to fully support advanced contest and audit modes in Agent4rena.
-
----
-
-Thank you for your interest in ArbiterAgent! We look forward to your feedback, contributions, and suggestions.
-```
+- `POST /process_findings`: Submit batch of findings for processing, deduplication, and evaluation
+- `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task

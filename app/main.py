@@ -3,6 +3,7 @@ Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
@@ -19,7 +20,7 @@ from app.core.finding_deduplication import FindingDeduplication
 from app.core.final_evaluation import FindingEvaluator
 from app.task_utils import fetch_task_details, download_repository, read_and_concatenate_files
 import logging
-from app.types import TaskCache
+from app.schemas import TaskCache
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -35,11 +36,40 @@ logging.basicConfig(
     ]
 )
 
-# Initialize FastAPI
+# Initialize task cache and agents cache
+task_cache = TaskCache()
+agents_cache = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for FastAPI application."""
+    # Startup
+    try:
+        await mongodb.connect()
+        logger.info("✅ Connected to MongoDB")
+        
+        # Fetch and cache file contents
+        await set_task_cache(config)
+
+        # Fetch and cache agent data
+        await set_agent_data(config)
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        import sys
+        sys.exit(1)  # Exit the application with a non-zero status to indicate an error
+    
+    yield
+    
+    # Shutdown
+    await mongodb.close()
+    logger.info("✅ Disconnected from MongoDB")
+
+# Initialize FastAPI with lifespan
 app = FastAPI(
     title="Security Findings API",
     description="API for managing security findings and deduplication",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -58,27 +88,6 @@ app.add_middleware(
 # Initialize handlers
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
-
-# Initialize task cache
-task_cache = TaskCache()
-agents_cache = []
-
-@app.on_event("startup")
-async def startup():
-    """Connect to MongoDB on startup and fetch initial data."""
-    try:
-        await mongodb.connect()
-        logger.info("✅ Connected to MongoDB")
-        
-        # Fetch and cache file contents
-        await set_task_cache(config)
-
-        # Fetch and cache agent data
-        await set_agent_data(config)
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        import sys
-        sys.exit(1)  # Exit the application with a non-zero status to indicate an error
 
 async def set_task_cache(config: Settings):
     """Fetch file contents from external API and cache in memory."""
@@ -164,12 +173,6 @@ async def set_agent_data(config: Settings):
         else:
             logger.warning(f"Failed to fetch agent data. Status code: {response.status_code}")
 
-@app.on_event("shutdown")
-async def shutdown():
-    """Disconnect from MongoDB on shutdown."""
-    await mongodb.close()
-    logger.info("✅ Disconnected from MongoDB")
-
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -199,19 +202,15 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # Verify API key and get agent_id from agents_cache
         agent_id = None
         
-        # Check if testing mode is enabled and agents_cache is empty
-        if config.testing and not agents_cache:
-            agent_id = "test-agent"
-            logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
-        elif not agents_cache:
-            # If not in testing mode and agents_cache is empty, reject the request
+        # Check if agents_cache is empty
+        if not agents_cache:
             raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
-        else:
-            # Verify API key against known agents
-            for agent in agents_cache:
-                if agent.get("api_key") == x_api_key:
-                    agent_id = agent.get("agent_id")
-                    break
+        
+        # Verify API key against known agents
+        for agent in agents_cache:
+            if agent.get("api_key") == x_api_key:
+                agent_id = agent.get("agent_id")
+                break
 
         if not agent_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
@@ -330,12 +329,7 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
                         await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
                         logger.info(f"Updated last sync timestamp to {current_sync_time}")
             else:
-                # If external API is not configured but in testing mode, still update timestamp
-                if config.testing:
-                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                    logger.info(f"TESTING MODE: No external API configured, but updated sync timestamp to {current_sync_time}")
-                else:
-                    logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
+                logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
                 
             return summary
         except Exception as post_error:
