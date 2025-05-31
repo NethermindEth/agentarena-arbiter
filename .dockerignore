@@ -1,0 +1,51 @@
+# Git files
+.git
+.gitignore
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env.local
+.env.*.local
+
+# uv cache (but keep uv.lock for Docker builds)
+.uv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+*.md
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Task data (will be created in container)
+task_data/
+
+# Docker files (avoid recursion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp 

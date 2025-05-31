@@ -2,7 +2,6 @@
 name = "arbiter-agent"
 version = "0.1.0"
 description = "An AI agent system for task automation and management"
-readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "fastapi",
