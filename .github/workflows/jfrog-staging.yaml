@@ -27,7 +27,7 @@ jobs:
           echo "DOCKER_IMAGE_TAG=$(git describe --tags --always) >> $GITHUB_OUTPUT"
   arbitrer:
     needs: [base]
-    uses: NethermindEth/github-workflows/.github/workflows/publish-docker.yaml@603b4c48a2a57664df80ac3a5f63361db28966df
+    uses: NethermindEth/github-workflows/.github/workflows/publish-docker.yaml@mario/improve-publish-docker
     with:
       group_name: kyoto
       image_name: agentarena-arbitrer
@@ -37,7 +37,7 @@ jobs:
 
   promote_arbitrer:
     needs: [arbitrer]
-    uses: NethermindEth/github-workflows/.github/workflows/promote-docker.yaml@603b4c48a2a57664df80ac3a5f63361db28966df
+    uses: NethermindEth/github-workflows/.github/workflows/promote-docker.yaml@mario/improve-publish-docker
     with:
       group_name: kyoto
       image_name: agentarena-arbitrer
