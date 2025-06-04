@@ -1,0 +1,56 @@
+name: Build and Push image on jfrog for staging
+
+on:
+  push:
+    branches:
+      - main
+      - feat/ci
+
+env:
+  DOCKER_REGISTRY: nethermind.jfrog.io
+  JFROG_REPOSITORY: kyoto-oci-local-staging
+  AGENT_NAME: agentareana-arbiter
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  push-arbiter-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Verify ORAS version
+        run: oras version
+
+      - name: Login to registry with ORAS
+        run: |
+          oras login ${{ env.DOCKER_REGISTRY }} \
+            -u ${{ secrets.ARTIFACTORY_KYOTO_USERNAME }} \
+            -p ${{ secrets.ARTIFACTORY_KYOTO_TOKEN_DEVELOPER }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Demo
+          platforms: "linux/arm64"
+          push: true
+          file: ./Demo/Dockerfile
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.JFROG_REPOSITORY }}/${{ env.AGENT_NAME }}:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.JFROG_REPOSITORY }}/${{ env.AGENT_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GITHUB_SHA=${{ github.sha }}
