@@ -10,6 +10,7 @@ import httpx
 import shutil
 import os
 from datetime import datetime
+import asyncio  # NEW: for background refresh tasks
 
 from app.models.finding_db import Status
 from app.config import config, Settings
@@ -63,6 +64,12 @@ evaluator = FindingEvaluator()
 task_cache = TaskCache()
 agents_cache = []
 
+# Interval for refreshing caches (in seconds)
+REFRESH_INTERVAL_SECONDS = 600  # 10 minutes
+
+# Keep references to background tasks so we can cancel them on shutdown
+refresh_tasks = []  # type: List[asyncio.Task]
+
 @app.on_event("startup")
 async def startup():
     """Connect to MongoDB on startup and fetch initial data."""
@@ -70,11 +77,34 @@ async def startup():
         await mongodb.connect()
         logger.info("✅ Connected to MongoDB")
         
-        # Fetch and cache file contents
+        # Initial fetch and cache of data
         await set_task_cache(config)
-
-        # Fetch and cache agent data
         await set_agent_data(config)
+
+        # -------------------------------------------------------------
+        # Schedule periodic refreshers so caches stay reasonably fresh
+        # -------------------------------------------------------------
+        async def _periodic_task_cache_refresh():
+            while True:
+                try:
+                    await set_task_cache(config)
+                except Exception as e:
+                    logger.error(f"Error refreshing task cache: {str(e)}")
+                await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+
+        async def _periodic_agent_cache_refresh():
+            while True:
+                try:
+                    await set_agent_data(config)
+                except Exception as e:
+                    logger.error(f"Error refreshing agents cache: {str(e)}")
+                await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+
+        # Start background tasks and store references
+        refresh_tasks.extend([
+            asyncio.create_task(_periodic_task_cache_refresh()),
+            asyncio.create_task(_periodic_agent_cache_refresh())
+        ])
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
         import sys
@@ -167,6 +197,13 @@ async def set_agent_data(config: Settings):
 @app.on_event("shutdown")
 async def shutdown():
     """Disconnect from MongoDB on shutdown."""
+    # Cancel background refresher tasks
+    for task in refresh_tasks:
+        task.cancel()
+    # Wait for cancellation (ignore errors)
+    if refresh_tasks:
+        await asyncio.gather(*refresh_tasks, return_exceptions=True)
+
     await mongodb.close()
     logger.info("✅ Disconnected from MongoDB")
 
