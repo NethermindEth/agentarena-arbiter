@@ -135,8 +135,8 @@ async def set_task_cache(config: Settings):
         return
         
     # Download and extract repository
-    repo_dir = await download_repository(task_repository_url, config)
-    if not repo_dir:
+    repo_dir, temp_dir = await download_repository(task_repository_url, config)
+    if not repo_dir or not temp_dir:
         logger.error(f"Failed to download repository for task {config.task_id}")
         return
     
@@ -153,6 +153,9 @@ async def set_task_cache(config: Settings):
     shutil.copytree(repo_dir, repo_storage_path)
     logger.info(f"Repository for task {config.task_id} stored at {repo_storage_path}")
     
+    # Remove the temporary directory
+    shutil.rmtree(temp_dir)
+
     # Read and concatenate selected files
     concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
     if not concatenated_contracts:

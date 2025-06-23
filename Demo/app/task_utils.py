@@ -33,7 +33,7 @@ async def fetch_task_details(details_url: str, config: Settings) -> TaskResponse
         logger.error(f"Error fetching task details: {str(e)}", exc_info=True)
         return None
 
-async def download_repository(repo_url: str, config: Settings) -> str:
+async def download_repository(repo_url: str, config: Settings) -> tuple[str, str]:
     """
     Download repository ZIP file and extract to a temporary directory.
     
@@ -75,14 +75,14 @@ async def download_repository(repo_url: str, config: Settings) -> str:
                 # If there's only one item and it's a directory, that's our repo root
                 repo_root = os.path.join(extract_dir, contents[0])
                 logger.info(f"Found repository root directory: {contents[0]}")
-                return repo_root
+                return repo_root, temp_dir
             else:
                 # If there are multiple items, use the extract_dir as the root
                 logger.info("Using extracted directory as repository root")
-                return extract_dir
+                return extract_dir, temp_dir
     except Exception as e:
         logger.error(f"Error downloading repository: {str(e)}", exc_info=True)
-        return None
+        return None, None
 
 def read_and_concatenate_files(repo_dir: str, selected_files: list) -> str:
     """
