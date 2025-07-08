@@ -2,8 +2,8 @@
 Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
-import sys
-from fastapi import FastAPI, HTTPException, Header
+import traceback
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
 import httpx
@@ -14,7 +14,7 @@ import asyncio  # NEW: for background refresh tasks
 
 from app.models.finding_db import Status
 from app.config import config, Settings
-from app.models.finding_input import FindingInput
+from app.models.finding_input import Finding, FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.finding_deduplication import FindingDeduplication
 from app.core.final_evaluation import FindingEvaluator
@@ -195,7 +195,7 @@ async def set_agent_data(config: Settings):
             agents_cache = response.json()
             logger.info(f"Agent data fetched and cached. Count: {len(agents_cache)}")
         else:
-            logger.warning(f"Failed to fetch agent data. Status code: {response.status_code}")
+            logger.error(f"Failed to fetch agent data. Status code: {response.status_code}, Response: {response.text}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -215,28 +215,212 @@ async def root():
     """Root endpoint."""
     return {"message": "Welcome to the Security Findings API"}
 
-@app.post("/process_findings", response_model=Dict[str, int])
-async def process_findings(input_data: FindingInput, x_api_key: str = Header(..., alias="X-API-Key")):
+async def process_submitted_findings(
+    task_id: str,
+    agent_id: str,
+    findings: List[Finding]
+):
     """
-    Submit security findings for processing.
-    Performs deduplication, stores the findings, and automatically evaluates new findings.
+    Process submitted findings with deduplication and evaluation.
     
     Args:
-        input_data: Batch of findings with task_id, agent_id and findings list
+        task_id: Task identifier
+        agent_id: Agent identifier
+        findings: List of findings to process
+    """
+    try:
+        logger.info(f"Starting processing of findings for task_id: {task_id}, agent_id: {agent_id}")
+        
+        # 1. Process findings with deduplication
+        dedup_results = await deduplicator.process_findings(task_id, agent_id, findings)
+        logger.debug(f"Deduplication results for task_id: {task_id}, agent_id: {agent_id}: {dedup_results}")
+
+        # 1.5. Perform cross-agent comparison for newly added findings
+        cross_comparison_results = {}
+        if dedup_results['new'] > 0:
+            # Get newly added findings
+            new_findings = []
+            for title in dedup_results.get('new_titles', []):
+                finding = await mongodb.get_finding(task_id, title)
+                if finding:
+                    new_findings.append(finding)
+            
+            # Compare with findings from other agents
+            if new_findings:
+                cross_comparison_results = await evaluator.cross_comparison.compare_with_other_agents(
+                    task_id,
+                    agent_id,
+                    new_findings
+                )
+        
+        logger.debug(f"Cross comparison results for task_id: {task_id}, agent_id: {agent_id}: {cross_comparison_results}")
+
+        # 2. Only perform evaluation if new findings were added and not marked as similar_valid
+        evaluation_results = {}
+        if dedup_results['new'] > 0:
+            # Get pending findings (newly added ones that weren't marked as similar_valid)
+            pending_findings = await evaluator.get_pending_findings(task_id)
+            
+            if pending_findings:
+                # Evaluate all pending findings
+                evaluation_results = await evaluator.evaluate_all_pending(task_id)
+                
+                # Generate summary
+                summary_report = await evaluator.generate_summary_report(task_id)
+                evaluation_results["summary"] = summary_report
+        
+        logger.debug(f"Evaluation results for task_id: {task_id}, agent_id: {agent_id}: {evaluation_results}")
+
+        # 3. Post results to backend endpoint
+        try:
+            # Get the timestamp of the last sync (will be None if not found)
+            last_sync_key = f"last_sync_{task_id}_{agent_id}"
+            last_sync = await mongodb.get_metadata(last_sync_key)
+            last_sync_time = last_sync.get("timestamp") if last_sync else None
+            
+            # Fetch findings created after the last sync time
+            if last_sync_time:
+                # Get findings created after the last sync
+                latest_findings = await mongodb.get_agent_findings_since(
+                    task_id, 
+                    agent_id, 
+                    last_sync_time
+                )
+                logger.info(f"Found {len(latest_findings)} new findings since last sync at {last_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
+            else:
+                # If there's no last sync time, get all findings
+                latest_findings = await mongodb.get_agent_findings(task_id, agent_id)
+                logger.info(f"No previous sync found. Syncing all {len(latest_findings)} findings for task_id: {task_id}, agent_id: {agent_id}")
+
+            # Skip if there are no findings to sync
+            if not latest_findings:
+                logger.info(f"No new findings to sync with backend endpoint for task_id: {task_id}, agent_id: {agent_id}")
+                return
+
+            # Format findings data for the backend endpoint
+            formatted_findings = []
+            summary = { "valid": 0, "already_reported": 0, "disputed": 0 }
+                
+            current_sync_time = datetime.utcnow()
+            
+            for finding in latest_findings:
+                formatted_findings.append({
+                    "title": finding.title,
+                    "description": finding.description,
+                    "severity": finding.severity,
+                    "status": finding.status,
+                    "file_paths": finding.file_paths,
+                    "created_at": finding.created_at.isoformat()
+                })
+
+                if finding.status == Status.UNIQUE_VALID or finding.status == Status.SIMILAR_VALID:
+                    summary["valid"] += 1
+                elif finding.status == Status.ALREADY_REPORTED:
+                    summary["already_reported"] += 1
+                elif finding.status == Status.DISPUTED:
+                    summary["disputed"] += 1
+
+            # Prepare payload for backend endpoint
+            payload = {
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "findings": formatted_findings
+            }
+            
+            # Post to backend endpoint
+            backend_endpoint = config.backend_findings_endpoint
+            if backend_endpoint:
+                async with httpx.AsyncClient() as client:
+                    headers = {"X-API-Key": config.backend_api_key}
+                    response = await client.post(backend_endpoint, json=payload, headers=headers)
+                    logger.debug(f"Backend API response for task_id: {task_id}, agent_id: {agent_id}: {response.json()}")
+                    logger.debug(f"Backend API status code for task_id: {task_id}, agent_id: {agent_id}: {response.status_code}")
+                    
+                    # If successful, update the last sync timestamp
+                    if response.status_code == 200:
+                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                        logger.info(f"Updated last sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
+                    else:
+                        logger.error(f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}")
+            else:
+                # If external API is not configured but in testing mode, still update timestamp
+                if config.testing:
+                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                    logger.info(f"TESTING MODE: No backend API configured, but updated sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
+                else:
+                    logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}")
+            
+            logger.info(f"Background processing completed successfully for task_id: {task_id}, agent_id: {agent_id}")
+            
+        except Exception as post_error:
+            logger.error(f"Error posting results to backend for task_id: {task_id}, agent_id: {agent_id}: {str(post_error)}")
+            
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Error during processing of findings for task_id: {task_id}, agent_id: {agent_id}: {str(e)}")
+        logger.error(f"Traceback for task_id: {task_id}, agent_id: {agent_id}: {error_trace}")
+
+async def post_submission(task_id: str, agent_id: str, findings_count: int):
+    """
+    Post the number of findings being processed to the backend endpoint.
+    
+    Args:
+        task_id: Task identifier
+        agent_id: Agent identifier  
+        findings_count: Number of findings being processed
+    """
+    try:
+        # Check if we have a submissions endpoint configured
+        submissions_endpoint = config.backend_submissions_endpoint
+        if not submissions_endpoint:
+            logger.warning("BACKEND_SUBMISSIONS_ENDPOINT not configured, skipping submission post")
+            return
+            
+        payload = {
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "findings_count": findings_count
+        }
+        
+        async with httpx.AsyncClient() as client:
+            headers = {"X-API-Key": config.backend_api_key}
+            response = await client.post(submissions_endpoint, json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully posted submission: {findings_count} findings for task {task_id}, agent {agent_id}")
+            else:
+                logger.error(f"Failed to post submission. Status code: {response.status_code}, Response: {response.text}")
+                
+    except Exception as e:
+        logger.error(f"Error posting submission to backend: {str(e)}")
+
+@app.post("/process_findings")
+async def process_findings(
+    input_data: FindingInput, 
+    background_tasks: BackgroundTasks,
+    x_api_key: str = Header(..., alias="X-API-Key")
+):
+    """
+    Submit security findings for processing.
+    Validates input and queues findings for background processing with deduplication and evaluation.
+    
+    Args:
+        input_data: Batch of findings with task_id and findings list
+        background_tasks: FastAPI background tasks handler
         x_api_key: API key for authentication
         
     Returns:
-        Processing results with statistics and evaluation results
+        Processing confirmation
     """
     try:
-        # Limit the number of findings per submission
+        # 1. Basic validation
         if len(input_data.findings) > config.max_findings_per_submission:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission."
             )
             
-        # Verify API key and get agent_id from agents_cache
+        # 2. Verify API key and get agent_id from agents_cache
         agent_id = None
         
         # Check if testing mode is enabled and agents_cache is empty
@@ -256,133 +440,29 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         if not agent_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
         
-        # Replace the agent_id from input with the one from the API key
-        logger.info(f"Processing findings for task_id: {input_data.task_id}, agent_id: {agent_id}")
+        logger.info(f"Accepted findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
-        # 1. Process findings with deduplication
-        dedup_results = await deduplicator.process_findings(agent_id, input_data)
+        # 3. Post submission to backend
+        await post_submission(input_data.task_id, agent_id, len(input_data.findings))
         
-        logger.info(f"Deduplication results: {dedup_results}")
-
-        # 1.5. Perform cross-agent comparison for newly added findings
-        cross_comparison_results = {}
-        if dedup_results['new'] > 0:
-            # Get newly added findings
-            new_findings = []
-            for title in dedup_results.get('new_titles', []):
-                finding = await mongodb.get_finding(input_data.task_id, title)
-                if finding:
-                    new_findings.append(finding)
-            
-            # Compare with findings from other agents
-            if new_findings:
-                cross_comparison_results = await evaluator.cross_comparison.compare_with_other_agents(
-                    input_data.task_id,
-                    agent_id,
-                    new_findings
-                )
+        # 4. Queue background processing
+        background_tasks.add_task(
+            process_submitted_findings,
+            input_data.task_id,
+            agent_id,
+            input_data.findings
+        )
         
-        logger.info(f"Cross comparison results: {cross_comparison_results}")
-
-        # 2. Only perform evaluation if new findings were added and not marked as similar_valid
-        evaluation_results = {}
-        if dedup_results['new'] > 0:
-            # Get pending findings (newly added ones that weren't marked as similar_valid)
-            pending_findings = await evaluator.get_pending_findings(input_data.task_id)
-            
-            if pending_findings:
-                # Evaluate all pending findings
-                evaluation_results = await evaluator.evaluate_all_pending(input_data.task_id)
-                
-                # Generate summary
-                summary_report = await evaluator.generate_summary_report(input_data.task_id)
-                evaluation_results["summary"] = summary_report
+        # 5. Return immediate response
+        return {
+            "message": "Findings accepted and queued for processing",
+            "task_id": input_data.task_id,
+            "agent_id": agent_id,
+            "findings_count": len(input_data.findings),
+            "status": "processing"
+        }
         
-        logger.info(f"Evaluation results: {evaluation_results}")
-
-        # 4. Post results to another endpoint
-        try:
-            # Get the timestamp of the last sync (will be None if not found)
-            last_sync_key = f"last_sync_{input_data.task_id}_{agent_id}"
-            last_sync = await mongodb.get_metadata(last_sync_key)
-            last_sync_time = last_sync.get("timestamp") if last_sync else None
-            
-            # Fetch findings created after the last sync time
-            if last_sync_time:
-                # Get findings created after the last sync
-                findings = await mongodb.get_agent_findings_since(
-                    input_data.task_id, 
-                    agent_id, 
-                    last_sync_time
-                )
-                print(f"Found {len(findings)} new findings since last sync at {last_sync_time}")
-            else:
-                # If there's no last sync time, get all findings
-                findings = await mongodb.get_agent_findings(input_data.task_id, agent_id)
-                print(f"No previous sync found. Syncing all {len(findings)} findings")
-            
-            # Format findings data for the external endpoint
-            formatted_findings = []
-            summary = { "valid": 0, "already_reported": 0, "disputed": 0 }
-            
-            # Skip if there are no findings to sync
-            if not findings:
-                print("No new findings to sync with external endpoint")
-                return summary
-                
-            current_sync_time = datetime.utcnow()
-            
-            for finding in findings:
-                formatted_findings.append({
-                    "title": finding.title,
-                    "description": finding.description,
-                    "severity": finding.severity,
-                    "status": finding.status,
-                    "file_paths": finding.file_paths,
-                    "created_at": finding.created_at.isoformat()
-                })
-
-                if finding.status == Status.UNIQUE_VALID or finding.status == Status.SIMILAR_VALID:
-                    summary["valid"] += 1
-                elif finding.status == Status.ALREADY_REPORTED:
-                    summary["already_reported"] += 1
-                elif finding.status == Status.DISPUTED:
-                    summary["disputed"] += 1
-
-            # Prepare payload for external endpoint
-            payload = {
-                "task_id": input_data.task_id,
-                "agent_id": agent_id,
-                "findings": formatted_findings
-            }
-            
-            # Post to external endpoint
-            external_endpoint = config.backend_findings_endpoint
-            if external_endpoint:
-                async with httpx.AsyncClient() as client:
-                    headers = {"X-API-Key": config.backend_api_key}
-                    response = await client.post(external_endpoint, json=payload, headers=headers)
-                    logger.info(f"Response: {response.json()}")
-                    logger.info(f"Status code: {response.status_code}")
-                    
-                    # If successful, update the last sync timestamp
-                    if response.status_code == 200:
-                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                        logger.info(f"Updated last sync timestamp to {current_sync_time}")
-            else:
-                # If external API is not configured but in testing mode, still update timestamp
-                if config.testing:
-                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                    logger.info(f"TESTING MODE: No external API configured, but updated sync timestamp to {current_sync_time}")
-                else:
-                    logger.warning("EXTERNAL_RESULTS_ENDPOINT not configured, skipping external post")
-                
-            return summary
-        except Exception as post_error:
-            logger.error(f"Error posting results to external endpoint: {str(post_error)}")
-            raise HTTPException(status_code=500, detail=f"Error posting results to external endpoint: {str(post_error)}")
     except Exception as e:
-        import traceback
         error_trace = traceback.format_exc()
         logger.error(f"Error processing findings: {str(e)}")
         logger.error(f"Traceback: {error_trace}")

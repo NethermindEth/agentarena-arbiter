@@ -174,22 +174,20 @@ class FindingDeduplication:
             print(f"Error getting agent findings: {str(e)}")
             return []
     
-    async def process_findings(self, agent_id: str, input_data: FindingInput) -> Dict[str, Any]:
+    async def process_findings(self, task_id: str, agent_id: str, findings: List[Finding]) -> Dict[str, Any]:
         """
         Process a batch of new findings, detect duplicates and mark them as already reported.
         Only compares with non-duplicate findings from the same agent.
         
         Args:
+            task_id: Task identifier
             agent_id: Agent identifier
-            input_data: FindingInput containing task_id and a list of findings
+            findings: List of findings to process
             
         Returns:
             Statistics about processed findings
         """
-        task_id = input_data.task_id
-        new_findings = input_data.findings
-        
-        if not new_findings:
+        if not findings:
             return {
                 "total": 0,
                 "duplicates": 0,
@@ -206,7 +204,7 @@ class FindingDeduplication:
             known_findings = list(existing_findings)
             
             results = {
-                "total": len(new_findings),
+                "total": len(findings),
                 "duplicates": 0,
                 "new": 0,
                 "duplicate_titles": [],
@@ -217,7 +215,7 @@ class FindingDeduplication:
             all_processed_findings = []
             
             # Process each finding to determine if it's a duplicate or new
-            for finding in new_findings:
+            for finding in findings:
                 is_duplicate = False
                 similarity_explanation = ""
                 similar_to = None
@@ -278,7 +276,7 @@ class FindingDeduplication:
         except Exception as e:
             print(f"Error processing findings: {str(e)}")
             return {
-                "total": len(new_findings),
+                "total": len(findings),
                 "duplicates": 0,
                 "new": 0,
                 "duplicate_titles": [],

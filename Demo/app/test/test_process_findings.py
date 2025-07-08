@@ -3,14 +3,10 @@ Test script for the process_findings API endpoint functionality.
 Tests the complete vulnerability processing pipeline including deduplication and automatic evaluation.
 """
 import asyncio
-import json
 import httpx
 import traceback
-from datetime import datetime
 from app.database.mongodb_handler import mongodb
 from app.models.finding_input import FindingInput, Finding, Severity
-from app.models.finding_db import Status
-from app.config import TESTING, MAX_FINDINGS_PER_SUBMISSION
 
 # API base URL
 BASE_URL = "http://localhost:8004"
