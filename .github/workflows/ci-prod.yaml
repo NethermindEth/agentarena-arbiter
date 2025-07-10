@@ -1,0 +1,26 @@
+name: Build and Push image on jfrog for prod
+
+on:
+  push:
+    branches: [prod]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  attestations: write
+  contents: read
+
+jobs:
+  push-eliza-bd:
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@1d0525fa740f879a4c9b00678bd3ccc27056e92a
+    with:
+      repo_name: kyoto-oci-local-prod
+      image_name: agentareana-arbiter
+      platforms: "linux/arm64"
+      ignore_trivy: true
+      context: ./Demo
+      dockerfile_path: ./Demo/Dockerfile
+      push: ${{ github.event_name != 'pull_request' }}
