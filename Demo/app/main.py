@@ -3,6 +3,7 @@ Main FastAPI application for security findings management.
 Provides API endpoints for submitting and managing security findings.
 """
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List
@@ -36,25 +37,6 @@ logging.basicConfig(
     ]
 )
 
-# Initialize FastAPI
-app = FastAPI(
-    title="Security Findings API",
-    description="API for managing security findings and deduplication",
-    version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
-)
 
 # Initialize handlers
 deduplicator = FindingDeduplication()
@@ -70,9 +52,10 @@ REFRESH_INTERVAL_SECONDS = 600  # 10 minutes
 # Keep references to background tasks so we can cancel them on shutdown
 refresh_tasks = []  # type: List[asyncio.Task]
 
-@app.on_event("startup")
-async def startup():
-    """Connect to MongoDB on startup and fetch initial data."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events."""
+    # Startup
     try:
         await mongodb.connect()
         logger.info("✅ Connected to MongoDB")
@@ -105,10 +88,45 @@ async def startup():
             asyncio.create_task(_periodic_task_cache_refresh()),
             asyncio.create_task(_periodic_agent_cache_refresh())
         ])
+        
+        yield
+        
+        # Shutdown
+        # Cancel background refresher tasks
+        for task in refresh_tasks:
+            task.cancel()
+        # Wait for cancellation (ignore errors)
+        if refresh_tasks:
+            await asyncio.gather(*refresh_tasks, return_exceptions=True)
+
+        await mongodb.close()
+        logger.info("✅ Disconnected from MongoDB")
+        
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
         import sys
         sys.exit(1)  # Exit the application with a non-zero status to indicate an error
+
+# Initialize FastAPI app after lifespan function definition
+app = FastAPI(
+    title="Security Findings API",
+    description="API for managing security findings and deduplication",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
 
 async def set_task_cache(config: Settings):
     """Fetch file contents from external API and cache in memory."""
@@ -197,18 +215,6 @@ async def set_agent_data(config: Settings):
         else:
             logger.warning(f"Failed to fetch agent data. Status code: {response.status_code}")
 
-@app.on_event("shutdown")
-async def shutdown():
-    """Disconnect from MongoDB on shutdown."""
-    # Cancel background refresher tasks
-    for task in refresh_tasks:
-        task.cancel()
-    # Wait for cancellation (ignore errors)
-    if refresh_tasks:
-        await asyncio.gather(*refresh_tasks, return_exceptions=True)
-
-    await mongodb.close()
-    logger.info("✅ Disconnected from MongoDB")
 
 @app.get("/")
 async def root():
