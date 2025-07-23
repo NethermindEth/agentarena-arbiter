@@ -3,7 +3,7 @@ name: Build and Push image on jfrog for staging
 on:
   push:
     branches:
-      - main
+      - staging
 
 env:
   DOCKER_REGISTRY: nethermind.jfrog.io

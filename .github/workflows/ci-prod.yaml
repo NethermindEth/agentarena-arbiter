@@ -3,7 +3,7 @@ name: Build and Push image on jfrog in prod env
 on:
   push:
     branches:
-      - prod
+      - main
 
 env:
   DOCKER_REGISTRY: nethermind.jfrog.io
