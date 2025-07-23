@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from app.config import config
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.runnables import RunnableSequence
 
 
 """
@@ -73,16 +73,16 @@ def create_claude_model(
 def create_similarity_chain(
     model: Optional[ChatAnthropic] = None,
     prompt_template: Optional[str] = None
-) -> LLMChain:
+) -> RunnableSequence:
     """
-    Create a LangChain for similarity comparison.
+    Create a RunnableSequence for similarity comparison.
     
     Args:
         model: Optional ChatAnthropic model (created from environment if not provided)
         prompt_template: Optional custom prompt template
         
     Returns:
-        Configured LLMChain for similarity comparison
+        Configured RunnableSequence for similarity comparison
     """
     # Create model if not provided
     if not model:
@@ -118,5 +118,5 @@ def create_similarity_chain(
         template=prompt_template
     )
     
-    # Create and return chain
-    return LLMChain(llm=model, prompt=prompt, output_key="similarity") 
+    # Create and return RunnableSequence
+    return prompt | model 

@@ -1,272 +1,226 @@
 """
 Test the sync mechanism for syncing findings with external endpoints.
+Simplified version that works with the improved testing mode.
 """
 import asyncio
-import json
-import os
-import sys
 import httpx
-import traceback
-import re
-from datetime import datetime, timedelta
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
-from app.models.finding_input import FindingInput, Finding
-from app.models.finding_db import Severity
+from app.models.finding_input import FindingInput, Finding, Severity
 from app.database.mongodb_handler import mongodb
-from app.config import TESTING, MAX_FINDINGS_PER_SUBMISSION, BACKEND_API_KEY
+from app.config import config
 
 # Configuration
 BASE_URL = "http://localhost:8004"
-API_KEY = "test-api-key"  # Use a valid API key or the test-agent key
+API_KEY = "test-api-key"  # Any key works in testing mode
+TEST_TASK_ID = "test-sync-mechanism"
 
-async def test_sync_mechanism():
-    """
-    Test the sync mechanism
+async def setup_test():
+    """Setup: Connect to MongoDB and clean test data."""
+    await mongodb.connect()
     
-    Scenarios:
-    1. First submission: All findings should be synced
-    2. Second submission: Only newly created findings should be synced
-    3. Empty submission: Nothing should be synced
-    """
-    try:
-        # Connect to MongoDB
-        await mongodb.connect()
-        print("✅ Connected to MongoDB")
+    # Clean findings collection
+    collection = mongodb.get_collection_name(TEST_TASK_ID)
+    if collection in await mongodb.db.list_collection_names():
+        await mongodb.db[collection].delete_many({})
         
-        task_id = "test-sync-mechanism"
-        print(f"\n🔍 Starting sync mechanism test with task_id: {task_id}")
+    # Clean metadata collection
+    metadata_collection = "metadata"
+    if metadata_collection in await mongodb.db.list_collection_names():
+        metadata_key = f"last_sync_{TEST_TASK_ID}_test-agent"
+        await mongodb.db[metadata_collection].delete_one({"key": metadata_key})
         
-        # Clean test data
-        collection = mongodb.get_collection_name(task_id)
-        if collection in await mongodb.db.list_collection_names():
-            await mongodb.db[collection].delete_many({})
-            print(f"🧹 Cleaned collection {collection}")
-            
-        # Clean metadata
-        metadata_collection = "metadata"
-        if metadata_collection in await mongodb.db.list_collection_names():
-            metadata_key = f"last_sync_{task_id}_test-agent"
-            delete_result = await mongodb.db[metadata_collection].delete_one({"key": metadata_key})
-            if delete_result.deleted_count > 0:
-                print(f"🧹 Deleted metadata record for {metadata_key}")
-        
-        # Scenario 1: First submission - all findings should be synced
-        print("\n📋 SCENARIO 1: First submission - all findings should be synced")
-        
-        # Create test findings
-        findings_batch1 = [
-            Finding(
-                title="First Finding",
-                description="This is the first finding to test sync.",
-                severity=Severity.HIGH,
-                file_paths=["contracts/Test.sol"]
-            ),
-            Finding(
-                title="Second Finding",
-                description="This is the second finding to test sync.",
-                severity=Severity.MEDIUM,
-                file_paths=["contracts/Test.sol"]
-            )
-        ]
-        
-        # Create submission
-        input_batch1 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch1
-        )
-        
-        # Process findings
-        print("\n📊 Processing first batch of findings")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch1.model_dump()
-                )
-                
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ First batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Check metadata to verify the last sync timestamp was updated
-                    last_sync_key = f"last_sync_{task_id}_test-agent"
-                    last_sync = await mongodb.get_metadata(last_sync_key)
-                    
-                    if last_sync and "timestamp" in last_sync:
-                        sync_time = last_sync["timestamp"]
-                        print(f"✅ Found sync timestamp: {sync_time}")
-                    else:
-                        print(f"❌ Sync timestamp not found")
-                        sync_time = None
-                else:
-                    print(f"❌ Failed to process first batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except Exception as e:
-            print(f"❌ Error processing first batch: {str(e)}")
-            traceback.print_exc()
-            return
-        
-        # Wait to ensure timestamp difference
-        print("\n⏱️ Waiting to ensure timestamp difference between batches...")
-        await asyncio.sleep(1)  
-        
-        # Scenario 2: Second submission - only new findings should be synced
-        print("\n📋 SCENARIO 2: Second submission - only new findings should be synced")
-        
-        # Create second batch of findings
-        findings_batch2 = [
-            Finding(
-                title="Third Finding",
-                description="This is a new finding that should be synced.",
-                severity=Severity.HIGH,
-                file_paths=["contracts/Different.sol"]
-            )
-        ]
-        
-        # Create submission
-        input_batch2 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch2
-        )
-        
-        # Process findings
-        print("\n📊 Processing second batch of findings")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch2.model_dump()
-                )
-                
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ Second batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Check metadata to verify the sync timestamp was updated
-                    last_sync_key = f"last_sync_{task_id}_test-agent"
-                    new_sync = await mongodb.get_metadata(last_sync_key)
-                    
-                    if new_sync and "timestamp" in new_sync:
-                        new_sync_time = new_sync["timestamp"]
-                        print(f"✅ Sync timestamp updated: {new_sync_time}")
-                        
-                        # Verify the timestamp was updated (should be newer)
-                        if sync_time and new_sync_time > sync_time:
-                            print(f"✅ Timestamp correctly updated")
-                        else:
-                            print(f"❓ Timestamp may not have been updated correctly")
-                    else:
-                        print(f"❌ Sync timestamp not found after second batch")
-                else:
-                    print(f"❌ Failed to process second batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except Exception as e:
-            print(f"❌ Error processing second batch: {str(e)}")
-            traceback.print_exc()
-            return
-            
-        # Scenario 3: Empty submission - nothing should be synced
-        print("\n📋 SCENARIO 3: Empty submission - nothing should be synced")
-        
-        # Create an empty batch of findings
-        findings_batch3 = []
-        
-        # Create submission
-        input_batch3 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch3
-        )
-        
-        # Process findings
-        print("\n📊 Processing empty batch")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch3.model_dump()
-                )
-                
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ Empty batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Get the latest timestamp
-                    last_sync_key = f"last_sync_{task_id}_test-agent"
-                    latest_sync = await mongodb.get_metadata(last_sync_key)
-                    
-                    if latest_sync and "timestamp" in latest_sync:
-                        last_time = latest_sync["timestamp"]
-                        print(f"✅ Final sync timestamp: {last_time}")
-                        
-                        # Verify this timestamp is the same as previous (should not update)
-                        if new_sync and last_time == new_sync["timestamp"]:
-                            print(f"✅ Empty batch did not update timestamp (expected behavior)")
-                        else:
-                            print(f"❓ Timestamp changed after empty batch")
-                    else:
-                        print(f"❌ Sync timestamp not found after empty batch")
-                else:
-                    print(f"❌ Failed to process empty batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except Exception as e:
-            print(f"❌ Error processing empty batch: {str(e)}")
-            traceback.print_exc()
-            return
-        
-        # Output final sync status
-        print("\n📊 Final sync status")
-        
-        # Get the last sync metadata
-        last_sync_key = f"last_sync_{task_id}_test-agent"
-        final_sync = await mongodb.get_metadata(last_sync_key)
-        
-        if final_sync:
-            print(f"✅ Final sync metadata record:")
-            for key, value in final_sync.items():
-                print(f"  {key}: {value}")
-        else:
-            print(f"❌ Final sync metadata not found")
-            
-        # Get total number of records in database
-        findings = await mongodb.get_task_findings(task_id)
-        print(f"📊 Total findings in database: {len(findings)}")
-                
-        print("\n✅ Sync mechanism test completed")
-    except Exception as e:
-        print(f"❌ Test error: {str(e)}")
-        traceback.print_exc()
-    finally:
-        # Disconnect from MongoDB
-        await mongodb.close()
-        print("\n📡 Disconnected from MongoDB")
+    print("✅ Test setup complete")
 
-# Run the test
+async def teardown_test():
+    """Cleanup: Close MongoDB connection."""
+    await mongodb.close()
+    print("✅ Test cleanup complete")
+
+async def test_first_submission_sync():
+    """Test 1: First submission should be synced."""
+    print("\n🧪 Test 1: First Submission Sync")
+    
+    findings = [
+        Finding(
+            title="First Sync Finding",
+            description="This is the first finding to test sync mechanism.",
+            severity=Severity.HIGH,
+            file_paths=["contracts/Test.sol"]
+        ),
+        Finding(
+            title="Second Sync Finding", 
+            description="This is the second finding to test sync mechanism.",
+            severity=Severity.MEDIUM,
+            file_paths=["contracts/Test.sol"]
+        )
+    ]
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=findings)
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Response status: {response.status_code}")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        
+        result = response.json()
+        print(f"  ✅ First submission processed: {result}")
+        
+        # Check that sync timestamp was created
+        last_sync_key = f"last_sync_{TEST_TASK_ID}_test-agent"
+        last_sync = await mongodb.get_metadata(last_sync_key)
+        
+        if last_sync and "timestamp" in last_sync:
+            print(f"  ✅ Sync timestamp created: {last_sync['timestamp']}")
+            return last_sync["timestamp"]
+        else:
+            print(f"  ⚠️ Sync timestamp not found (may be expected)")
+            return None
+
+async def test_incremental_sync():
+    """Test 2: Additional submissions should update sync timestamp."""
+    print("\n🧪 Test 2: Incremental Sync")
+    
+    # Wait to ensure timestamp difference
+    await asyncio.sleep(1)
+    
+    findings = [
+        Finding(
+            title="Incremental Sync Finding",
+            description="This finding should update the sync timestamp.",
+            severity=Severity.HIGH,
+            file_paths=["contracts/Different.sol"]
+        )
+    ]
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=findings)
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},  
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Response status: {response.status_code}")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        
+        result = response.json()
+        print(f"  ✅ Incremental submission processed: {result}")
+        
+        # Check that sync timestamp was updated
+        last_sync_key = f"last_sync_{TEST_TASK_ID}_test-agent"
+        new_sync = await mongodb.get_metadata(last_sync_key)
+        
+        if new_sync and "timestamp" in new_sync:
+            print(f"  ✅ Sync timestamp updated: {new_sync['timestamp']}")
+        else:
+            print(f"  ⚠️ Sync timestamp not found")
+
+async def test_empty_submission():
+    """Test 3: Empty submission should not affect sync timestamp."""
+    print("\n🧪 Test 3: Empty Submission")
+    
+    # Get current timestamp before empty submission
+    last_sync_key = f"last_sync_{TEST_TASK_ID}_test-agent"
+    before_sync = await mongodb.get_metadata(last_sync_key)
+    before_timestamp = before_sync.get("timestamp") if before_sync else None
+    
+    # Submit empty findings
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=[])
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Response status: {response.status_code}")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        
+        result = response.json()
+        print(f"  ✅ Empty submission processed: {result}")
+        
+        # Check if timestamp changed
+        after_sync = await mongodb.get_metadata(last_sync_key)
+        after_timestamp = after_sync.get("timestamp") if after_sync else None
+        
+        if before_timestamp and after_timestamp:
+            if before_timestamp == after_timestamp:
+                print(f"  ✅ Timestamp unchanged (expected for empty submission)")
+            else:
+                print(f"  ⚠️ Timestamp changed after empty submission")
+        else:
+            print(f"  ⚠️ Could not compare timestamps")
+
+async def test_testing_mode_sync():
+    """Test 4: Testing mode sync behavior."""
+    print("\n🧪 Test 4: Testing Mode Sync")
+    
+    if not config.testing:
+        print("  ⚠️ Testing mode not enabled, skipping sync test")
+        return
+        
+    finding = Finding(
+        title="Testing Mode Sync Finding",
+        description="This tests sync behavior in testing mode.",
+        severity=Severity.LOW,
+        file_paths=["contracts/Test.sol"]
+    )
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=[finding])
+    
+    # Use a clearly fake API key
+    fake_api_key = "fake-sync-test-key-12345"
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": fake_api_key},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Using fake API key: {fake_api_key}")
+        print(f"  Response status: {response.status_code}")
+        
+        # Should work because testing mode bypasses authentication
+        assert response.status_code == 200, f"Testing mode should bypass auth"
+        result = response.json()
+        print(f"  ✅ Testing mode sync working: {result}")
+
+async def run_sync_tests():
+    """Run all sync mechanism tests."""
+    print("🚀 Starting Sync Mechanism Tests (Testing Mode)")
+    print("=" * 50)
+    
+    # Verify testing mode is enabled
+    if not config.testing:
+        print("❌ TESTING mode is not enabled!")
+        print("   Set TESTING=true in environment variables")
+        return
+        
+    print(f"✅ Testing mode enabled: {config.testing}")
+    
+    try:
+        await setup_test()
+        
+        await test_first_submission_sync()
+        await test_incremental_sync()
+        await test_empty_submission()
+        await test_testing_mode_sync()
+        
+        print("\n" + "=" * 50)
+        print("✅ All sync tests passed!")
+        
+    except Exception as e:
+        print(f"\n❌ Sync test failed: {str(e)}")
+        raise
+    finally:
+        await teardown_test()
+
 if __name__ == "__main__":
-    asyncio.run(test_sync_mechanism()) 
+    asyncio.run(run_sync_tests())

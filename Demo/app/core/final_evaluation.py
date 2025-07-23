@@ -10,7 +10,7 @@ from datetime import datetime
 
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.runnables import RunnableSequence
 
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
@@ -34,12 +34,12 @@ class FindingEvaluator:
         self.cross_comparison = CrossAgentComparison(mongodb_client)
         self.evaluation_chain = self._setup_evaluation_chain()
     
-    def _setup_evaluation_chain(self) -> LLMChain:
+    def _setup_evaluation_chain(self) -> RunnableSequence:
         """
         Setup LangChain components for finding evaluation.
         
         Returns:
-            LLMChain configured to evaluate findings
+            RunnableSequence configured to evaluate findings
         """
         # Initialize Claude model using centralized configuration
         model = create_claude_model()
@@ -76,8 +76,8 @@ class FindingEvaluator:
             template=evaluation_template
         )
         
-        # Create and return chain
-        return LLMChain(llm=model, prompt=prompt, output_key="evaluation")
+        # Create and return RunnableSequence
+        return prompt | model
     
     def _parse_evaluation_result(self, evaluation_text: str) -> Dict[str, Any]:
         """
@@ -152,8 +152,8 @@ class FindingEvaluator:
         }
         
         # Run evaluation chain
-        response_dict = await self.evaluation_chain.ainvoke(eval_input)
-        response = response_dict["evaluation"]  # Extract the response string from output_key
+        response_message = await self.evaluation_chain.ainvoke(eval_input)
+        response = response_message.content
         
         # Parse results
         evaluation_result = self._parse_evaluation_result(response)

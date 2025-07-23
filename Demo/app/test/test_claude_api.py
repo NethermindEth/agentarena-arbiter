@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Import config directly instead of using dotenv
-from app.config import CLAUDE_API_KEY, CLAUDE_MODEL, CLAUDE_TEMPERATURE, CLAUDE_MAX_TOKENS
+from app.config import config
 
 # Import Claude API client
 try:
@@ -26,7 +26,7 @@ async def test_claude_api():
     """Test the Claude API connection with the configured API key."""
     try:
         # Get API key from config
-        api_key = CLAUDE_API_KEY
+        api_key = config.claude_api_key
         if not api_key:
             print("❌ CLAUDE_API_KEY not found in configuration")
             return False
@@ -38,7 +38,7 @@ async def test_claude_api():
             
         masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "[too short]"
         print(f"🔑 Using API key: {masked_key}")
-        print(f"🤖 Using model: {CLAUDE_MODEL}")
+        print(f"🤖 Using model: {config.claude_model}")
         
         # Test API using available client
         if USING_LANGCHAIN:
@@ -54,9 +54,9 @@ async def test_with_langchain(api_key):
     """Test with LangChain Anthropic integration."""
     try:
         client = ChatAnthropic(
-            model=CLAUDE_MODEL,
+            model=config.claude_model,
             anthropic_api_key=api_key,
-            temperature=CLAUDE_TEMPERATURE
+            temperature=config.claude_temperature
         )
         
         print("🔄 Testing with LangChain...")
@@ -80,8 +80,8 @@ async def test_with_anthropic(api_key):
         
         print("🔄 Testing with Anthropic SDK...")
         message = await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=CLAUDE_MAX_TOKENS,
+            model=config.claude_model,
+            max_tokens=config.claude_max_tokens,
             messages=[{"role": "user", "content": "Hello, please respond with the word 'Working'"}]
         )
         

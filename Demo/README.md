@@ -35,7 +35,7 @@
 ## Setup and Installation
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.13+
 - MongoDB
 - Claude API key
 
@@ -103,10 +103,10 @@ In production environments, make sure `TESTING` is set to `false` or not set at 
 ### Process Findings Test
 ```bash
 # For local environment
-python -m app.test.test_process_findings
+python -m app.test.test_claude_api
 
 # For Docker environment
-docker-compose exec api python -m app.test.test_process_findings
+docker-compose exec api python -m app.test.test_claude_api
 ```
 
 This test verifies the complete workflow with three scenarios:

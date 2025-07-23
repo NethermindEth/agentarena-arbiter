@@ -131,8 +131,8 @@ class FindingDeduplication:
             content2 = self.get_finding_content(finding2)
             
             # Run similarity chain
-            response_dict = await self.similarity_chain.ainvoke({"finding1": content1, "finding2": content2})
-            response = response_dict["similarity"]  # Extract the response string from output_key
+            response_message = await self.similarity_chain.ainvoke({"finding1": content1, "finding2": content2})
+            response = response_message.content
             
             # Parse similarity score from response
             similarity_score = self._parse_similarity_score(response)

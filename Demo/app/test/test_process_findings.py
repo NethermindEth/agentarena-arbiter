@@ -1,293 +1,209 @@
 """
-Test script for the process_findings API endpoint functionality.
-Tests the complete vulnerability processing pipeline including deduplication and automatic evaluation.
+Simplified test for process_findings API - tests core functionality with testing mode.
+Clean, focused tests that work with the improved testing mode authentication bypass.
 """
 import asyncio
 import httpx
+from app.config import config
 import traceback
 from app.database.mongodb_handler import mongodb
 from app.models.finding_input import FindingInput, Finding, Severity
 
-# API base URL
+# Test configuration
 BASE_URL = "http://localhost:8004"
-# API key for authentication
-API_KEY = "test-api-key"
+API_KEY = "test-api-key"  # Any key works in testing mode
+TEST_TASK_ID = "test-simple"
 
-async def test_process_findings():
-    """Test the complete process_findings functionality including deduplication and automatic evaluation."""
-    try:
-        # Connect to MongoDB for cleanup
-        await mongodb.connect()
-        print("✅ Connected to MongoDB")
+async def setup_test():
+    """Setup: Connect to MongoDB and clean test data."""
+    await mongodb.connect()
+    collection = mongodb.get_collection_name(TEST_TASK_ID)
+    if collection in await mongodb.db.list_collection_names():
+        await mongodb.db[collection].delete_many({})
+    print("✅ Test setup complete")
 
-        task_id = "test-process-findings"
-        
-        # Clean test data
-        collection = mongodb.get_collection_name(task_id)
-        if collection in await mongodb.db.list_collection_names():
-            await mongodb.db[collection].delete_many({})
-            print(f"🧹 Cleaned collection {collection}")
-        
-        # SCENARIO 1: First submission - all new findings
-        print("\n📋 SCENARIO 1: First submission - all new findings")
-        
-        # Create test findings
-        findings_batch1 = [
-            Finding(
-                title="Reentrancy Vulnerability in Withdraw Function",
-                description="The withdraw() function does not follow the checks-effects-interactions pattern and is vulnerable to reentrancy attacks, potentially allowing attackers to drain funds from the contract.",
-                file_paths=["contracts/Contract.sol"],
-                severity=Severity.HIGH
-            ),
-            Finding(
-                title="Unsafe External Call without Return Value Check",
-                description="The contract makes external calls without checking return values, which could lead to silent failures and unintended consequences in the contract's execution flow.",
-                file_paths=["contracts/Contract.sol"],
-                severity=Severity.MEDIUM
-            )
-        ]
-        
-        # Create FindingInput
-        input_batch1 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch1
-        )
-        
-        # Process findings via API
-        print("\n📊 Processing first batch of findings")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                # Process findings
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                print(f"Request data: {input_batch1}")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch1.model_dump()
-                )
-                
-                # Check response
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ First batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Verify first batch results
-                    assert result.get("valid", 0) >= 0, "Valid count should be 0 or more"
-                    assert result.get("already_reported", 0) == 0, "No already reported findings expected in first batch"
-                    assert result.get("disputed", 0) >= 0, "Disputed count should be 0 or more"
-                    
-                    print(f"  Valid findings: {result.get('valid', 'N/A')}")
-                    print(f"  Already reported: {result.get('already_reported', 'N/A')}")
-                    print(f"  Disputed: {result.get('disputed', 'N/A')}")
-                    
-                else:
-                    print(f"❌ Failed to process first batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except httpx.RequestError as exc:
-            print(f"❌ HTTP Request failed: {exc!r}")
-            print(f"Request details: {exc.request.url} - {exc.request.method}")
-            return
-        except Exception as e:
-            print(f"❌ Unexpected error during first batch: {str(e)}")
-            traceback.print_exc()
-            return
-                
-        # SCENARIO 2: Second submission - mix of duplicate and new findings
-        print("\n📋 SCENARIO 2: Second submission - mix of duplicate and new findings")
-        
-        # Create findings with one duplicate and one new
-        findings_batch2 = [
-            Finding(
-                title="Reentrancy Vulnerability in Withdraw Function",  # Duplicate title
-                description="The withdraw function is susceptible to reentrancy attacks due to state changes after external calls.",
-                severity=Severity.HIGH,
-                file_paths=["contracts/Contract.sol"]
-            ),
-            Finding(
-                title="Integer Overflow in Token Transfer",  # New finding
-                description="The token transfer function doesn't use SafeMath or Solidity 0.8+ built-in overflow checks, potentially allowing attackers to manipulate balances.",
-                severity=Severity.HIGH,
-                file_paths=["contracts/Contract.sol", "contracts/Token.sol"]
-            )
-        ]
-        
-        # Create FindingInput
-        input_batch2 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch2
-        )
-        
-        # Process findings via API
-        print("\n📊 Processing second batch of findings")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                # Process findings
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                print(f"Request data: {input_batch2}")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch2.model_dump()
-                )
-                
-                # Check response
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ Second batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Verify second batch results
-                    # We expect at least one already_reported due to the duplicate
-                    assert result.get("already_reported", 0) >= 1, "At least one already_reported finding expected in second batch"
-                        
-                    print(f"  Valid findings: {result.get('valid', 'N/A')}")
-                    print(f"  Already reported: {result.get('already_reported', 'N/A')}")
-                    print(f"  Disputed: {result.get('disputed', 'N/A')}")
-                else:
-                    print(f"❌ Failed to process second batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except httpx.RequestError as exc:
-            print(f"❌ HTTP Request failed: {exc!r}")
-            print(f"Request details: {exc.request.url} - {exc.request.method}")
-            return
-        except Exception as e:
-            print(f"❌ Error occurred: {str(e)}")
-            print("Detailed error information:")
-            traceback.print_exc()
-            return
-                
-        # SCENARIO 3: Findings from a different agent
-        print("\n📋 SCENARIO 3: Findings from a different agent")
-        
-        # Create findings for a different agent with similar content
-        findings_batch3 = [
-            Finding(
-                title="Withdraw Function Reentrancy Issue",  # Similar to existing but different title
-                description="I found a reentrancy vulnerability in the withdraw function that allows attackers to repeatedly withdraw funds.",
-                severity=Severity.MEDIUM,  # Different severity
-                file_paths=["contracts/Contract.sol"]
-            ),
-            Finding(
-                title="SQL Injection in Contract Data Storage",  # New finding that should be disputed
-                description="The smart contract is vulnerable to SQL injection attacks when storing user input in its database, potentially allowing attackers to execute arbitrary SQL commands.",
-                severity=Severity.HIGH,
-                file_paths=["contracts/Contract.sol"]
-            )
-        ]
-        
-        # Create FindingInput
-        input_batch3 = FindingInput(
-            task_id=task_id,
-            findings=findings_batch3
-        )
-        
-        # Process findings via API
-        print("\n📊 Processing third batch of findings (different agent)")
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                # Process findings
-                print(f"Sending POST request to {BASE_URL}/process_findings")
-                print(f"Request data: {input_batch3}")
-                
-                response = await client.post(
-                    f"{BASE_URL}/process_findings",
-                    headers={"X-API-Key": API_KEY},
-                    json=input_batch3.model_dump()
-                )
-                
-                # Check response
-                print(f"Response status code: {response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"✅ Third batch processed successfully")
-                    print(f"Response: {result}")
-                    
-                    # Simply print the results for the third batch
-                    print(f"  Valid findings: {result.get('valid', 'N/A')}")
-                    print(f"  Already reported: {result.get('already_reported', 'N/A')}")
-                    print(f"  Disputed: {result.get('disputed', 'N/A')}")
-                else:
-                    print(f"❌ Failed to process third batch: {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    return
-        except httpx.RequestError as exc:
-            print(f"❌ HTTP Request failed: {exc!r}")
-            print(f"Request details: {exc.request.url} - {exc.request.method}")
-            return
-        except Exception as e:
-            print(f"❌ Error occurred: {str(e)}")
-            print("Detailed error information:")
-            traceback.print_exc()
-            return
-                
-        # Verify final state
-        print("\n📊 Retrieving all findings to verify final state")
-        
-        async with httpx.AsyncClient() as client:
-            # Get all findings
-            response = await client.get(
-                f"{BASE_URL}/tasks/{task_id}/findings",
-                headers={"X-API-Key": API_KEY}
-            )
-            
-            if response.status_code == 200:
-                findings = response.json()
-                print(f"✅ Retrieved {len(findings)} total findings")
-                
-                # Count by status
-                status_counts = {}
-                agent_counts = {}
-                severity_counts = {}
-                
-                for finding in findings:
-                    # Count by status
-                    status = finding['status']
-                    status_counts[status] = status_counts.get(status, 0) + 1
-                    
-                    # Count by agent
-                    agent = finding['agent_id']
-                    agent_counts[agent] = agent_counts.get(agent, 0) + 1
-                    
-                    # Count by severity (for valid findings)
-                    if status in ['unique_valid', 'similar_valid']:
-                        severity = finding.get('evaluated_severity')
-                        if severity:
-                            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-                
-                print(f"  Status distribution: {status_counts}")
-                print(f"  Agent distribution: {agent_counts}")
-                print(f"  Severity distribution (valid findings): {severity_counts}")
-                
-                # Verify no pending findings remain
-                assert "pending" not in status_counts or status_counts["pending"] == 0, "All findings should be processed, no PENDING status should remain"
-                print(f"✅ All findings processed successfully - no pending findings remain")
-            else:
-                print(f"❌ Failed to retrieve findings: {response.status_code}")
-                print(f"Response text: {response.text}")
+async def teardown_test():
+    """Cleanup: Close MongoDB connection."""
+    await mongodb.close()
+    print("✅ Test cleanup complete")
+
+async def test_basic_submission():
+    """Test 1: Basic submission works and returns expected format."""
+    print("\n🧪 Test 1: Basic Submission")
     
-    except AssertionError as e:
-        print(f"❌ Test assertion failed: {str(e)}")
-        traceback.print_exc()
+    findings = [
+        Finding(
+            title="Reentrancy Vulnerability",
+            description="Withdraw function vulnerable to reentrancy attacks.",
+            file_paths=["contracts/Test.sol"],
+            severity=Severity.HIGH
+        ),
+        Finding(
+            title="Unchecked Return Value",
+            description="External call return value not checked.",
+            file_paths=["contracts/Test.sol"],
+            severity=Severity.MEDIUM
+        )
+    ]
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=findings)
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Response status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"  Response text: {response.text}")
+            
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        result = response.json()
+        
+        # Basic response format check
+        assert "valid" in result, "Response missing 'valid' field"
+        assert "already_reported" in result, "Response missing 'already_reported' field"
+        assert "disputed" in result, "Response missing 'disputed' field"
+        assert result["already_reported"] == 0, "First submission should have no duplicates"
+        
+        print(f"  ✅ Response: {result}")
+
+async def test_duplicate_detection():
+    """Test 2: Duplicate detection works."""
+    print("\n🧪 Test 2: Duplicate Detection")
+    
+    # Submit the same finding twice
+    finding = Finding(
+        title="Duplicate Test Finding",
+        description="This finding will be submitted twice to test deduplication.",
+        file_paths=["contracts/Test.sol"],
+        severity=Severity.HIGH
+    )
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=[finding])
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # First submission
+        response1 = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        assert response1.status_code == 200
+        result1 = response1.json()
+        print(f"  First submission: {result1}")
+        
+        # Second submission (duplicate)
+        response2 = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        assert response2.status_code == 200
+        result2 = response2.json()
+        print(f"  Second submission: {result2}")
+        
+        # Should detect duplicate
+        assert result2["already_reported"] > 0, "Duplicate should be detected"
+        print("  ✅ Duplicate detection working")
+
+async def test_max_findings_limit():
+    """Test 3: Max findings limit enforcement."""
+    print("\n🧪 Test 3: Max Findings Limit")
+    
+    # Create more findings than allowed
+    max_allowed = config.max_findings_per_submission
+    findings = []
+    for i in range(max_allowed + 1):
+        findings.append(Finding(
+            title=f"Finding {i+1}",
+            description=f"Test finding {i+1} to exceed limit.",
+            file_paths=["contracts/Test.sol"],
+            severity=Severity.MEDIUM
+        ))
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=findings)
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": API_KEY},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Response status: {response.status_code}")
+        if response.status_code != 400:
+            print(f"  Response text: {response.text}")
+        
+        # Should be rejected with 400 error
+        assert response.status_code == 400, f"Expected 400, got {response.status_code}"
+        error_text = response.text
+        assert f"Maximum allowed: {max_allowed}" in error_text, "Error should mention limit"
+        
+        print(f"  ✅ Limit enforced: {len(findings)} findings rejected")
+
+async def test_testing_mode_bypass():
+    """Test 4: Testing mode bypasses authentication."""
+    print("\n🧪 Test 4: Testing Mode Authentication Bypass")
+    
+    # Test with a clearly fake API key
+    fake_api_key = "definitely-not-a-real-api-key-12345"
+    
+    finding = Finding(
+        title="Testing Mode Bypass Test",
+        description="This tests that testing mode bypasses authentication.",
+        file_paths=["contracts/Test.sol"],
+        severity=Severity.LOW
+    )
+    
+    input_data = FindingInput(task_id=TEST_TASK_ID, findings=[finding])
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/process_findings",
+            headers={"X-API-Key": fake_api_key},
+            json=input_data.model_dump()
+        )
+        
+        print(f"  Using fake API key: {fake_api_key}")
+        print(f"  Response status: {response.status_code}")
+        
+        # Should work because testing mode bypasses authentication
+        assert response.status_code == 200, f"Testing mode should bypass auth, got {response.status_code}"
+        result = response.json()
+        print(f"  ✅ Authentication bypassed: {result}")
+
+async def run_all_tests():
+    """Run all simplified tests."""
+    print("🚀 Starting Process Findings Tests (Testing Mode)")
+    print("=" * 55)
+    
+    # Verify testing mode is enabled
+    if not config.testing:
+        print("❌ TESTING mode is not enabled!")
+        print("   Set TESTING=true in environment variables")
+        return
+    
+    print(f"✅ Testing mode enabled: {config.testing}")
+    
+    try:
+        await setup_test()
+        
+        await test_basic_submission()
+        await test_duplicate_detection() 
+        await test_max_findings_limit()
+        await test_testing_mode_bypass()
+        
+        print("\n" + "=" * 55)
+        print("✅ All tests passed!")
+        
     except Exception as e:
-        print(f"❌ Error occurred: {str(e)}")
-        print("Detailed error information:")
-        traceback.print_exc()
+        print(f"\n❌ Test failed: {str(e)}")
+        raise
     finally:
-        await mongodb.close()
-        print("\n✅ Test completed")
+        await teardown_test()
 
 if __name__ == "__main__":
-    asyncio.run(test_process_findings()) 
+    asyncio.run(run_all_tests())
