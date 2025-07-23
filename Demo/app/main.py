@@ -245,8 +245,8 @@ async def process_findings(input_data: FindingInput, x_api_key: str = Header(...
         # Verify API key and get agent_id from agents_cache
         agent_id = None
         
-        # Check if testing mode is enabled and agents_cache is empty
-        if config.testing and not agents_cache:
+        # Check if testing mode is enabled
+        if config.testing:
             agent_id = "test-agent"
             logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
         elif not agents_cache:
