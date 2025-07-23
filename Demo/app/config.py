@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     backend_task_repository_endpoint: str = Field(..., env="BACKEND_TASK_REPOSITORY_ENDPOINT")
     backend_task_details_endpoint: str = Field(..., env="BACKEND_TASK_DETAILS_ENDPOINT")
     backend_agents_endpoint: str = Field(..., env="BACKEND_AGENTS_ENDPOINT")
+    backend_submissions_endpoint: str = Field(..., env="BACKEND_SUBMISSIONS_ENDPOINT")
     backend_api_key: str = Field(..., env="BACKEND_API_KEY")
     task_id: str = Field(..., env="TASK_ID")
     max_findings_per_submission: int = Field(20, env="MAX_FINDINGS_PER_SUBMISSION")

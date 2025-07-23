@@ -51,7 +51,7 @@
 ```bash
 # Navigate to Demo directory and activate virtual environment
 cd Demo
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 python -m pip install -r requirements.txt
