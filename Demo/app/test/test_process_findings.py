@@ -4,9 +4,10 @@ Clean, focused tests that work with the improved testing mode authentication byp
 """
 import asyncio
 import httpx
-from app.models.finding_input import FindingInput, Finding, Severity
-from app.database.mongodb_handler import mongodb
 from app.config import config
+import traceback
+from app.database.mongodb_handler import mongodb
+from app.models.finding_input import FindingInput, Finding, Severity
 
 # Test configuration
 BASE_URL = "http://localhost:8004"
