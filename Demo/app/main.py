@@ -39,7 +39,6 @@ logging.basicConfig(
     ]
 )
 
-
 # Initialize handlers
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
@@ -72,18 +71,19 @@ async def lifespan(app: FastAPI):
         async def _periodic_task_cache_refresh():
             while True:
                 try:
+                    await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
                     await set_task_cache(config)
                 except Exception as e:
                     logger.error(f"Error refreshing task cache: {str(e)}")
-                await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+                
 
         async def _periodic_agent_cache_refresh():
             while True:
                 try:
+                    await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
                     await set_agent_data(config)
                 except Exception as e:
                     logger.error(f"Error refreshing agents cache: {str(e)}")
-                await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
         # Start background tasks and store references
         refresh_tasks.extend([
