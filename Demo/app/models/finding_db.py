@@ -9,6 +9,7 @@ class Status(str, Enum):
     ALREADY_REPORTED = "already_reported"
     SIMILAR_VALID = "similar_valid"
     UNIQUE_VALID = "unique_valid"
+    BEST_VALID = "best_valid"
     DISPUTED = "disputed"
 
 class EvaluatedSeverity(str, Enum):
@@ -26,10 +27,10 @@ class FindingDB(Finding):
     
     # System-added fields
     status: Status = Status.PENDING  # Default status
-    category: Optional[str] = None  # Security issue category (e.g., "SQL Injection", "XSS")
-    category_id: Optional[str] = None  # Unique identifier for the category group
+    deduplication_comment: Optional[str] = None  # Comment from deduplication
+    evaluation_comment: Optional[str] = None  # Comment from evaluation
     evaluated_severity: Optional[EvaluatedSeverity] = None  # Severity after evaluation
-    evaluation_comment: Optional[str] = None  # Arbiter comments on the finding
+    duplicateOf: Optional[str] = None  # ID of the original finding
     
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)

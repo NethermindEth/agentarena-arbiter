@@ -1,14 +1,21 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from app.config import config
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
-from langchain_core.runnables import RunnableSequence
+from langchain.chains import LLMChain
+from pydantic import BaseModel, Field
 
 
-"""
-Claude model configuration and initialization module.
-Provides functions to create and configure Claude models with parameters from environment variables.
-"""
+class FindingEvaluation(BaseModel):
+    """Single finding evaluation result."""
+    finding_id: str = Field(description="ID/title of the evaluated finding")
+    is_valid: bool = Field(description="Whether the finding represents a valid security issue")
+    severity: str = Field(description="Severity level: low, medium, high, or critical")
+    comment: str = Field(description="Brief explanation of the evaluation (2-3 sentences maximum)")
+
+class EvaluationResult(BaseModel):
+    """Evaluation result."""
+    results: List[FindingEvaluation] = Field(description="List of evaluation results")
 
 def get_model_config() -> Dict[str, Any]:
     """
@@ -46,77 +53,110 @@ def create_claude_model(
         ValueError: If API key is not provided and not in environment variables
     """
     # Get config from environment variables
-    config = get_model_config()
+    claude_config = get_model_config()
     
     # Override with any provided parameters
     if model_name:
-        config["model_name"] = model_name
+        claude_config["model_name"] = config.claude_model
     if temperature is not None:
-        config["temperature"] = temperature
+        claude_config["temperature"] = temperature
     if max_tokens:
-        config["max_tokens"] = max_tokens
+        claude_config["max_tokens"] = max_tokens
     if api_key:
-        config["anthropic_api_key"] = api_key
+        claude_config["anthropic_api_key"] = api_key
         
     # Validate API key
-    if not config["anthropic_api_key"]:
+    if not claude_config["anthropic_api_key"]:
         raise ValueError("CLAUDE_API_KEY environment variable is not set")
     
     # Return configured model
     return ChatAnthropic(
-        model=config["model_name"],
-        temperature=config["temperature"],
-        max_tokens_to_sample=config["max_tokens"],
-        anthropic_api_key=config["anthropic_api_key"]
+        model=claude_config["model_name"],
+        temperature=claude_config["temperature"],
+        max_tokens_to_sample=claude_config["max_tokens"],
+        anthropic_api_key=claude_config["anthropic_api_key"]
     )
 
-def create_similarity_chain(
-    model: Optional[ChatAnthropic] = None,
-    prompt_template: Optional[str] = None
-) -> RunnableSequence:
+def create_structured_evaluation_model(
+    model: Optional[ChatAnthropic] = None
+) -> any:
     """
-    Create a RunnableSequence for similarity comparison.
+    Create a Claude model with structured output for finding evaluation.
     
     Args:
         model: Optional ChatAnthropic model (created from environment if not provided)
-        prompt_template: Optional custom prompt template
         
     Returns:
-        Configured RunnableSequence for similarity comparison
+        Configured model with structured output for batch evaluation
     """
     # Create model if not provided
     if not model:
         model = create_claude_model()
     
-    # Use default similarity prompt if not provided
-    if not prompt_template:
-        prompt_template = """
-        Compare these two security findings and determine their similarity on a scale from 0 to 1.
+    # Create structured output model
+    return model.with_structured_output(EvaluationResult)
 
-        Finding 1:
-        {finding1}
-
-        Finding 2:
-        {finding2}
-
-        Analyze the similarity in these aspects:
-        1. Title similarity (0.25 weight)
-        2. Description similarity (0.35 weight)
-        3. Vulnerability type (0.25 weight)
-        4. File path and code references (0.15 weight)
-
-        For two findings to be considered similar, they should describe the same underlying security issue.
-        Even if the descriptions are somewhat similar but they point to different vulnerabilities, they should receive a low similarity score.
-
-        First explain your comparison in 2-3 sentences, then output a single decimal number between 0 and 1 on a separate line.
-        Format your final answer as: "Similarity score: 0.XX"
-        """
+async def evaluate_findings_structured(
+    model_with_structured_output: any,
+    findings_batch: List[any]
+) -> EvaluationResult:
+    """
+    Evaluate a batch of related findings using structured output to ensure proper format.
     
-    # Create prompt
-    prompt = PromptTemplate(
-        input_variables=["finding1", "finding2"],
-        template=prompt_template
-    )
+    Args:
+        model_with_structured_output: Model configured with structured output
+        findings_batch: List of findings to evaluate (may be related to same vulnerability or unique)
+        
+    Returns:
+        Structured evaluation result with guaranteed format
+    """
+
+    prompt = f"""
+    You are a blockchain security expert tasked with evaluating the validity and severity of smart contract vulnerabilities.
     
-    # Create and return RunnableSequence
-    return prompt | model 
+    ## BATCH CONTEXT
+    You will receive a batch of findings to evaluate. This batch may contain:
+    - **Related findings**: Multiple findings that refer to the same underlying vulnerability (duplicates)
+    - **Single unique finding**: One finding that doesn't have duplicates
+    
+    ## EVALUATION CRITERIA
+    
+    For each finding in this batch, determine:
+    1. **Validity**: Is this a valid security issue? Consider the technical accuracy and potential impact.
+    2. **Severity**: What is the appropriate severity level? (Low, Medium, High, Critical)
+    3. **Reasoning**: Provide clear explanations for your evaluations.
+    
+    ## ANALYSIS GUIDELINES
+    
+    **Technical Assessment:**
+    - Evaluate the technical accuracy and feasibility in blockchain context
+    - Consider the potential impact on contract funds, operations, or users
+    - Assess exploitation difficulty and prerequisites
+    
+    **For Related Findings (if multiple in batch):**
+    - Since these findings are related, they should have the same validity and severity
+    - Use all available information across findings to make the most accurate assessment
+    - If the findings are likely false positives based on the combined information, mark ALL as invalid (not valid)
+    
+    **Severity Guidelines:**
+    - **Critical**: Direct loss of funds, contract takeover, or complete system compromise
+    - **High**: Significant impact on contract functionality or user funds with feasible exploitation
+    - **Medium**: Moderate impact with some prerequisites or limited scope
+    - **Low**: Minor issues or informational findings with minimal impact
+
+    {[finding.model_dump() for finding in findings_batch]}
+    
+    ## EVALUATION INSTRUCTIONS
+    
+    1. **Individual Assessment**: Evaluate each finding individually but consider group context if multiple findings are related
+    2. **Consistent Assessment**: For related findings, apply the same validity and severity unless there are clear technical differences
+    3. **False Positive Detection**: If findings appear to be false positives, mark them as invalid
+    4. **Clear Explanations**: Provide 2-3 sentence explanations for each evaluation
+    5. **Use Finding IDs**: Make sure to use the exact finding ID from the analysis
+    
+    Remember: Provide one evaluation result per finding in the batch, using the finding's ID.
+    """
+    
+    # Invoke the model with structured output
+    result = await model_with_structured_output.ainvoke(prompt)
+    return result 

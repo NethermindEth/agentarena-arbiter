@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     claude_model: str = Field("claude-3-7-sonnet-20250219", env="CLAUDE_MODEL")
     claude_temperature: float = Field(0.0, env="CLAUDE_TEMPERATURE")
     claude_max_tokens: int = Field(20000, env="CLAUDE_MAX_TOKENS")
+    
+    # Gemini configuration for deduplication
+    gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
+    gemini_model: str = Field("gemini-2.5-pro", env="GEMINI_MODEL")
+    gemini_temperature: float = Field(0.0, env="GEMINI_TEMPERATURE")
+    gemini_max_tokens: int = Field(2000000, env="GEMINI_MAX_TOKENS")
+    
     debug: bool = Field(False, env="DEBUG")
     testing: bool = Field(False, env="TESTING")
     similarity_threshold: float = Field(0.8, env="SIMILARITY_THRESHOLD")

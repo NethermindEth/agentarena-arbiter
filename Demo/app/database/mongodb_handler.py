@@ -3,13 +3,14 @@ MongoDB database handler for security findings.
 Handles storage and retrieval of findings in MongoDB.
 """
 from typing import List, Dict, Any, Optional
+from bson import ObjectId
 import motor.motor_asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pydantic import BaseModel
 
 from app.models.finding_input import FindingInput, Finding
-from app.models.finding_db import FindingDB
+from app.models.finding_db import FindingDB, Status
 from app.config import config
 
 class MongoDBHandler:
@@ -57,7 +58,7 @@ class MongoDBHandler:
         """
         return f"findings_{task_id}"
     
-    async def create_finding(self, task_id: str, agent_id: str, finding: Finding) -> str:
+    async def create_finding(self, task_id: str, agent_id: str, finding: Finding, status: Status = Status.PENDING) -> str:
         """
         Create a new finding in the database.
         
@@ -65,6 +66,7 @@ class MongoDBHandler:
             task_id: Task identifier
             agent_id: Agent identifier
             finding: The finding to create
+            status: Status of the finding (defaults to PENDING)
             
         Returns:
             Title of the created finding
@@ -76,8 +78,9 @@ class MongoDBHandler:
         finding_db = FindingDB(
             **finding.model_dump(),
             agent_id=agent_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            status=status,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
         
         # Convert to dictionary
@@ -132,8 +135,7 @@ class MongoDBHandler:
         # Return the titles
         return [finding.title for finding in input_data.findings]
     
-    async def update_finding(self, task_id: str, title: str, 
-                           updated_finding: FindingDB) -> bool:
+    async def update_finding(self, task_id: str, id: ObjectId | str, updated_finding: FindingDB) -> bool:
         """
         Update an existing finding.
         
@@ -153,33 +155,11 @@ class MongoDBHandler:
         
         # Update in database
         result = await self.db[collection].update_one(
-            {"title": title},
+            {"id": ObjectId(id)},
             {"$set": finding_dict}
         )
         
         return result.modified_count > 0
-    
-    async def get_finding(self, task_id: str, title: str) -> Optional[FindingDB]:
-        """
-        Get a finding by title.
-        
-        Args:
-            task_id: Task identifier
-            title: Finding title
-            
-        Returns:
-            The finding if found, None otherwise
-        """
-        collection = self.get_collection_name(task_id)
-        
-        # Query database
-        doc = await self.db[collection].find_one({"title": title})
-        
-        if not doc:
-            return None
-            
-        # Convert to FindingDB
-        return FindingDB(**doc)
     
     async def get_task_findings(self, task_id: str) -> List[FindingDB]:
         """
@@ -295,5 +275,28 @@ class MongoDBHandler:
         
         return result.acknowledged
 
+    async def get_pending_task_findings(self, task_id: str) -> List[FindingDB]:
+        """
+        Get all pending task findings for a task.
+        
+        Args:
+            task_id: Task identifier
+            
+        Returns:
+            List of all pending task findings for the task
+        """
+        collection = self.get_collection_name(task_id)
+        
+        # Query database for all pending task findings
+        cursor = self.db[collection].find({
+            "status": Status.PENDING
+        })
+        findings = []
+        
+        async for doc in cursor:
+            findings.append(FindingDB(**doc))
+            
+        return findings
+
 # Global MongoDB handler instance
-mongodb = MongoDBHandler() 
+mongodb = MongoDBHandler()
