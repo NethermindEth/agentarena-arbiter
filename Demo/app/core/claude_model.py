@@ -1,8 +1,6 @@
 from typing import Optional, Dict, Any, List
 from app.config import config
 from langchain_anthropic import ChatAnthropic
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 from pydantic import BaseModel, Field
 
 
@@ -122,16 +120,23 @@ async def evaluate_findings_structured(
     ## EVALUATION CRITERIA
     
     For each finding in this batch, determine:
-    1. **Validity**: Is this a valid security issue? Consider the technical accuracy and potential impact.
-    2. **Severity**: What is the appropriate severity level? (Low, Medium, High, Critical)
+    1. **Validity**: Is this a valid security issue or a false positive? Consider the technical accuracy and potential impact.
+    2. **Severity**: What is the appropriate severity level? (Low, Medium, High)
     3. **Reasoning**: Provide clear explanations for your evaluations.
     
     ## ANALYSIS GUIDELINES
     
     **Technical Assessment:**
-    - Evaluate the technical accuracy and feasibility in blockchain context
-    - Consider the potential impact on contract funds, operations, or users
-    - Assess exploitation difficulty and prerequisites
+    - Evaluate the technical accuracy and feasibility in the context of the given smart contract
+    - Consider the potential impact on contract funds, operations, and users
+    - Evaluate the mathematical correctness, logical soundness, and syntactic accuracy
+    - Assess the exploitation difficulty and prerequisites
+
+    **Contextual Assessment:**
+    - Consider the original purpose and design of the smart contract
+    - Assess whether the finding is applicable in this context
+    - Identify whether the finding misinterprets the intended functionality
+    - Example: If pausing a contract disables withdrawals, this is likely by design, not a malfunctional problem, since this is the whole point of a pause function
     
     **For Related Findings (if multiple in batch):**
     - Since these findings are related, they should have the same validity and severity
@@ -139,7 +144,6 @@ async def evaluate_findings_structured(
     - If the findings are likely false positives based on the combined information, mark ALL as invalid (not valid)
     
     **Severity Guidelines:**
-    - **Critical**: Direct loss of funds, contract takeover, or complete system compromise
     - **High**: Significant impact on contract functionality or user funds with feasible exploitation
     - **Medium**: Moderate impact with some prerequisites or limited scope
     - **Low**: Minor issues or informational findings with minimal impact
