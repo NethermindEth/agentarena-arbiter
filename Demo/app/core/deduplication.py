@@ -60,6 +60,34 @@ class FindingDeduplication:
                 self.deduplication_model, findings
             ).results
             
+            # Validate that all IDs in the results are from the actual findings list
+            valid_finding_ids = {f.id for f in findings}
+            validated_duplicate_results = []
+            
+            for dup_finding in duplicate_results:
+                error = False
+                
+                # Validate findingId exists in our findings
+                if dup_finding.findingId not in valid_finding_ids:
+                    logger.warning(f"Invalid findingId '{dup_finding.findingId}' not found in findings list")
+                    error = True
+                
+                # Validate duplicateOf exists in our findings
+                if dup_finding.duplicateOf not in valid_finding_ids:
+                    logger.warning(f"Invalid duplicateOf '{dup_finding.duplicateOf}' not found in findings list")
+                    error = True
+                
+                # Only include results with valid IDs
+                if not error:
+                    validated_duplicate_results.append(dup_finding)
+                else:
+                    logger.warning(f"Filtered out invalid duplicate result: {dup_finding.findingId} -> {dup_finding.duplicateOf}")
+            
+            logger.info(f"Validation completed: {len(validated_duplicate_results)}/{len(duplicate_results)} duplicate relationships validated")
+            
+            # Use validated results for further processing
+            duplicate_results = validated_duplicate_results
+            
             # Process the structured results
             duplicate_ids = set()
             original_ids = set()
@@ -140,7 +168,10 @@ class FindingDeduplication:
             # This finding is a duplicate of another finding
             
             # Get the original/best finding ID for this duplicate
-            best_id = next(rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id)
+            best_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
+            if best_id is None:
+                logger.error(f"No duplicate relationship found for finding {finding.id}")
+                return Status.PENDING
             
             # Find all findings in this duplicate group (all duplicates that point to the same best_id + the best_id itself)
             findings_in_group = []
@@ -218,13 +249,19 @@ class FindingDeduplication:
                     finding.deduplication_comment = "Selected as the best quality finding among duplicates"    
                 elif new_status == Status.SIMILAR_VALID:
                     explanation = duplicate_explanations.get(finding.id, "Identified as duplicate by AI analysis")
-                    original_id = next(rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id)
-                    finding.deduplication_comment = f"Similar to finding '{original_id}': {explanation}"
+                    original_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
+                    if original_id is None:
+                        logger.error(f"No duplicate relationship found for finding {finding.id}")
+                    else:
+                        finding.deduplication_comment = f"Similar to finding '{original_id}': {explanation}"
                 elif new_status == Status.ALREADY_REPORTED:
                     explanation = duplicate_explanations.get(finding.id, "Previously reported by same agent")
-                    original_id = next(rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id)
-                    finding.deduplication_comment = f"Already reported by same agent (original: '{original_id}'): {explanation}"
-                
+                    original_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
+                    if original_id is None:
+                        logger.error(f"No duplicate relationship found for finding {finding.id}")
+                    else:
+                        finding.deduplication_comment = f"Already reported by same agent (original: '{original_id}'): {explanation}"
+                        
                 # Save to database
                 success = await self.mongodb.update_finding(task_id, finding.id, finding.model_dump())
                 
