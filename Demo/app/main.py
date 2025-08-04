@@ -537,10 +537,10 @@ async def process_findings(
         # Check if submission is allowed
         current_time = datetime.now(timezone.utc)
         
-        if current_time < task_cache.start_time:
+        if current_time < task_cache.startTime:
             raise HTTPException(
                 status_code=403,
-                detail=f"Submission period has not started yet. Starts at: {task_cache.start_time.isoformat()}"
+                detail=f"Submission period has not started yet. Starts at: {task_cache.startTime.isoformat()}"
             )
         
         if current_time > task_cache.deadline:
