@@ -2,15 +2,12 @@
 Finding deduplication module for security findings submissions.
 Uses Gemini 2.5 Pro to identify duplicates across all findings in a single prompt.
 """
-import json
 import logging
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from typing import List, Dict, Any
 
-from app.core.gemini_model import create_structured_deduplication_model, find_duplicates_structured, DuplicateFinding
+from app.core.gemini_model import create_structured_deduplication_model, find_duplicates_structured, DuplicateFinding, DeduplicationResult
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
-from app.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +53,13 @@ class FindingDeduplication:
             logger.info(f"Starting deduplication of {len(findings)} findings")
             
             # Use structured output for guaranteed JSON format
-            duplicate_results: List[DuplicateFinding] = find_duplicates_structured(
+            dedup_result: DeduplicationResult = await find_duplicates_structured(
                 self.deduplication_model, findings
-            ).results
+            )
+            duplicate_results: List[DuplicateFinding] = dedup_result.results
             
             # Validate that all IDs in the results are from the actual findings list
-            valid_finding_ids = {f.id for f in findings}
+            valid_finding_ids = {f.str_id for f in findings}
             validated_duplicate_results = []
             
             for dup_finding in duplicate_results:
@@ -92,32 +90,23 @@ class FindingDeduplication:
             duplicate_ids = set()
             original_ids = set()
             
-            # Extract duplicate relationships with explanations
-            duplicate_relationships = []
             for dup_finding in duplicate_results:
                 duplicate_ids.add(dup_finding.findingId)
                 original_ids.add(dup_finding.duplicateOf)
-                
-                # Convert to dictionary format for compatibility
-                duplicate_relationships.append({
-                    "findingId": dup_finding.findingId,
-                    "duplicateOf": dup_finding.duplicateOf,
-                    "explanation": dup_finding.explanation
-                })
             
             logger.info(f"Findings: {findings}")
             logger.info(f"Duplicate IDs: {duplicate_ids}")
             logger.info(f"Original IDs: {original_ids}")
 
             # Separate findings into duplicates and originals
-            duplicate_findings = [f for f in findings if f.id in duplicate_ids]
-            original_findings = [f for f in findings if f.id not in duplicate_ids]
+            duplicate_findings = [f for f in findings if f.str_id in duplicate_ids]
+            original_findings = [f for f in findings if f.str_id in original_ids]
             
             results = {
                 "total": len(findings),
                 "duplicates": len(duplicate_findings),
                 "originals": len(original_findings),
-                "duplicate_relationships": duplicate_relationships,
+                "duplicate_relationships": duplicate_results,
                 "original_findings": original_findings,
                 "duplicate_findings": duplicate_findings
             }
@@ -138,55 +127,51 @@ class FindingDeduplication:
                 "error": str(e)
             }
 
-    def determine_finding_status(self, finding: FindingDB, dedup_results: Dict[str, Any], all_findings: List[FindingDB]) -> Status:
+    def determine_finding_status(self, finding: FindingDB, original_to_duplicates: Dict[str, List[str]], 
+                                duplicate_to_original: Dict[str, str], finding_map: Dict[str, FindingDB]) -> Status:
         """
         Determine the appropriate status for a finding based on deduplication results.
         
         Args:
             finding: The finding to determine status for
-            dedup_results: Results from deduplication analysis
-            all_findings: All findings being processed
+            original_to_duplicates: Maps original_id -> [duplicate_ids]
+            duplicate_to_original: Maps duplicate_id -> original_id
+            finding_map: Maps finding_id -> finding
             
         Returns:
             Appropriate Status enum value
         """
-        duplicate_relationships = dedup_results["duplicate_relationships"]
+        is_duplicate = finding.str_id in duplicate_to_original
+        is_original = finding.str_id in original_to_duplicates
         
-        # Check if this finding is a duplicate
-        is_duplicate = any(rel["findingId"] == finding.id for rel in duplicate_relationships)
-        
-        # Check if this finding is an original (referenced by duplicates)
-        is_best = any(rel["duplicateOf"] == finding.id for rel in duplicate_relationships)
-        
-        if not is_duplicate and not is_best:
+        if not is_duplicate and not is_original:
             # No duplicates found for this finding
             return Status.UNIQUE_VALID
-        elif is_best:
+        
+        if is_duplicate and is_original:
+            logger.error(f"Finding {finding.str_id} is both a duplicate and an original")
+            return Status.PENDING
+        
+        if is_original:
             # This finding is the best/original version of a group with duplicates
             return Status.BEST_VALID
-        elif is_duplicate:
+        
+        if is_duplicate:
             # This finding is a duplicate of another finding
+            original_id = duplicate_to_original[finding.str_id]
             
-            # Get the original/best finding ID for this duplicate
-            best_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
-            if best_id is None:
-                logger.error(f"No duplicate relationship found for finding {finding.id}")
-                return Status.PENDING
-            
-            # Find all findings in this duplicate group (all duplicates that point to the same best_id + the best_id itself)
+            # Get all findings in this duplicate group (original + all its duplicates)
             findings_in_group = []
             
-            # Add the best/original finding
-            best_finding = next((f for f in all_findings if f.id == best_id), None)
-            if best_finding:
-                findings_in_group.append(best_finding)
+            # Add the original finding
+            if original_id in finding_map:
+                findings_in_group.append(finding_map[original_id])
             
-            # Add all other duplicates that point to the same best_id
-            for rel in duplicate_relationships:
-                if rel["duplicateOf"] == best_id and rel["findingId"] != finding.id:
-                    duplicate_finding = next((f for f in all_findings if f.id == rel["findingId"]), None)
-                    if duplicate_finding:
-                        findings_in_group.append(duplicate_finding)
+            # Add all duplicates in this group
+            duplicate_ids = original_to_duplicates.get(original_id, [])
+            for dup_id in duplicate_ids:
+                if dup_id != finding.str_id and dup_id in finding_map:
+                    findings_in_group.append(finding_map[dup_id])
             
             # Check if any finding in the group is from the same agent as current finding
             same_agent_findings = [f for f in findings_in_group if f.agent_id == finding.agent_id]
@@ -225,22 +210,36 @@ class FindingDeduplication:
             }
             
             updated_count = 0
-            duplicate_relationships = dedup_results["duplicate_relationships"]
+            duplicate_rels: List[DuplicateFinding] = dedup_results["duplicate_relationships"]
+            
+            # Create efficient mappings once for all findings processing
+            original_to_duplicates = {}  # Maps original_id -> [duplicate_ids]
+            duplicate_to_original = {}   # Maps duplicate_id -> original_id
+            finding_map = {f.str_id: f for f in findings}  # Maps finding_id -> finding
             
             # Create lookup for duplicate explanations
             duplicate_explanations = {
-                rel["findingId"]: rel["explanation"] 
-                for rel in duplicate_relationships
+                rel.findingId: rel.explanation 
+                for rel in duplicate_rels
             }
             
+            # Build deduplication mappings once
+            for rel in duplicate_rels:
+                # Build duplicate_to_original mapping
+                duplicate_to_original[rel.findingId] = rel.duplicateOf
+                
+                # Build original_to_duplicates mapping
+                if rel.duplicateOf not in original_to_duplicates:
+                    original_to_duplicates[rel.duplicateOf] = []
+                original_to_duplicates[rel.duplicateOf].append(rel.findingId)
+            
             for finding in findings:
-                # Determine the appropriate status
-                new_status = self.determine_finding_status(finding, dedup_results, findings)
+                # Determine the appropriate status using pre-created mappings
+                new_status = self.determine_finding_status(finding, original_to_duplicates, duplicate_to_original, finding_map)
                 
                 # Update finding with new status
                 old_status = finding.status
                 finding.status = new_status
-                finding.updated_at = datetime.now(timezone.utc)
 
                 # Set appropriate deduplication comment
                 if new_status == Status.UNIQUE_VALID:
@@ -248,22 +247,22 @@ class FindingDeduplication:
                 elif new_status == Status.BEST_VALID:
                     finding.deduplication_comment = "Selected as the best quality finding among duplicates"    
                 elif new_status == Status.SIMILAR_VALID:
-                    explanation = duplicate_explanations.get(finding.id, "Identified as duplicate by AI analysis")
-                    original_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
+                    explanation = duplicate_explanations.get(finding.str_id, "Identified as duplicate by AI analysis")
+                    original_id = duplicate_to_original.get(finding.str_id)
                     if original_id is None:
-                        logger.error(f"No duplicate relationship found for finding {finding.id}")
+                        logger.error(f"No duplicate relationship found for finding {finding.str_id}")
                     else:
                         finding.deduplication_comment = f"Similar to finding '{original_id}': {explanation}"
                 elif new_status == Status.ALREADY_REPORTED:
-                    explanation = duplicate_explanations.get(finding.id, "Previously reported by same agent")
-                    original_id = next((rel["duplicateOf"] for rel in duplicate_relationships if rel["findingId"] == finding.id), None)
+                    explanation = duplicate_explanations.get(finding.str_id, "Previously reported by same agent")
+                    original_id = duplicate_to_original.get(finding.str_id)
                     if original_id is None:
-                        logger.error(f"No duplicate relationship found for finding {finding.id}")
+                        logger.error(f"No duplicate relationship found for finding {finding.str_id}")
                     else:
                         finding.deduplication_comment = f"Already reported by same agent (original: '{original_id}'): {explanation}"
                         
                 # Save to database
-                success = await self.mongodb.update_finding(task_id, finding.id, finding.model_dump())
+                success = await self.mongodb.update_finding(task_id, finding.str_id, finding)
                 
                 if success:
                     updated_count += 1
@@ -276,7 +275,7 @@ class FindingDeduplication:
                 "total_processed": len(findings),
                 "updated_count": updated_count,
                 "status_distribution": {status.value: count for status, count in status_counts.items()},
-                "duplicate_relationships_count": len(duplicate_relationships)
+                "duplicate_relationships_count": len(duplicate_rels)
             }
             
         except Exception as e:
@@ -285,6 +284,7 @@ class FindingDeduplication:
                 "total_processed": len(findings),
                 "updated_count": 0,
                 "status_distribution": {},
+                "duplicate_relationships_count": 0,
                 "error": str(e)
             }
     

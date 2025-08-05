@@ -2,9 +2,11 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
+from app.core.gemini_model import DuplicateFinding
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status, EvaluatedSeverity
 from app.core.claude_model import (
+    EvaluationResult,
     create_structured_evaluation_model,
     evaluate_findings_structured,
     FindingEvaluation
@@ -61,7 +63,7 @@ class FindingEvaluator:
         else:
             return EvaluatedSeverity.MEDIUM  # Default fallback
     
-    def group_findings_for_evaluation(self, findings: List[FindingDB], duplicate_relationships: List[Dict[str, str]]) -> List[List[FindingDB]]:
+    def group_findings_for_evaluation(self, findings: List[FindingDB], duplicate_relationships: List[DuplicateFinding]) -> List[List[FindingDB]]:
         """
         Group findings for batch evaluation based on duplicate relationships.
         Each batch contains an original finding and all its duplicates so they can be evaluated together.
@@ -73,48 +75,42 @@ class FindingEvaluator:
         Returns:
             List of finding groups (batches) for evaluation
         """
+        # Create a mapping for quick finding lookup by id first
+        finding_map = {f.str_id: f for f in findings}
+        
         # Create a mapping of originals to their duplicates based on duplicate_relationships
         original_to_duplicates = {}
-        duplicate_set = set()
         
-        # Build the duplicate relationships mapping
         for rel in duplicate_relationships:
-            duplicate_id = rel.get("findingId")
-            original_id = rel.get("duplicateOf")
+            duplicate_id = rel.findingId
+            original_id = rel.duplicateOf
+
+            if duplicate_id not in finding_map:
+                logger.warning(f"Duplicate ID {duplicate_id} not found in findings list")
+                continue
             
-            if duplicate_id and original_id:
-                duplicate_set.add(duplicate_id)
-                if original_id not in original_to_duplicates:
-                    original_to_duplicates[original_id] = []
-                original_to_duplicates[original_id].append(duplicate_id)
-        
-        # Create a mapping for quick finding lookup by title
-        finding_map = {f.id: f for f in findings}
+            if original_id not in finding_map:
+                logger.warning(f"Original ID {original_id} not found in findings list")
+                continue
+
+            if original_id not in original_to_duplicates:
+                original_to_duplicates[original_id] = []
+            original_to_duplicates[original_id].append(duplicate_id)
         
         finding_groups = []
         processed_findings = set()
         
-        # First, process original findings with their duplicates
+        # Process original findings with their duplicates
         # This ensures each batch contains related findings that refer to the same vulnerability
         for original_id, duplicate_ids in original_to_duplicates.items():
-            if original_id in processed_findings:
-                continue
-                
-            # Create a group with the original and all its duplicates
-            group = []
-            
-            # Add original if it exists in our findings list
-            if original_id in finding_map:
-                group.append(finding_map[original_id])
-                processed_findings.add(original_id)
-            
-            # Add all duplicates to the same group
+            group = [finding_map[original_id]]
+            processed_findings.add(original_id)
+
             for dup_id in duplicate_ids:
-                if dup_id in finding_map and dup_id not in processed_findings:
+                if dup_id not in processed_findings:
                     group.append(finding_map[dup_id])
                     processed_findings.add(dup_id)
             
-            # Add the group if it has findings
             if group:
                 finding_groups.append(group)
         
@@ -144,7 +140,8 @@ class FindingEvaluator:
         if not findings_batch:
             return []
         
-        evaluation_results: List[FindingEvaluation] = await evaluate_findings_structured(self.evaluation_model, findings_batch).results
+        eval_result: EvaluationResult = await evaluate_findings_structured(self.evaluation_model, findings_batch)
+        evaluation_results: List[FindingEvaluation] = eval_result.results
         
         # Ensure we have results for all findings in the batch
         if len(evaluation_results) != len(findings_batch):
@@ -180,8 +177,11 @@ class FindingEvaluator:
                 else:
                     update_fields["status"] = Status.DISPUTED
                     disputed_count += 1
-
-                await self.mongodb.update_finding(task_id, eval_result.finding_id, update_fields)
+                    logger.info(f"Updating finding {eval_result.finding_id} with status {update_fields['status']}")
+                
+                logger.info(f"Update fields: {update_fields}")
+                success = await self.mongodb.update_finding(task_id, eval_result.finding_id, update_fields)
+                logger.info(f"Updated finding {eval_result.finding_id} with status {update_fields['status']}: {success}")
 
             except Exception as e:
                 logger.error(f"Error applying evaluation for finding '{eval_result.finding_id}': {str(e)}")
@@ -193,7 +193,7 @@ class FindingEvaluator:
             "disputed_count": disputed_count
         }
     
-    async def evaluate_all_findings(self, task_id: str, findings: List[FindingDB], duplicate_relationships: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def evaluate_all_findings(self, task_id: str, findings: List[FindingDB], duplicate_relationships: List[DuplicateFinding] = None) -> Dict[str, Any]:
         """
         Evaluate all findings in batches, keeping duplicates together.
         
@@ -209,7 +209,12 @@ class FindingEvaluator:
             return {
                 "total_findings": 0,
                 "batches_processed": 0,
-                "evaluation_results": []
+                "evaluation_results": [],
+                "application_results": {
+                    "total_evaluations": 0,
+                    "valid_count": 0,
+                    "disputed_count": 0
+                }
             }
         
         logger.info(f"Starting batch evaluation of {len(findings)} findings")
