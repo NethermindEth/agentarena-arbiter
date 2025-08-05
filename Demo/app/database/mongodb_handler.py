@@ -1,6 +1,6 @@
 """
 MongoDB database handler for security findings.
-Handles storage and retrieval of findings in MongoDB.
+Handles storage and retrieval of findings in MongoDB using Motor with Beanie models.
 """
 from typing import List, Dict, Any, Optional
 from bson import ObjectId
@@ -8,6 +8,7 @@ import motor.motor_asyncio
 from datetime import datetime, timezone
 import os
 from pydantic import BaseModel
+from beanie import init_beanie, PydanticObjectId
 
 from app.models.finding_input import FindingInput, Finding
 from app.models.finding_db import FindingDB, Status
@@ -15,8 +16,8 @@ from app.config import config
 
 class MongoDBHandler:
     """
-    MongoDB database handler.
-    Handles connection and operations on the MongoDB database.
+    MongoDB database handler using Motor for thread-safe operations.
+    Uses Beanie models for data validation and serialization.
     """
     
     def __init__(self, connection_string: str = None):
@@ -37,9 +38,12 @@ class MongoDBHandler:
         self.database_name = "security_findings"
     
     async def connect(self):
-        """Connect to MongoDB database."""
+        """Connect to MongoDB database and initialize Beanie."""
         self.client = motor.motor_asyncio.AsyncIOMotorClient(self.connection_string)
         self.db = self.client[self.database_name]
+        
+        # Initialize Beanie with the database and document models
+        await init_beanie(database=self.db, document_models=[FindingDB])
     
     async def close(self):
         """Close MongoDB connection."""
@@ -71,23 +75,24 @@ class MongoDBHandler:
         Returns:
             Title of the created finding
         """
-        # Get collection for this task
-        collection = self.get_collection_name(task_id)
-        
         # Create FindingDB from Finding
         finding_db = FindingDB(
-            **finding.model_dump(),
+            **finding.model_dump(exclude_unset=True),
             agent_id=agent_id,
             status=status,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
         
-        # Convert to dictionary
-        finding_dict = finding_db.model_dump()
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
-        # Insert into database
-        await self.db[collection].insert_one(finding_dict)
+        # Convert to dict and insert
+        doc_dict = finding_db.model_dump(by_alias=True, exclude_unset=True)
+        if doc_dict.get('_id') is None:
+            doc_dict.pop('_id', None)
+        
+        await collection.insert_one(doc_dict)
         
         # Return the finding title
         return finding.title
@@ -108,55 +113,68 @@ class MongoDBHandler:
             
         # Extract task_id
         task_id = input_data.task_id
-        
-        # Get collection
-        collection = self.get_collection_name(task_id)
-        
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Create FindingDB objects
         finding_dbs = []
         for finding in input_data.findings:
             finding_db = FindingDB(
-                **finding.model_dump(),
+                **finding.model_dump(exclude_unset=True),
                 agent_id=agent_id,
                 created_at=current_time,
                 updated_at=current_time
             )
             finding_dbs.append(finding_db)
         
-        # Prepare documents for insertion
-        docs = [finding_db.model_dump() for finding_db in finding_dbs]
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
-        # Insert all at once
+        # Convert to dicts and insert
+        docs = []
+        for finding_db in finding_dbs:
+            doc_dict = finding_db.model_dump(by_alias=True, exclude_unset=True)
+            if doc_dict.get('_id') is None:
+                doc_dict.pop('_id', None)
+            docs.append(doc_dict)
+        
         if docs:
-            await self.db[collection].insert_many(docs)
+            await collection.insert_many(docs)
             
         # Return the titles
         return [finding.title for finding in input_data.findings]
     
-    async def update_finding(self, task_id: str, id: ObjectId | str, updated_finding: FindingDB) -> bool:
+    async def update_finding(self, task_id: str, id: str, update_fields: Dict[str, Any]) -> bool:
         """
-        Update an existing finding.
+        Update specific fields of an existing finding.
         
         Args:
             task_id: Task identifier
-            title: Finding title
-            updated_finding: Updated finding data
+            id: Finding ID as string
+            update_fields: Dictionary of fields to update
             
         Returns:
             True if update was successful, False otherwise
         """
-        collection = self.get_collection_name(task_id)
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
-        # Convert to dictionary and update timestamps
-        finding_dict = updated_finding.model_dump()
-        finding_dict["updated_at"] = datetime.utcnow()
+        if isinstance(update_fields, FindingDB):
+            update_fields = update_fields.model_dump(by_alias=True, exclude_unset=True)
+
+        # Ensure updated_at is set
+        if "updated_at" not in update_fields:
+            update_fields["updated_at"] = datetime.now(timezone.utc)
+        
+        # Convert string id to ObjectId using PydanticObjectId
+        try:
+            object_id = PydanticObjectId(id)
+        except Exception:
+            return False
         
         # Update in database
-        result = await self.db[collection].update_one(
-            {"id": ObjectId(id)},
-            {"$set": finding_dict}
+        result = await collection.update_one(
+            {"_id": object_id},
+            {"$set": update_fields}
         )
         
         return result.modified_count > 0
@@ -171,15 +189,16 @@ class MongoDBHandler:
         Returns:
             List of findings for the task
         """
-        collection = self.get_collection_name(task_id)
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
         # Query database
-        cursor = self.db[collection].find({})
+        cursor = collection.find({})
         findings = []
         
         async for doc in cursor:
             findings.append(FindingDB(**doc))
-            
+        
         return findings
     
     async def get_agent_findings(self, task_id: str, agent_id: str) -> List[FindingDB]:
@@ -193,15 +212,16 @@ class MongoDBHandler:
         Returns:
             List of findings for the agent in the task
         """
-        collection = self.get_collection_name(task_id)
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
         # Query database
-        cursor = self.db[collection].find({"agent_id": agent_id})
+        cursor = collection.find({"agent_id": agent_id})
         findings = []
         
         async for doc in cursor:
             findings.append(FindingDB(**doc))
-            
+        
         return findings
         
     async def get_agent_findings_since(self, task_id: str, agent_id: str, since_timestamp: datetime) -> List[FindingDB]:
@@ -216,10 +236,11 @@ class MongoDBHandler:
         Returns:
             List of findings for the agent in the task since the specified timestamp
         """
-        collection = self.get_collection_name(task_id)
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
-        # Query database for findings created after the timestamp
-        cursor = self.db[collection].find({
+        # Query database for findings created after the specified timestamp
+        cursor = collection.find({
             "agent_id": agent_id,
             "created_at": {"$gt": since_timestamp}
         })
@@ -227,7 +248,7 @@ class MongoDBHandler:
         
         async for doc in cursor:
             findings.append(FindingDB(**doc))
-            
+        
         return findings
         
     async def get_metadata(self, key: str) -> Optional[Dict[str, Any]]:
@@ -285,17 +306,16 @@ class MongoDBHandler:
         Returns:
             List of all pending task findings for the task
         """
-        collection = self.get_collection_name(task_id)
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
         
         # Query database for all pending task findings
-        cursor = self.db[collection].find({
-            "status": Status.PENDING
-        })
+        cursor = collection.find({"status": Status.PENDING})
         findings = []
         
         async for doc in cursor:
             findings.append(FindingDB(**doc))
-            
+        
         return findings
 
 # Global MongoDB handler instance

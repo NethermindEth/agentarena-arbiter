@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel
 from enum import Enum
 
@@ -19,4 +19,4 @@ class Finding(BaseModel):
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""
     task_id: str
-    findings: List[Finding] 
+    findings: List[Finding]

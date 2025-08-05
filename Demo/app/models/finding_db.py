@@ -1,8 +1,9 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
-from datetime import datetime
+from typing import Optional, Dict, Any
+from beanie import Document
+from pydantic import Field
+from datetime import datetime, timezone
 from enum import Enum
-from app.models.finding_input import Finding, Severity
+from app.models.finding_input import Finding
 
 class Status(str, Enum):
     PENDING = "pending"
@@ -17,7 +18,7 @@ class EvaluatedSeverity(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
-class FindingDB(Finding):
+class FindingDB(Document, Finding):
     """
     Model representing a processed security finding stored in the database.
     Extends the Finding model with additional system-managed fields.
@@ -33,5 +34,29 @@ class FindingDB(Finding):
     duplicateOf: Optional[str] = None  # ID of the original finding
     
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow) 
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    @property
+    def str_id(self) -> str:
+        """
+        Returns the string representation of the id for use as dictionary keys.
+        This avoids the need for explicit str(f.id) conversions throughout the codebase.
+        """
+        return str(self.id)
+    
+    def dump(self) -> Dict[str, Any]:
+        """
+        Return a subset of fields for API responses.
+        
+        Returns:
+            Dictionary containing only title, description, severity, file_paths, and duplicateOf
+        """
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "description": self.description,
+            "severity": self.severity,
+            "file_paths": self.file_paths,
+            "duplicateOf": self.duplicateOf
+        }
