@@ -40,28 +40,6 @@ class FindingEvaluator:
         """
         return create_structured_evaluation_model()
     
-    def _convert_structured_result_to_dict(self, structured_result: List[FindingEvaluation]) -> List[Dict[str, Any]]:
-        """
-        Convert structured evaluation result to the expected dictionary format.
-        
-        Args:
-            structured_result: List[FindingEvaluation] from structured output
-            
-        Returns:
-            List of evaluation results as dictionaries
-        """
-        normalized_results = []
-        for evaluation in structured_result:
-            normalized_result = {
-                "finding_id": evaluation.finding_id,
-                "is_valid": evaluation.is_valid,
-                "evaluated_severity": self._normalize_severity(evaluation.severity),
-                "evaluation_comment": evaluation.comment
-            }
-            normalized_results.append(normalized_result)
-        
-        return normalized_results
-    
     def _normalize_severity(self, severity_text: str) -> Optional[EvaluatedSeverity]:
         """
         Normalize severity text to EvaluatedSeverity enum.
@@ -153,7 +131,7 @@ class FindingEvaluator:
         
         return finding_groups
     
-    async def evaluate_findings_batch(self, findings_batch: List[FindingDB]) -> List[Dict[str, Any]]:
+    async def evaluate_findings_batch(self, findings_batch: List[FindingDB]) -> List[FindingEvaluation]:
         """
         Evaluate a batch of findings using structured output.
         
@@ -191,7 +169,6 @@ class FindingEvaluator:
         for eval_result in evaluation_results:
             try:
                 update_fields = {
-                    "status": Status.DISPUTED,
                     "evaluated_severity": self._normalize_severity(eval_result.severity),
                     "evaluation_comment": eval_result.comment,
                     "updated_at": datetime.now(timezone.utc)
@@ -201,6 +178,7 @@ class FindingEvaluator:
                 if eval_result.is_valid:
                     valid_count += 1
                 else:
+                    update_fields["status"] = Status.DISPUTED
                     disputed_count += 1
 
                 await self.mongodb.update_finding(task_id, eval_result.finding_id, update_fields)
