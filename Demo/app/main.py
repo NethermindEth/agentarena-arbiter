@@ -19,7 +19,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from app.models.finding_db import Status
 from app.config import config, Settings
-from app.models.finding_input import Finding, FindingInput
+from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
@@ -326,34 +326,30 @@ async def process_task(task_id: str):
             logger.info(f"No pending task findings found for task_id: {task_id}")
             return
             
+        logger.info(f"Pending findings: {pending_findings}")
+
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
         
         # Step 1: Identify duplicates
         logger.info(f"Starting deduplication for task_id: {task_id}")
+
         dedup_results = await deduplicator.process_findings(task_id, pending_findings)
+        duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
+
         logger.info(f"Deduplication completed for task_id: {task_id}: {dedup_results['summary']['originals_found']} originals, {dedup_results['summary']['duplicates_found']} duplicates")
         
-        # Step 2: Get the original findings for evaluation
-        original_findings = dedup_results["deduplication"]["original_findings"]
-        duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
-        
-        if not original_findings:
-            logger.info(f"No original findings to evaluate for task_id: {task_id}")
-            return
-        
-        # Step 2.5: Re-fetch pending findings after deduplication to get updated statuses
-        logger.info(f"Re-fetching pending findings after deduplication for task_id: {task_id}")
-        updated_pending_findings = await mongodb.get_pending_task_findings(task_id)
-        logger.info(f"Re-fetched {len(updated_pending_findings)} pending findings for task_id: {task_id}")
+        # Step 2: Re-fetch pending findings after deduplication to get updated statuses
+        deduplicated_findings = await mongodb.get_task_findings(task_id)
+        logger.info(f"Re-fetched {len(deduplicated_findings)} pending findings for task_id: {task_id}")
         
         # Step 3: Evaluate findings in batches, keeping duplicates together
         logger.info(f"Starting batch evaluation for task_id: {task_id}")
         evaluation_results = await evaluator.evaluate_all_findings(
             task_id,
-            updated_pending_findings,
+            deduplicated_findings,
             duplicate_relationships
         )
-        logger.info(f"Evaluation completed for task_id: {task_id}: {evaluation_results['application_results']['applied_count']} evaluations applied")
+        logger.info(f"Evaluation completed for task_id: {task_id}: {evaluation_results['application_results']['valid_count']} valid, {evaluation_results['application_results']['disputed_count']} disputed")
         
         # Step 4: Post results to backend endpoint (existing logic)
         try:
@@ -431,7 +427,7 @@ async def process_task(task_id: str):
                         logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}")
             
             logger.info(f"Task processing completed successfully for task_id: {task_id}")
-            logger.info(f"Processing summary - Original findings: {dedup_results['summary']['originals_found']}, Duplicates: {dedup_results['summary']['duplicates_found']}, Evaluated: {evaluation_results['application_results']['applied_count']}")
+            logger.info(f"Processing summary - Original findings: {dedup_results['summary']['originals_found']}, Duplicates: {dedup_results['summary']['duplicates_found']}, Evaluated: {evaluation_results['application_results']['disputed_count']} disputed")
             
         except Exception as post_error:
             logger.error(f"Error posting results to backend for task_id: {task_id}: {str(post_error)}")
@@ -621,6 +617,83 @@ async def get_task_findings(task_id: str):
         return [finding.model_dump() for finding in findings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving findings: {str(e)}")
+
+@app.post("/tasks/{task_id}/process")
+async def trigger_task_processing(
+    task_id: str,
+    x_api_key: str = Header(..., alias="X-API-Key")
+):
+    """
+    Manually trigger task processing for all pending findings of a task.
+    This endpoint allows immediate processing without waiting for the scheduled deadline.
+    
+    Args:
+        task_id: Task identifier for the task to process
+        x_api_key: API key for authentication
+        
+    Returns:
+        Processing status and summary
+    """
+    try:
+        if x_api_key != config.backend_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        # Check if this task has already been processed
+        processed_key = f"task_{task_id}"
+        processed_metadata = await mongodb.get_metadata(processed_key)
+        
+        if processed_metadata:
+            logger.info(f"Task {task_id} was already processed at {processed_metadata.get('processed_at')}")
+            return {
+                "task_id": task_id,
+                "status": "already_processed",
+                "message": f"Task was already processed at {processed_metadata.get('processed_at')}",
+                "processed_at": processed_metadata.get('processed_at'),
+                "scheduled_processing": processed_metadata.get('scheduled_processing', False)
+            }
+        
+        # Check if there are any pending findings
+        pending_findings = await mongodb.get_pending_task_findings(task_id)
+        
+        if not pending_findings:
+            return {
+                "task_id": task_id,
+                "status": "no_pending_findings",
+                "message": "No pending findings found for this task",
+                "total_findings": 0
+            }
+        
+        logger.info(f"Manual task processing triggered for task: {task_id} with {len(pending_findings)} pending findings")
+        
+        # Process the task findings
+        await process_task(task_id)
+        
+        # Mark this task as processed
+        current_time = datetime.now(timezone.utc)
+        await mongodb.set_metadata(processed_key, {
+            "processed_at": current_time.isoformat(),
+            "scheduled_processing": False,
+            "manual_trigger": True
+        })
+        
+        logger.info(f"Manual task processing completed for task: {task_id}")
+        
+        return {
+            "task_id": task_id,
+            "status": "processed",
+            "message": "Task processing completed successfully",
+            "processed_at": current_time.isoformat(),
+            "total_pending_findings": len(pending_findings),
+            "manual_trigger": True
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Error during manual task processing for task {task_id}: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Error processing task: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
