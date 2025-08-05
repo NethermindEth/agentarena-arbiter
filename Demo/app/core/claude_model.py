@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Any, List
+from app.models.finding_db import FindingDB
 from app.config import config
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
@@ -8,7 +9,7 @@ class FindingEvaluation(BaseModel):
     """Single finding evaluation result."""
     finding_id: str = Field(description="ID/title of the evaluated finding")
     is_valid: bool = Field(description="Whether the finding represents a valid security issue")
-    severity: str = Field(description="Severity level: low, medium, high, or critical")
+    severity: str = Field(description="Severity level: Low, Medium, or High")
     comment: str = Field(description="Brief explanation of the evaluation (2-3 sentences maximum)")
 
 class EvaluationResult(BaseModel):
@@ -55,7 +56,7 @@ def create_claude_model(
     
     # Override with any provided parameters
     if model_name:
-        claude_config["model_name"] = config.claude_model
+        claude_config["model_name"] = model_name
     if temperature is not None:
         claude_config["temperature"] = temperature
     if max_tokens:
@@ -96,7 +97,7 @@ def create_structured_evaluation_model(
 
 async def evaluate_findings_structured(
     model_with_structured_output: any,
-    findings_batch: List[any]
+    findings_batch: List[FindingDB]
 ) -> EvaluationResult:
     """
     Evaluate a batch of related findings using structured output to ensure proper format.
@@ -148,7 +149,23 @@ async def evaluate_findings_structured(
     - **Medium**: Moderate impact with some prerequisites or limited scope
     - **Low**: Minor issues or informational findings with minimal impact
 
-    {[finding.model_dump() for finding in findings_batch]}
+    ## RETURN FORMAT
+    Return a JSON object with the following structure:
+    ```json
+    {{
+        "results": [
+            {{
+                "finding_id": "Finding ID",
+                "is_valid": true/false,
+                "severity": "Low/Medium/High",
+                "comment": "Explanation of the evaluation"
+            }}
+        ]
+    }}
+    ```
+
+    ## FINDINGS TO ANALYZE:
+    {[finding.dump() for finding in findings_batch]}
     
     ## EVALUATION INSTRUCTIONS
     
@@ -161,6 +178,4 @@ async def evaluate_findings_structured(
     Remember: Provide one evaluation result per finding in the batch, using the finding's ID.
     """
     
-    # Invoke the model with structured output
-    result = await model_with_structured_output.ainvoke(prompt)
-    return result 
+    return await model_with_structured_output.ainvoke(prompt)

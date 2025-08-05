@@ -11,8 +11,8 @@ Provides functions to create and configure Gemini models with parameters from en
 
 class DuplicateFinding(BaseModel):
     """Single duplicate finding relationship."""
-    findingId: str = Field(description="ID of the finding that is a duplicate")
-    duplicateOf: str = Field(description="ID of the original finding")
+    findingId: str = Field(description="ID of the finding that is a duplicate", min_length=1)
+    duplicateOf: str = Field(description="ID of the original finding", min_length=1)
     explanation: str = Field(description="Explanation of why the finding is a duplicate")
 
 class DeduplicationResult(BaseModel):
@@ -96,7 +96,7 @@ def create_structured_deduplication_model(
     
     return model.with_structured_output(DeduplicationResult)
 
-def find_duplicates_structured(
+async def find_duplicates_structured(
     model_with_structured_output: any,
     findings: List[FindingDB]
 ) -> DeduplicationResult:
@@ -148,11 +148,25 @@ def find_duplicates_structured(
     - **Access Control**: Different descriptions of the same missing authorization check
     - **Integer Overflow**: Various reports about the same arithmetic operation vulnerability
 
+    ## RETURN FORMAT
+    Return a JSON object with the following structure:
+    ```json
+    {{
+        "results": [
+            {{
+                "findingId": "Finding ID",
+                "duplicateOf": "Original Finding ID",
+                "explanation": "Explanation of why it's a duplicate"
+            }}
+        ]
+    }}
+    ```
+
     ## FINDINGS TO ANALYZE:
 
     {[finding.model_dump() for finding in findings]}
 
     Analyze systematically: group similar findings, examine the actual vulnerability, compare root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability.
     """
-    
-    return model_with_structured_output.invoke(prompt)
+
+    return await model_with_structured_output.ainvoke(prompt)
