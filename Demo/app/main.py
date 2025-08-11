@@ -325,29 +325,33 @@ async def process_task(task_id: str):
         if not pending_findings:
             logger.info(f"No pending task findings found for task_id: {task_id}")
             return
-            
-        logger.info(f"Pending findings: {pending_findings}")
-
+        
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
+        
+        if not task_cache or task_cache.taskId != task_id:
+            logger.error(f"Task cache not available or mismatched for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
+            return
         
         # Step 1: Identify duplicates
         logger.info(f"Starting deduplication for task_id: {task_id}")
 
-        dedup_results = await deduplicator.process_findings(task_id, pending_findings)
+        dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
         duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
 
         logger.info(f"Deduplication completed for task_id: {task_id}: {dedup_results['summary']['originals_found']} originals, {dedup_results['summary']['duplicates_found']} duplicates")
         
         # Step 2: Re-fetch pending findings after deduplication to get updated statuses
         deduplicated_findings = await mongodb.get_task_findings(task_id)
-        logger.info(f"Re-fetched {len(deduplicated_findings)} pending findings for task_id: {task_id}")
+        logger.info(f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}")
         
         # Step 3: Evaluate findings in batches, keeping duplicates together
         logger.info(f"Starting batch evaluation for task_id: {task_id}")
+
         evaluation_results = await evaluator.evaluate_all_findings(
             task_id,
             deduplicated_findings,
-            duplicate_relationships
+            duplicate_relationships,
+            task_cache
         )
         logger.info(f"Evaluation completed for task_id: {task_id}: {evaluation_results['application_results']['valid_count']} valid, {evaluation_results['application_results']['disputed_count']} disputed")
         
@@ -387,11 +391,13 @@ async def process_task(task_id: str):
                 
                 for finding in latest_findings:
                     formatted_findings.append({
+                        "id": finding.str_id,
                         "title": finding.title,
                         "description": finding.description,
                         "severity": finding.severity,
                         "status": finding.status,
                         "file_paths": finding.file_paths,
+                        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
                         "created_at": finding.created_at.isoformat()
                     })
 
@@ -694,6 +700,103 @@ async def trigger_task_processing(
         logger.error(f"Error during manual task processing for task {task_id}: {str(e)}")
         logger.error(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Error processing task: {str(e)}")
+
+@app.post("/tasks/{task_id}/post")
+async def post_task_findings(
+    task_id: str,
+    x_api_key: str = Header(..., alias="X-API-Key")
+):
+    """
+    Post all findings for a task to the backend database.
+    This endpoint sends all findings for the specified task to the configured backend endpoint.
+    
+    Args:
+        task_id: Task identifier for the task to post findings for
+        x_api_key: API key for authentication
+        
+    Returns:
+        Posting status and summary
+    """
+    try:
+        if x_api_key != config.backend_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        # Check if backend endpoint is configured
+        if not config.backend_findings_endpoint:
+            raise HTTPException(
+                status_code=503, 
+                detail="Backend findings endpoint not configured"
+            )
+        
+        # Get all findings for this task
+        all_findings = await mongodb.get_task_findings(task_id)
+        
+        if not all_findings:
+            return {
+                "task_id": task_id,
+                "status": "no_findings",
+                "message": "No findings found for this task",
+                "total_findings": 0
+            }
+        
+        # Group findings by agent_id
+        agent_findings = {}
+        for finding in all_findings:
+            if finding.agent_id not in agent_findings:
+                agent_findings[finding.agent_id] = []
+            agent_findings[finding.agent_id].append(finding)
+        
+        # Post findings for each agent
+        for agent_id, findings in agent_findings.items():
+            try:
+                # Format findings data for the backend endpoint
+                formatted_findings = []
+                for finding in findings:
+                    formatted_findings.append({
+                        "id": finding.str_id,
+                        "title": finding.title,
+                        "description": finding.description,
+                        "severity": finding.severity,
+                        "status": finding.status,
+                        "file_paths": finding.file_paths,
+                        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
+                        "created_at": finding.created_at.isoformat()
+                    })
+
+                # Prepare payload for backend endpoint
+                payload = {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "findings": formatted_findings
+                }
+                
+                # Post to backend endpoint
+                async with httpx.AsyncClient() as client:
+                    headers = {"X-API-Key": config.backend_api_key}
+                    response = await client.post(config.backend_findings_endpoint, json=payload, headers=headers)
+                    
+                    if response.status_code == 200:
+                        logger.info(f"Successfully posted {len(findings)} findings for task {task_id}, agent {agent_id}")
+                    else:
+                        logger.error(f"Failed to post findings for agent {agent_id}. Status code: {response.status_code}, Response: {response.text}")
+                        
+            except Exception as agent_error:
+                logger.error(f"Error posting findings for agent {agent_id}: {str(agent_error)}")
+        
+        # Summary
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "message": f"Posted {len(all_findings)} findings to backend database",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Error posting task findings for task {task_id}: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Error posting findings: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,8 +1,14 @@
+import logging
 from typing import Optional, Dict, Any, List
+from app.types import TaskCache
 from app.models.finding_db import FindingDB
 from app.config import config
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
+from app.core.prompt_utils import build_context_section
+
+
+logger = logging.getLogger(__name__)
 
 """
 Gemini model configuration and initialization module.
@@ -98,7 +104,8 @@ def create_structured_deduplication_model(
 
 async def find_duplicates_structured(
     model_with_structured_output: any,
-    findings: List[FindingDB]
+    findings: List[FindingDB],
+    task_cache: TaskCache
 ) -> DeduplicationResult:
     """
     Find duplicate findings using structured output to ensure JSON format.
@@ -106,67 +113,74 @@ async def find_duplicates_structured(
     
     Args:
         model_with_structured_output: Model configured with structured output
-        findings_list: String containing all findings to analyze for duplicates
+        findings: List of findings to analyze for duplicates
+        task_context: Task context containing smart contract files and documentation
         
     Returns:
         Structured deduplication result with guaranteed JSON format
     """
+    
+    # Build context section
+    context_section = build_context_section(task_cache)
+    
     prompt = f"""
-    You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
+You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
-    ## TASK:
-    1. **Identify duplicate findings** - Find vulnerabilities that describe the same underlying security issue
-    2. **Select the highest quality original** - For each group of duplicates, choose the best finding as the original
-    3. **Provide detailed explanations** - Explain why each finding is considered a duplicate
+## TASK:
+1. **Identify duplicate findings** - Find vulnerabilities that describe the same underlying security issue
+2. **Select the highest quality original** - For each group of duplicates, choose the best finding as the original
+3. **Provide detailed explanations** - Explain why each finding is considered a duplicate
 
-    ## QUALITY CRITERIA for selecting the original:
-    - **Technical accuracy**: Most precise vulnerability description
-    - **Completeness**: Contains comprehensive details about the issue
-    - **Evidence**: Better code references, examples, or proof-of-concept
+## QUALITY CRITERIA for selecting the original:
+- **Technical accuracy**: Most precise vulnerability description
+- **Completeness**: Contains comprehensive details about the issue
+- **Evidence**: Better code references, examples, or proof-of-concept
 
-    ## DUPLICATE IDENTIFICATION RULES:
-    
-    ✅ **THESE ARE DUPLICATES:**
-    - Same underlying issue affecting the same function or code section
-    - Identical root cause with different descriptions
-    - Same security risk and attack vector with different wording
-    
-    ❌ **THESE ARE NOT DUPLICATES:**
-    - Similar issue affecting different functions or code sections
-    - Different root causes, even if descriptions are similar
-    - Different security risks or consequences that happen to use similar terminology
+## DUPLICATE IDENTIFICATION RULES:
 
-    ## OUTPUT REQUIREMENTS:
-    - **For each duplicate**: Include findingId, duplicateOf, and detailed explanation
-    - **Only duplicates in results**: Don't include the original findings
-    - **Empty list if no duplicates**: Return [] if no duplicate relationships exist
-    - **Clear explanations**: Each explanation should be 2-3 sentences describing why it's a duplicate
-    - **Use exact Finding IDs**: Make sure to use the exact Finding ID from the analysis
+✅ **THESE ARE DUPLICATES:**
+- Same underlying issue affecting the same function or code section
+- Identical root cause with different descriptions
+- Same security risk and attack vector with different wording
 
-    ## EXAMPLE DUPLICATE SCENARIOS:
-    - **Reentrancy**: Multiple findings about external calls before state updates in the same function
-    - **Access Control**: Different descriptions of the same missing authorization check
-    - **Integer Overflow**: Various reports about the same arithmetic operation vulnerability
+❌ **THESE ARE NOT DUPLICATES:**
+- Similar issue affecting different functions or code sections
+- Different root causes, even if descriptions are similar
+- Different security risks or consequences that happen to use similar terminology
 
-    ## RETURN FORMAT
-    Return a JSON object with the following structure:
-    ```json
-    {{
-        "results": [
-            {{
-                "findingId": "Finding ID",
-                "duplicateOf": "Original Finding ID",
-                "explanation": "Explanation of why it's a duplicate"
-            }}
-        ]
-    }}
-    ```
+## OUTPUT REQUIREMENTS:
+- **For each duplicate**: Include findingId, duplicateOf, and detailed explanation
+- **Only duplicates in results**: Don't include the original findings
+- **Empty list if no duplicates**: Return [] if no duplicate relationships exist
+- **Clear explanations**: Each explanation should be 2-3 sentences describing why it's a duplicate
+- **Use exact Finding IDs**: Make sure to use the exact Finding ID from the analysis
 
-    ## FINDINGS TO ANALYZE:
+## EXAMPLE DUPLICATE SCENARIOS:
+- **Reentrancy**: Multiple findings about external calls before state updates in the same function
+- **Access Control**: Different descriptions of the same missing authorization check
+- **Integer Overflow**: Various reports about the same arithmetic operation vulnerability
 
-    {[finding.model_dump() for finding in findings]}
+## RETURN FORMAT
+Return a JSON object with the following structure:
+```json
+{{
+    "results": [
+        {{
+            "findingId": "Finding ID",
+            "duplicateOf": "Original Finding ID",
+            "explanation": "Explanation of why it's a duplicate"
+        }}
+    ]
+}}
+```
 
-    Analyze systematically: group similar findings, examine the actual vulnerability, compare root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability.
-    """
+## SMART CONTRACT CONTEXT
+{context_section}
+
+## FINDINGS TO ANALYZE
+{[finding.dump() for finding in findings]}
+
+Analyze systematically: group similar findings, examine the actual vulnerability against the smart contract context, compare root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability. Use the smart contract context above to validate that findings are referring to the same code sections and vulnerabilities.
+"""
 
     return await model_with_structured_output.ainvoke(prompt)

@@ -3,7 +3,7 @@ from beanie import Document
 from pydantic import Field
 from datetime import datetime, timezone
 from enum import Enum
-from app.models.finding_input import Finding
+from app.models.finding_input import Finding, Severity
 
 class Status(str, Enum):
     PENDING = "pending"
@@ -12,11 +12,6 @@ class Status(str, Enum):
     UNIQUE_VALID = "unique_valid"
     BEST_VALID = "best_valid"
     DISPUTED = "disputed"
-
-class EvaluatedSeverity(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
 
 class FindingDB(Document, Finding):
     """
@@ -30,7 +25,7 @@ class FindingDB(Document, Finding):
     status: Status = Status.PENDING  # Default status
     deduplication_comment: Optional[str] = None  # Comment from deduplication
     evaluation_comment: Optional[str] = None  # Comment from evaluation
-    evaluated_severity: Optional[EvaluatedSeverity] = None  # Severity after evaluation
+    evaluated_severity: Optional[Severity] = None  # Severity after evaluation
     duplicateOf: Optional[str] = None  # ID of the original finding
     
     # Timestamps
@@ -52,11 +47,21 @@ class FindingDB(Document, Finding):
         Returns:
             Dictionary containing only title, description, severity, file_paths, and duplicateOf
         """
+
+        if self.duplicateOf:
+            return {
+                "id": str(self.id),
+                "title": self.title,
+                "description": self.description,
+                "severity": self.severity,
+                "file_paths": self.file_paths,
+                "duplicateOf": self.duplicateOf
+            }
+        
         return {
             "id": str(self.id),
             "title": self.title,
             "description": self.description,
             "severity": self.severity,
-            "file_paths": self.file_paths,
-            "duplicateOf": self.duplicateOf
+            "file_paths": self.file_paths
         }

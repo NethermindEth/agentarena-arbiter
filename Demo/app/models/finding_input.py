@@ -2,7 +2,6 @@ from typing import List
 from pydantic import BaseModel
 from enum import Enum
 
-# Only High and Medium risks should be submitted.
 class Severity(str, Enum):
     HIGH = "High"
     MEDIUM = "Medium"

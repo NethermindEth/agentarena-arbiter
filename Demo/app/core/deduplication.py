@@ -5,6 +5,7 @@ Uses Gemini 2.5 Pro to identify duplicates across all findings in a single promp
 import logging
 from typing import List, Dict, Any
 
+from app.types import TaskCache
 from app.core.gemini_model import create_structured_deduplication_model, find_duplicates_structured, DuplicateFinding, DeduplicationResult
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
@@ -29,7 +30,7 @@ class FindingDeduplication:
         # Initialize structured deduplication model
         self.deduplication_model = create_structured_deduplication_model()
     
-    async def deduplicate_findings(self, findings: List[FindingDB]) -> Dict[str, Any]:
+    async def deduplicate_findings(self, findings: List[FindingDB], task_cache: TaskCache) -> Dict[str, Any]:
         """
         Deduplicate findings using Gemini 2.5 Pro with structured output.
         
@@ -54,7 +55,7 @@ class FindingDeduplication:
             
             # Use structured output for guaranteed JSON format
             dedup_result: DeduplicationResult = await find_duplicates_structured(
-                self.deduplication_model, findings
+                self.deduplication_model, findings, task_cache
             )
             duplicate_results: List[DuplicateFinding] = dedup_result.results
             
@@ -93,10 +94,6 @@ class FindingDeduplication:
             for dup_finding in duplicate_results:
                 duplicate_ids.add(dup_finding.findingId)
                 original_ids.add(dup_finding.duplicateOf)
-            
-            logger.info(f"Findings: {findings}")
-            logger.info(f"Duplicate IDs: {duplicate_ids}")
-            logger.info(f"Original IDs: {original_ids}")
 
             # Separate findings into duplicates and originals
             duplicate_findings = [f for f in findings if f.str_id in duplicate_ids]
@@ -177,7 +174,7 @@ class FindingDeduplication:
             same_agent_findings = [f for f in findings_in_group if f.agent_id == finding.agent_id]
             
             if same_agent_findings:
-                if any(f.status == Status.SIMILAR_VALID for f in same_agent_findings):
+                if any(f.status == Status.BEST_VALID or f.status == Status.SIMILAR_VALID for f in same_agent_findings):
                     return Status.ALREADY_REPORTED
                 else:
                     return Status.SIMILAR_VALID
@@ -252,6 +249,7 @@ class FindingDeduplication:
                     if original_id is None:
                         logger.error(f"No duplicate relationship found for finding {finding.str_id}")
                     else:
+                        finding.duplicateOf = original_id
                         finding.deduplication_comment = f"Similar to finding '{original_id}': {explanation}"
                 elif new_status == Status.ALREADY_REPORTED:
                     explanation = duplicate_explanations.get(finding.str_id, "Previously reported by same agent")
@@ -259,7 +257,8 @@ class FindingDeduplication:
                     if original_id is None:
                         logger.error(f"No duplicate relationship found for finding {finding.str_id}")
                     else:
-                        finding.deduplication_comment = f"Already reported by same agent (original: '{original_id}'): {explanation}"
+                        finding.duplicateOf = original_id
+                        finding.deduplication_comment = f"Already reported in finding '{original_id}': {explanation}"
                         
                 # Save to database
                 success = await self.mongodb.update_finding(task_id, finding.str_id, finding)
@@ -288,7 +287,7 @@ class FindingDeduplication:
                 "error": str(e)
             }
     
-    async def process_findings(self, task_id: str, findings: List[FindingDB]) -> Dict[str, Any]:
+    async def process_findings(self, task_id: str, findings: List[FindingDB], task_cache: TaskCache) -> Dict[str, Any]:
         """
         Main entry point for processing findings through deduplication with comprehensive status management.
         
@@ -302,7 +301,7 @@ class FindingDeduplication:
         logger.info(f"Processing {len(findings)} findings for task {task_id}")
         
         # Step 1: Deduplicate findings
-        dedup_results = await self.deduplicate_findings(findings)
+        dedup_results = await self.deduplicate_findings(findings, task_cache)
         
         # Step 2: Apply comprehensive status management
         status_results = await self.apply_finding_statuses(task_id, findings, dedup_results)

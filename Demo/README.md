@@ -26,7 +26,7 @@
 - The evaluation assesses:
     - Validity: determines if the finding is a genuine smart contract vulnerability
     - Category: assigns a standard smart contract vulnerability category
-    - Severity: evaluates severity as `EvaluatedSeverity.LOW`, `MEDIUM`, or `HIGH`
+    - Severity: evaluates severity as `High`, `Medium`, `Low`, or `Info`
 - Results are applied as follows:
     - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
     - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
@@ -154,7 +154,7 @@ curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
 class Finding(BaseModel):
     title: str
     description: str
-    severity: Severity  # Enum: HIGH, MEDIUM, LOW, INFO
+    severity: Severity  # Enum: HIGH, MEDIUM, LOW, or INFO
     file_paths: List[str]
 
 class FindingInput(BaseModel):
@@ -166,25 +166,29 @@ class FindingInput(BaseModel):
 ```python
 class FindingDB(Finding):
     agent_id: str
-    status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, UNIQUE_VALID, DISPUTED
+    status: Status  # Enum: PENDING, ALREADY_REPORTED, SIMILAR_VALID, BEST_VALID, UNIQUE_VALID, or DISPUTED
     category: Optional[str]  # None for disputed findings
     category_id: Optional[str]  # None for disputed findings
-    evaluated_severity: Optional[EvaluatedSeverity]  # Enum: LOW, MEDIUM, HIGH, None for disputed
+    evaluated_severity: Optional[Severity]  # Enum: HIGH, MEDIUM, LOW, or INFO
     evaluation_comment: Optional[str]
     created_at: datetime
     updated_at: datetime
 ```
 
 ## Configuration
+The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
-- `CLAUDE_API_KEY`: API key for Claude AI model
+- `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
 - `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
 - `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
+- `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
+- `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
+- `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
+- `GEMINI_MAX_TOKENS`: Maximum tokens for Gemini AI model (default: 20000)
 - `DEBUG`: Enable debug mode (default: true)
 - `TESTING`: Enable testing mode (default: true)
-- `SIMILARITY_THRESHOLD`: Threshold for considering two findings as similar (0.0-1.0, default: 0.8)
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
 - `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
 - `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from Agent4rena backend
