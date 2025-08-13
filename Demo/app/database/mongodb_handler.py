@@ -36,6 +36,7 @@ class MongoDBHandler:
         
         self.connection_string = connection_string or config.mongodb_url or default_mongo_url
         self.database_name = "security_findings"
+        self.metadata_collection = "metadata"
     
     async def connect(self):
         """Connect to MongoDB database and initialize Beanie."""
@@ -178,78 +179,6 @@ class MongoDBHandler:
         )
         
         return result.modified_count > 0
-    
-    async def get_task_findings(self, task_id: str) -> List[FindingDB]:
-        """
-        Get all findings for a task.
-        
-        Args:
-            task_id: Task identifier
-            
-        Returns:
-            List of findings for the task
-        """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
-        
-        # Query database
-        cursor = collection.find({})
-        findings = []
-        
-        async for doc in cursor:
-            findings.append(FindingDB(**doc))
-        
-        return findings
-    
-    async def get_agent_findings(self, task_id: str, agent_id: str) -> List[FindingDB]:
-        """
-        Get all findings for an agent in a task.
-        
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier
-            
-        Returns:
-            List of findings for the agent in the task
-        """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
-        
-        # Query database
-        cursor = collection.find({"agent_id": agent_id})
-        findings = []
-        
-        async for doc in cursor:
-            findings.append(FindingDB(**doc))
-        
-        return findings
-        
-    async def get_agent_findings_since(self, task_id: str, agent_id: str, since_timestamp: datetime) -> List[FindingDB]:
-        """
-        Get all findings for an agent in a task created after a specific timestamp.
-        
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier
-            since_timestamp: Only include findings created after this timestamp
-            
-        Returns:
-            List of findings for the agent in the task since the specified timestamp
-        """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
-        
-        # Query database for findings created after the specified timestamp
-        cursor = collection.find({
-            "agent_id": agent_id,
-            "created_at": {"$gt": since_timestamp}
-        })
-        findings = []
-        
-        async for doc in cursor:
-            findings.append(FindingDB(**doc))
-        
-        return findings
         
     async def get_metadata(self, key: str) -> Optional[Dict[str, Any]]:
         """
@@ -261,11 +190,8 @@ class MongoDBHandler:
         Returns:
             Metadata value if found, None otherwise
         """
-        # Use a separate collection for metadata
-        metadata_collection = "metadata"
-        
         # Query database
-        doc = await self.db[metadata_collection].find_one({"key": key})
+        doc = await self.db[self.metadata_collection].find_one({"key": key})
         
         return doc
         
@@ -280,15 +206,11 @@ class MongoDBHandler:
         Returns:
             True if operation was successful
         """
-        # Use a separate collection for metadata
-        metadata_collection = "metadata"
-        
         # Add the key to the value dictionary
         value["key"] = key
-        value["updated_at"] = datetime.utcnow()
         
         # Upsert the document (insert if not exists, update if exists)
-        result = await self.db[metadata_collection].update_one(
+        result = await self.db[self.metadata_collection].update_one(
             {"key": key},
             {"$set": value},
             upsert=True
@@ -296,21 +218,34 @@ class MongoDBHandler:
         
         return result.acknowledged
 
-    async def get_pending_task_findings(self, task_id: str) -> List[FindingDB]:
+    async def get_findings(self, task_id: str,
+                           agent_id: Optional[str] = None,
+                           status: Optional[Status] = None,
+                           since_timestamp: Optional[datetime] = None) -> List[FindingDB]:
         """
-        Get all pending task findings for a task.
+        Get all findings for a task with optional agent, status, and since_timestamp filters.
         
         Args:
             task_id: Task identifier
-            
+            agent_id: Agent identifier (optional)
+            status: Status of the findings (optional)
+            since_timestamp: Only include findings created after this timestamp (optional)
         Returns:
-            List of all pending task findings for the task
+            List of all findings matching the filters
         """
         collection_name = self.get_collection_name(task_id)
         collection = self.db[collection_name]
         
-        # Query database for all pending task findings
-        cursor = collection.find({"status": Status.PENDING})
+        # Query database for task findings
+        query = {}
+        if agent_id:
+            query["agent_id"] = agent_id
+        if status:
+            query["status"] = status
+        if since_timestamp:
+            query["created_at"] = {"$gt": since_timestamp}
+
+        cursor = collection.find(query)
         findings = []
         
         async for doc in cursor:
