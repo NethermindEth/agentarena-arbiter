@@ -719,7 +719,10 @@ async def process_findings(
         
         logger.info(f"Accepted findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
-        # TODO: 4. Validate findings
+        # 4. Delete any existing findings for this agent to allow only one submission
+        deleted_count = await mongodb.delete_agent_findings(input_data.task_id, agent_id)
+        if deleted_count > 0:
+            logger.info(f"Deleted {deleted_count} existing findings for task_id: {input_data.task_id}, agent_id: {agent_id} (overriding previous submission)")
 
         # 5. Store findings as pending processing
         for finding in input_data.findings:

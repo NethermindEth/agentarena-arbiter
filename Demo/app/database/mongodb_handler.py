@@ -180,6 +180,26 @@ class MongoDBHandler:
         
         return result.modified_count > 0
         
+    async def delete_agent_findings(self, task_id: str, agent_id: str) -> int:
+        """
+        Delete all findings for a specific agent and task.
+        Used when an agent makes a new submission to override the previous one.
+        
+        Args:
+            task_id: Task identifier
+            agent_id: Agent identifier
+            
+        Returns:
+            Number of findings deleted
+        """
+        collection_name = self.get_collection_name(task_id)
+        collection = self.db[collection_name]
+        
+        # Delete all findings for this agent and task
+        result = await collection.delete_many({"agent_id": agent_id})
+        
+        return result.deleted_count
+
     async def get_metadata(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Get metadata from the metadata collection.
