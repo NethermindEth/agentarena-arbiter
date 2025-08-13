@@ -17,7 +17,7 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from app.models.finding_db import Status
+from app.models.finding_db import FindingDB, Status
 from app.config import config, Settings
 from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
@@ -121,7 +121,7 @@ async def process_task_scheduled(task_id: str):
         # Mark this task as processed
         current_time = datetime.now(timezone.utc)
         await mongodb.set_metadata(processed_key, {
-            "processed_at": current_time.isoformat(),
+            "processed_at": current_time,
             "scheduled_processing": True
         })
         
@@ -287,8 +287,9 @@ async def set_task_cache(config: Settings):
 
     logger.info(f"Task cache set successfully for task {config.task_id}")
 
-    # Schedule task processing
-    await schedule_task_processing(config.task_id, task_cache.startTime, task_cache.deadline)
+    # Schedule task processing for all tasks except the special TESTTASK
+    if config.task_id != "TESTTASK":
+        await schedule_task_processing(config.task_id, task_cache.startTime, task_cache.deadline)
 
 async def set_agent_data(config: Settings):
     """Fetch agent data from external API and cache in memory."""
@@ -320,7 +321,7 @@ async def process_task(task_id: str):
         logger.info(f"Processing task findings for task_id: {task_id}")
         
         # Get all pending task findings for this task
-        pending_findings = await mongodb.get_pending_task_findings(task_id)
+        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
         
         if not pending_findings:
             logger.info(f"No pending task findings found for task_id: {task_id}")
@@ -338,10 +339,14 @@ async def process_task(task_id: str):
         dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
         duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
 
-        logger.info(f"Deduplication completed for task_id: {task_id}: {dedup_results['summary']['originals_found']} originals, {dedup_results['summary']['duplicates_found']} duplicates")
-        
+        logger.info(
+            f"Deduplication completed for task_id: {task_id}: "
+            f"{dedup_results['summary']['originals_found']} originals, "
+            f"{dedup_results['summary']['duplicates_found']} duplicates"
+        )
+
         # Step 2: Re-fetch pending findings after deduplication to get updated statuses
-        deduplicated_findings = await mongodb.get_task_findings(task_id)
+        deduplicated_findings = await mongodb.get_findings(task_id=task_id)
         logger.info(f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}")
         
         # Step 3: Evaluate findings in batches, keeping duplicates together
@@ -353,7 +358,12 @@ async def process_task(task_id: str):
             duplicate_relationships,
             task_cache
         )
-        logger.info(f"Evaluation completed for task_id: {task_id}: {evaluation_results['application_results']['valid_count']} valid, {evaluation_results['application_results']['disputed_count']} disputed")
+
+        logger.info(
+            f"Evaluation completed for task_id: {task_id}: "
+            f"{evaluation_results['application_results']['valid_count']} valid, "
+            f"{evaluation_results['application_results']['disputed_count']} disputed"
+        )
         
         # Step 4: Post results to backend endpoint (existing logic)
         try:
@@ -361,35 +371,18 @@ async def process_task(task_id: str):
             agent_ids = set(finding.agent_id for finding in pending_findings)
             
             for agent_id in agent_ids:
-                # Get the timestamp of the last sync (will be None if not found)
-                last_sync_key = f"last_sync_{task_id}_{agent_id}"
-                last_sync = await mongodb.get_metadata(last_sync_key)
-                last_sync_time = last_sync.get("timestamp") if last_sync else None
-                
-                # Fetch findings created after the last sync time
-                if last_sync_time:
-                    # Get findings created after the last sync
-                    latest_findings = await mongodb.get_agent_findings_since(
-                        task_id, 
-                        agent_id, 
-                        last_sync_time
-                    )
-                    logger.info(f"Found {len(latest_findings)} new findings since last sync at {last_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
-                else:
-                    # If there's no last sync time, get all findings
-                    latest_findings = await mongodb.get_agent_findings(task_id, agent_id)
-                    logger.info(f"No previous sync found. Syncing all {len(latest_findings)} findings for task_id: {task_id}, agent_id: {agent_id}")
+                findings = await mongodb.get_findings(task_id=task_id, agent_id=agent_id)
+                logger.info(f"Syncing all {len(findings)} findings for task_id: {task_id}, agent_id: {agent_id}")
 
                 # Skip if there are no findings to sync
-                if not latest_findings:
+                if not findings:
                     logger.info(f"No new findings to sync with backend endpoint for task_id: {task_id}, agent_id: {agent_id}")
                     continue
 
                 # Format findings data for the backend endpoint
                 formatted_findings = []
-                current_sync_time = datetime.now(timezone.utc)
                 
-                for finding in latest_findings:
+                for finding in findings:
                     formatted_findings.append({
                         "id": finding.str_id,
                         "title": finding.title,
@@ -418,22 +411,18 @@ async def process_task(task_id: str):
                         logger.debug(f"Backend API response for task_id: {task_id}, agent_id: {agent_id}: {response.json()}")
                         logger.debug(f"Backend API status code for task_id: {task_id}, agent_id: {agent_id}: {response.status_code}")
                         
-                        # If successful, update the last sync timestamp
                         if response.status_code == 200:
-                            await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                            logger.info(f"Updated last sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
+                            logger.info(f"Successfully posted findings to backend for task_id: {task_id}, agent_id: {agent_id}")
                         else:
                             logger.error(f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}")
                 else:
-                    # If external API is not configured but in testing mode, still update timestamp
-                    if config.testing:
-                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                        logger.info(f"TESTING MODE: No backend API configured, but updated sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}")
-                    else:
-                        logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}")
+                    logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}")
             
             logger.info(f"Task processing completed successfully for task_id: {task_id}")
-            logger.info(f"Processing summary - Original findings: {dedup_results['summary']['originals_found']}, Duplicates: {dedup_results['summary']['duplicates_found']}, Evaluated: {evaluation_results['application_results']['disputed_count']} disputed")
+            logger.info(f"Processing summary: "
+                        f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
+                        f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+                        f"Total: {len(pending_findings)}")
             
         except Exception as post_error:
             logger.error(f"Error posting results to backend for task_id: {task_id}: {str(post_error)}")
@@ -442,6 +431,163 @@ async def process_task(task_id: str):
         error_trace = traceback.format_exc()
         logger.error(f"Error during task processing for task_id: {task_id}: {str(e)}")
         logger.error(f"Traceback for task_id: {task_id}: {error_trace}")
+
+async def process_task_for_agent(task_id: str, agent_id: str):
+    """
+    Process only the pending findings for a specific agent and task.
+    Intended for the TESTTASK flow where submissions are processed immediately.
+    """
+    try:
+        logger.info(f"Processing task findings for task_id: {task_id}, agent_id: {agent_id}")
+
+        # Get pending task findings for this agent
+        pending_findings = await mongodb.get_findings(task_id=task_id, agent_id=agent_id, status=Status.PENDING)
+
+        if not pending_findings:
+            logger.info(f"No pending findings for task_id: {task_id}, agent_id: {agent_id}")
+            return
+
+        logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}, agent_id: {agent_id}")
+
+        if not task_cache or task_cache.taskId != task_id:
+            logger.error(
+                f"Task cache not available or mismatched for task_id: {task_id}. "
+                f"Evaluation cannot proceed without smart contract context."
+            )
+            return
+
+        # Deduplicate only this agent's pending findings
+        logger.info(f"Starting deduplication for task_id: {task_id}, agent_id: {agent_id}")
+        dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
+        duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
+        logger.info(
+            f"Deduplication completed for task_id: {task_id}, agent_id: {agent_id}: "
+            f"{dedup_results['summary']['originals_found']} originals, "
+            f"{dedup_results['summary']['duplicates_found']} duplicates"
+        )
+
+        # Re-fetch findings for this agent after deduplication
+        deduplicated_findings = await get_latest_findings(task_id, agent_id)
+        logger.info(
+            f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}, agent_id: {agent_id}"
+        )
+
+        # Evaluate only this agent's findings
+        logger.info(f"Starting evaluation for task_id: {task_id}, agent_id: {agent_id}")
+        evaluation_results = await evaluator.evaluate_all_findings(
+            task_id,
+            deduplicated_findings,
+            duplicate_relationships,
+            task_cache
+        )
+        logger.info(
+            f"Evaluation completed for task_id: {task_id}, agent_id: {agent_id}: "
+            f"{evaluation_results['application_results']['valid_count']} valid, "
+            f"{evaluation_results['application_results']['disputed_count']} disputed"
+        )
+
+        # Post only this agent's findings to backend, honoring last-sync for TESTTASK
+        try:
+            latest_findings = await get_latest_findings(task_id, agent_id)
+
+            if not latest_findings:
+                logger.info(
+                    f"No new findings to sync with backend endpoint for task_id: {task_id}, agent_id: {agent_id}"
+                )
+                return
+
+            formatted_findings = []
+            current_sync_time = datetime.now(timezone.utc)
+            for finding in latest_findings:
+                formatted_findings.append({
+                    "id": finding.str_id,
+                    "title": finding.title,
+                    "description": finding.description,
+                    "severity": finding.severity,
+                    "status": finding.status,
+                    "file_paths": finding.file_paths,
+                    "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
+                    "created_at": finding.created_at.isoformat()
+                })
+
+            payload = {
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "findings": formatted_findings
+            }
+
+            backend_endpoint = config.backend_findings_endpoint
+            if backend_endpoint:
+                async with httpx.AsyncClient() as client:
+                    headers = {"X-API-Key": config.backend_api_key}
+                    response = await client.post(backend_endpoint, json=payload, headers=headers)
+                    logger.debug(
+                        f"Backend API response for task_id: {task_id}, agent_id: {agent_id}: {response.json()}"
+                    )
+                    logger.debug(
+                        f"Backend API status code for task_id: {task_id}, agent_id: {agent_id}: {response.status_code}"
+                    )
+
+                    if response.status_code == 200:
+                        last_sync_key = f"last_sync_{task_id}_{agent_id}"
+                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                        logger.info(
+                            f"Updated last sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}"
+                        )
+                    elif response.status_code != 200:
+                        logger.error(
+                            f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}"
+                        )
+            else:
+                # If testing mode is enabled, update the last sync timestamp even if no backend API is configured
+                if config.testing:
+                    last_sync_key = f"last_sync_{task_id}_{agent_id}"
+                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
+                    logger.info(
+                        f"No backend API configured, but updated sync timestamp to {current_sync_time} "
+                        f"for task_id: {task_id}, agent_id: {agent_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}"
+                    )
+
+            logger.info(f"Task processing completed successfully for task_id: {task_id}, agent_id: {agent_id}")
+            logger.info(f"Processing summary: "
+                        f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
+                        f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+                        f"Total: {len(pending_findings)}")
+        except Exception as post_error:
+            logger.error(
+                f"Error posting results to backend for task_id: {task_id}, agent_id: {agent_id}: {str(post_error)}"
+            )
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(
+            f"Error during agent-specific task processing for task_id: {task_id}, agent_id: {agent_id}: {str(e)}"
+        )
+        logger.error(f"Traceback for task_id: {task_id}, agent_id: {agent_id}: {error_trace}")
+
+async def get_latest_findings(task_id: str, agent_id: str) -> List[FindingDB]:
+    last_sync_key = f"last_sync_{task_id}_{agent_id}"
+    last_sync = await mongodb.get_metadata(last_sync_key)
+    last_sync_time = last_sync.get("timestamp") if last_sync else None
+
+    if last_sync_time:
+        latest_findings = await mongodb.get_findings(
+                        task_id=task_id,
+                        agent_id=agent_id,
+                        since_timestamp=last_sync_time
+                    )
+        logger.info(f"Found {len(latest_findings)} new findings since last sync at {last_sync_time} "
+                    f"for task_id: {task_id}, agent_id: {agent_id}")
+    else:
+        latest_findings = await mongodb.get_findings(task_id=task_id, agent_id=agent_id)
+        logger.info(f"No previous sync found. Fetched all {len(latest_findings)} findings for "
+                    f"task_id: {task_id}, agent_id: {agent_id}")
+        
+    return latest_findings
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -607,6 +753,76 @@ async def process_findings(
         # Otherwise, wrap it in a 500 error
         raise HTTPException(status_code=500, detail=f"Error processing findings: {str(e)}")
 
+@app.post("/test/process_findings")
+async def test_process_findings(
+    input_data: FindingInput,
+    background_tasks: BackgroundTasks,
+    x_api_key: str = Header(..., alias="X-API-Key")
+):
+    """
+    Submit findings for test task and queue processing in the background.
+    """
+    try:
+        # 1. Basic validation
+        if input_data.task_id != "TESTTASK":
+            raise HTTPException(status_code=400, detail="Invalid test task ID")
+        
+        if len(input_data.findings) > config.max_findings_per_submission:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission."
+            )
+
+        # 2. Verify API key and resolve agent_id
+        agent_id = None
+        if config.testing and not agents_cache:
+            agent_id = "test-agent"
+            logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
+        elif not agents_cache:
+            raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
+        else:
+            for agent in agents_cache:
+                if agent.get("api_key") == x_api_key:
+                    agent_id = agent.get("agent_id")
+                    break
+
+        if not agent_id:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # 3. Store findings as pending
+        for finding in input_data.findings:
+            await mongodb.create_finding(
+                task_id=input_data.task_id,
+                agent_id=agent_id,
+                finding=finding,
+                status=Status.PENDING
+            )
+
+        # 4. Post submission count
+        await post_submission(input_data.task_id, agent_id, len(input_data.findings))
+
+        # 5. Queue processing in background for only this agent (do not await)
+        logger.info(
+            f"Queuing background processing for test task_id: {input_data.task_id}, agent_id: {agent_id}"
+        )
+        background_tasks.add_task(process_task_for_agent, input_data.task_id, agent_id)
+
+        # 6. Response (immediate)
+        return {
+            "task_id": input_data.task_id,
+            "agent_id": agent_id,
+            "total_findings": len(input_data.findings),
+            "queued": True
+        }
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"[TEST] Error in immediate processing: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Error in test processing: {str(e)}")
+
 @app.get("/tasks/{task_id}/findings", response_model=List[Dict[str, Any]])
 async def get_task_findings(task_id: str):
     """
@@ -619,7 +835,7 @@ async def get_task_findings(task_id: str):
         List of findings for the task
     """
     try:
-        findings = await mongodb.get_task_findings(task_id)
+        findings = await mongodb.get_findings(task_id)
         return [finding.model_dump() for finding in findings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving findings: {str(e)}")
@@ -659,7 +875,7 @@ async def trigger_task_processing(
             }
         
         # Check if there are any pending findings
-        pending_findings = await mongodb.get_pending_task_findings(task_id)
+        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
         
         if not pending_findings:
             return {
@@ -677,9 +893,8 @@ async def trigger_task_processing(
         # Mark this task as processed
         current_time = datetime.now(timezone.utc)
         await mongodb.set_metadata(processed_key, {
-            "processed_at": current_time.isoformat(),
-            "scheduled_processing": False,
-            "manual_trigger": True
+            "processed_at": current_time,
+            "scheduled_processing": False
         })
         
         logger.info(f"Manual task processing completed for task: {task_id}")
@@ -729,7 +944,7 @@ async def post_task_findings(
             )
         
         # Get all findings for this task
-        all_findings = await mongodb.get_task_findings(task_id)
+        all_findings = await mongodb.get_findings(task_id=task_id)
         
         if not all_findings:
             return {

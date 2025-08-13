@@ -237,7 +237,8 @@ class FindingEvaluator:
         else:
             # Simple batching without duplicate consideration
             individual_findings_groups = [findings[i:i + self.batch_size] for i in range(0, len(findings), self.batch_size)]
-        
+            related_findings_groups = []
+
         all_evaluation_results = []
         
         # Process each batch
