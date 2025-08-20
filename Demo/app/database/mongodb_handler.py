@@ -1,12 +1,12 @@
 """
 MongoDB database handler for security findings.
-Handles storage and retrieval of findings in MongoDB using Motor with Beanie models.
+Handles storage and retrieval of findings using native MongoDB Motor operations.
 """
 from typing import List, Dict, Any, Optional
 import motor.motor_asyncio
 from datetime import datetime, timezone
 import os
-from beanie import init_beanie, PydanticObjectId
+from bson import ObjectId
 
 from app.models.finding_input import FindingInput, Finding
 from app.models.finding_db import FindingDB, Status
@@ -14,8 +14,8 @@ from app.config import config
 
 class MongoDBHandler:
     """
-    MongoDB database handler using Motor for thread-safe operations.
-    Uses Beanie models for data validation and serialization.
+    MongoDB database handler using Motor for async operations.
+    Uses Pydantic models for data validation and serialization.
     """
     
     def __init__(self, connection_string: str = None):
@@ -37,12 +37,9 @@ class MongoDBHandler:
         self.metadata_collection = "metadata"
     
     async def connect(self):
-        """Connect to MongoDB database and initialize Beanie."""
+        """Connect to MongoDB database."""
         self.client = motor.motor_asyncio.AsyncIOMotorClient(self.connection_string)
         self.db = self.client[self.database_name]
-        
-        # Initialize Beanie with the database and document models
-        await init_beanie(database=self.db, document_models=[FindingDB])
     
     async def close(self):
         """Close MongoDB connection."""
@@ -167,9 +164,9 @@ class MongoDBHandler:
         if "updated_at" not in update_fields:
             update_fields["updated_at"] = datetime.now(timezone.utc)
         
-        # Convert string id to ObjectId using PydanticObjectId
+        # Convert string id to ObjectId
         try:
-            object_id = PydanticObjectId(id)
+            object_id = ObjectId(id)
         except Exception:
             return False
         

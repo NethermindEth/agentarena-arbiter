@@ -76,6 +76,7 @@ class TestFindingEvaluator:
         assert "application_results" in result
         assert result["application_results"]["valid_count"] == 0
         assert result["application_results"]["disputed_count"] == 0
+        assert result["application_results"]["failed_count"] == 0
     
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_success(self, evaluator, sample_findings, sample_task_cache):
@@ -101,6 +102,7 @@ class TestFindingEvaluator:
             
             assert result["application_results"]["valid_count"] == 1
             assert result["application_results"]["disputed_count"] == 0
+            assert result["application_results"]["failed_count"] == 0
             
             # Verify database update was called
             mock_mongodb.update_finding.assert_called()

@@ -124,6 +124,7 @@ class TestCompleteWorkflow:
             # Verify evaluation results
             assert eval_result["application_results"]["valid_count"] == 4
             assert eval_result["application_results"]["disputed_count"] == 0
+            assert eval_result["application_results"]["failed_count"] == 0
             
             # Verify that findings were grouped correctly for evaluation
             assert mock_evaluate_batch.call_count == 2

@@ -369,7 +369,8 @@ async def process_task(task_id: str):
         logger.info(
             f"Evaluation completed for task_id: {task_id}: "
             f"{evaluation_results['application_results']['valid_count']} valid, "
-            f"{evaluation_results['application_results']['disputed_count']} disputed"
+            f"{evaluation_results['application_results']['disputed_count']} disputed, "
+            f"{evaluation_results['application_results']['failed_count']} failed to update"
         )
         
         # Step 4: Post results to backend endpoint (existing logic)
@@ -429,6 +430,7 @@ async def process_task(task_id: str):
             logger.info(f"Processing summary: "
                         f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
                         f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+                        f"Failed: {evaluation_results['application_results']['failed_count']}, "
                         f"Total: {len(pending_findings)}")
             
         except Exception as post_error:
@@ -490,7 +492,8 @@ async def process_task_for_agent(task_id: str, agent_id: str):
         logger.info(
             f"Evaluation completed for task_id: {task_id}, agent_id: {agent_id}: "
             f"{evaluation_results['application_results']['valid_count']} valid, "
-            f"{evaluation_results['application_results']['disputed_count']} disputed"
+            f"{evaluation_results['application_results']['disputed_count']} disputed, "
+            f"{evaluation_results['application_results']['failed_count']} failed to update"
         )
 
         # Post only this agent's findings to backend, honoring last-sync for TESTTASK
@@ -554,6 +557,7 @@ async def process_task_for_agent(task_id: str, agent_id: str):
             logger.info(f"Processing summary: "
                         f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
                         f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+                        f"Failed: {evaluation_results['application_results']['failed_count']}, "
                         f"Total: {len(pending_findings)}")
         except Exception as post_error:
             logger.error(

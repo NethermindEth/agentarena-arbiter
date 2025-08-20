@@ -1,8 +1,8 @@
 from typing import Optional, Dict, Any
-from beanie import Document
-from pydantic import Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime, timezone
 from enum import Enum
+from bson import ObjectId
 from app.models.finding_input import Finding, Severity
 
 class Status(str, Enum):
@@ -13,11 +13,19 @@ class Status(str, Enum):
     BEST_VALID = "best_valid"
     DISPUTED = "disputed"
 
-class FindingDB(Document, Finding):
+class FindingDB(Finding):
     """
     Model representing a processed security finding stored in the database.
     Extends the Finding model with additional system-managed fields.
     """
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # Allow ObjectId type
+        populate_by_name=True,         # Allow both 'id' and '_id' field names
+    )
+    
+    # MongoDB document ID
+    id: Optional[ObjectId] = Field(default=None, alias="_id")
+    
     # Additional required fields
     agent_id: str
     

@@ -169,6 +169,7 @@ class FindingEvaluator:
         """
         valid_count = 0
         disputed_count = 0
+        failed_count = 0
         
         for eval_result in evaluation_results:
             try:
@@ -181,19 +182,25 @@ class FindingEvaluator:
                 if not eval_result.comment:
                     logger.warning(f"evaluation_comment is empty for finding {eval_result.finding_id}")
                 
-                # Track validity for statistics
-                if eval_result.is_valid:
-                    valid_count += 1
-                    logger.info(f"Updating valid finding {eval_result.finding_id} (no status change)")
-                else:
+                # Set status to DISPUTED for invalid findings
+                if not eval_result.is_valid:
                     update_fields["status"] = Status.DISPUTED
-                    disputed_count += 1
-                    logger.info(f"Updating finding {eval_result.finding_id} with status {update_fields['status']}")
                 
                 success = await self.mongodb.update_finding(task_id, eval_result.finding_id, update_fields)
-                logger.info(f"Updated finding {eval_result.finding_id}: {success}")
+                
+                if success:
+                    if eval_result.is_valid:
+                        valid_count += 1
+                        logger.info(f"Successfully updated valid finding {eval_result.finding_id} (no status change)")
+                    else:
+                        disputed_count += 1
+                        logger.info(f"Successfully updated finding {eval_result.finding_id} with status {update_fields['status']}")
+                else:
+                    failed_count += 1
+                    logger.error(f"Failed to update finding {eval_result.finding_id} in database")
 
             except Exception as e:
+                failed_count += 1
                 logger.error(f"Error applying evaluation for finding '{eval_result.finding_id}': {str(e)}")
                 logger.error(f"eval_result data: is_valid={eval_result.is_valid}, severity={eval_result.severity}, comment={eval_result.comment}")
                 continue
@@ -201,7 +208,8 @@ class FindingEvaluator:
         return {
             "total_evaluations": len(evaluation_results),
             "valid_count": valid_count,
-            "disputed_count": disputed_count
+            "disputed_count": disputed_count,
+            "failed_count": failed_count
         }
     
     async def evaluate_all_findings(self, task_id: str, findings: List[FindingDB], duplicate_relationships: List[DuplicateFinding], task_cache: TaskCache) -> Dict[str, Any]:
@@ -225,7 +233,8 @@ class FindingEvaluator:
                 "application_results": {
                     "total_evaluations": 0,
                     "valid_count": 0,
-                    "disputed_count": 0
+                    "disputed_count": 0,
+                    "failed_count": 0
                 }
             }
         
@@ -264,6 +273,13 @@ class FindingEvaluator:
             "application_results": apply_results
         }
         
-        logger.info(f"Completed batch evaluation: {apply_results['disputed_count']} disputed evaluations applied")
+        disputed_count = apply_results['disputed_count']
+        valid_count = apply_results['valid_count']
+        failed_count = apply_results['failed_count']
+        
+        if failed_count > 0:
+            logger.warning(f"Completed batch evaluation: {valid_count} valid, {disputed_count} disputed, {failed_count} failed to update")
+        else:
+            logger.info(f"Completed batch evaluation: {valid_count} valid, {disputed_count} disputed evaluations applied")
         
         return results
