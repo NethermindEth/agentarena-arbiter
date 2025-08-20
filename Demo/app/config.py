@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     gemini_max_tokens: int = Field(20000, env="GEMINI_MAX_TOKENS")
     
     debug: bool = Field(False, env="DEBUG")
-    testing: bool = Field(False, env="TESTING")
     backend_findings_endpoint: str = Field(..., env="BACKEND_FINDINGS_ENDPOINT")
     backend_task_repository_endpoint: str = Field(..., env="BACKEND_TASK_REPOSITORY_ENDPOINT")
     backend_task_details_endpoint: str = Field(..., env="BACKEND_TASK_DETAILS_ENDPOINT")

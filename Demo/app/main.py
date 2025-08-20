@@ -142,9 +142,12 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info("✅ Started APScheduler for task processing jobs")
         
-        # Initial fetch and cache of data
-        await set_task_cache(config)
-        await set_agent_data(config)
+        try:
+            # Initial fetch and cache of data
+            await set_task_cache(config)
+            await set_agent_data(config)
+        except Exception as e:
+            logger.error(f"Error during initial cache setup: {str(e)}")
 
         # --------------------------------------------------------------
         # Schedule periodic refreshers, so caches stay reasonably fresh
@@ -296,17 +299,21 @@ async def set_agent_data(config: Settings):
     if not config.backend_agents_endpoint or not config.backend_api_key:
         logger.warning("BACKEND_AGENTS_ENDPOINT or BACKEND_API_KEY not configured, skipping agent data fetch")
         return
-        
-    async with httpx.AsyncClient() as client:
-        headers = {"X-API-Key": config.backend_api_key}
-        response = await client.get(config.backend_agents_endpoint, headers=headers)
-        
-        if response.status_code == 200:
-            global agents_cache
-            agents_cache = response.json()
-            logger.info(f"Agent data fetched and cached. Count: {len(agents_cache)}")
-        else:
-            logger.error(f"Failed to fetch agent data. Status code: {response.status_code}, Response: {response.text}")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"X-API-Key": config.backend_api_key}
+            response = await client.get(config.backend_agents_endpoint, headers=headers)
+            
+            if response.status_code == 200:
+                global agents_cache
+                agents_cache = response.json()
+                logger.info(f"Agent data fetched and cached. Count: {len(agents_cache)}")
+            else:
+                logger.error(f"Failed to fetch agent data. Status code: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        logger.error(f"Error fetching agent data: {str(e)}")
+        return
 
 async def process_task(task_id: str):
     """
@@ -539,18 +546,9 @@ async def process_task_for_agent(task_id: str, agent_id: str):
                             f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}"
                         )
             else:
-                # If testing mode is enabled, update the last sync timestamp even if no backend API is configured
-                if config.testing:
-                    last_sync_key = f"last_sync_{task_id}_{agent_id}"
-                    await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                    logger.info(
-                        f"No backend API configured, but updated sync timestamp to {current_sync_time} "
-                        f"for task_id: {task_id}, agent_id: {agent_id}"
-                    )
-                else:
-                    logger.warning(
-                        f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}"
-                    )
+                logger.warning(
+                    f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}"
+                )
 
             logger.info(f"Task processing completed successfully for task_id: {task_id}, agent_id: {agent_id}")
             logger.info(f"Processing summary: "
@@ -700,12 +698,8 @@ async def process_findings(
         # 3. Verify API key and get agent_id from agents_cache
         agent_id = None
         
-        # Check if testing mode is enabled and agents_cache is empty
-        if config.testing and not agents_cache:
-            agent_id = "test-agent"
-            logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
-        elif not agents_cache:
-            # If not in testing mode and agents_cache is empty, reject the request
+        if not agents_cache:
+            # If agents_cache is empty, reject the request
             raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
         else:
             # Verify API key against known agents
@@ -778,10 +772,7 @@ async def test_process_findings(
 
         # 2. Verify API key and resolve agent_id
         agent_id = None
-        if config.testing and not agents_cache:
-            agent_id = "test-agent"
-            logger.info(f"Testing mode enabled, using test agent_id: {agent_id}")
-        elif not agents_cache:
+        if not agents_cache:
             raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
         else:
             for agent in agents_cache:
@@ -827,7 +818,7 @@ async def test_process_findings(
         raise HTTPException(status_code=500, detail=f"Error in test processing: {str(e)}")
 
 @app.get("/tasks/{task_id}/findings", response_model=List[Dict[str, Any]])
-async def get_task_findings(task_id: str):
+async def get_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-API-Key")):
     """
     Get all findings for a task.
     
@@ -838,6 +829,9 @@ async def get_task_findings(task_id: str):
         List of findings for the task
     """
     try:
+        if x_api_key != config.backend_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
         findings = await mongodb.get_findings(task_id)
         return [finding.model_dump() for finding in findings]
     except Exception as e:

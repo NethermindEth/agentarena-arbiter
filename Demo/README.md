@@ -60,6 +60,65 @@ python -m pip install -r requirements.txt
 python -m app.main
 ```
 
+## Running Tests
+
+### 🚀 Running Tests
+
+```bash
+# Install test dependencies
+pip install -r requirements-test.txt
+
+# Run all tests
+python -m pytest
+
+# Run with coverage report
+python -m pytest tests/ --cov=app --cov-report=term-missing
+```
+
+### Prerequisites for Testing
+- MongoDB connection (local or Atlas)
+- Gemini API key (for deduplication tests)
+- Claude API key (for evaluation tests)
+
+### 🧪 Writing Tests
+
+#### Unit Tests
+Test individual components in isolation with mocks:
+
+```python
+@pytest.mark.asyncio
+async def test_process_findings_no_duplicates(deduplicator, sample_findings):
+    with patch('app.core.deduplication.find_duplicates_structured') as mock:
+        mock.return_value = []
+        result = await deduplicator.process_findings("task", sample_findings, cache)
+        assert result["summary"]["duplicates_found"] == 0
+```
+
+#### Integration Tests  
+Test components working together:
+
+```python
+def test_api_endpoint_success(client):
+    response = client.post("/process_findings", headers={"X-API-Key": "test"}, json=data)
+    assert response.status_code == 200
+```
+
+### 🐛 Debugging Tests
+
+```bash
+# Run specific test
+python -m pytest tests/unit/test_models.py::TestFindingDB::test_creation
+
+# Stop on first failure  
+python -m pytest -x
+
+# Drop to debugger on failure
+python -m pytest --pdb
+
+# Show full traceback
+python -m pytest --tb=long
+```
+
 #### Docker Setup
 ```bash
 # Build and start the services
@@ -81,46 +140,6 @@ The API will be available at http://localhost:8004.
 ```bash
 docker-compose down
 ```
-
-## Running Tests
-
-### Prerequisites for Testing
-- MongoDB connection (local or Atlas)
-- Claude API key (for automatic evaluation tests)
-- Set `TESTING=true` in your environment variables
-
-### Testing Modes
-The system supports a special testing mode that simplifies API authentication for development and testing:
-
-#### Testing Mode Features
-- When `TESTING=true` and no agents are configured, any API key will be accepted
-- All requests will be attributed to a "test-agent" for easier debugging
-- This makes local development and testing possible without setting up the Agent4rena backend
-
-#### Security Note
-In production environments, make sure `TESTING` is set to `false` or not set at all. When testing mode is disabled and no agents are configured, the API will return a 503 error to prevent unauthorized access.
-
-### Process Findings Test
-```bash
-# For local environment
-python -m app.test.test_claude_api
-
-# For Docker environment
-docker-compose exec api python -m app.test.test_claude_api
-```
-
-This test verifies the complete workflow with three scenarios:
-1. First submission - all new findings
-2. Second submission - mix of duplicate and new findings
-3. Different agent submission - similar and unique findings
-
-The test confirms the system's ability to:
-- Detect duplicates within the same agent's submissions
-- Recognize similar findings across different agents
-- Properly mark findings as disputed when they are invalid
-- Classify findings with appropriate status, category, and severity
-
-**Note:** A valid Claude API key is required to run this test.
 
 ## API Usage
 
@@ -188,7 +207,6 @@ The application requires the following environment variables:
 - `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
 - `GEMINI_MAX_TOKENS`: Maximum tokens for Gemini AI model (default: 20000)
 - `DEBUG`: Enable debug mode (default: true)
-- `TESTING`: Enable testing mode (default: true)
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to Agent4rena backend
 - `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from Agent4rena backend
 - `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from Agent4rena backend

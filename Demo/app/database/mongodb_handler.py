@@ -3,11 +3,9 @@ MongoDB database handler for security findings.
 Handles storage and retrieval of findings in MongoDB using Motor with Beanie models.
 """
 from typing import List, Dict, Any, Optional
-from bson import ObjectId
 import motor.motor_asyncio
 from datetime import datetime, timezone
 import os
-from pydantic import BaseModel
 from beanie import init_beanie, PydanticObjectId
 
 from app.models.finding_input import FindingInput, Finding
@@ -63,7 +61,7 @@ class MongoDBHandler:
         """
         return f"findings_{task_id}"
     
-    async def create_finding(self, task_id: str, agent_id: str, finding: Finding, status: Status = Status.PENDING) -> str:
+    async def create_finding(self, task_id: str, agent_id: str, finding: Finding, status: Status = Status.PENDING) -> FindingDB:
         """
         Create a new finding in the database.
         
@@ -74,7 +72,7 @@ class MongoDBHandler:
             status: Status of the finding (defaults to PENDING)
             
         Returns:
-            Title of the created finding
+            FindingDB object of the created finding
         """
         # Create FindingDB from Finding
         finding_db = FindingDB(
@@ -93,10 +91,13 @@ class MongoDBHandler:
         if doc_dict.get('_id') is None:
             doc_dict.pop('_id', None)
         
-        await collection.insert_one(doc_dict)
+        result = await collection.insert_one(doc_dict)
         
-        # Return the finding title
-        return finding.title
+        # Set the ID from the insert result
+        finding_db.id = result.inserted_id
+        
+        # Return the finding with proper ID set
+        return finding_db
     
     async def create_findings_batch(self, agent_id: str, input_data: FindingInput) -> List[str]:
         """
