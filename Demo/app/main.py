@@ -838,7 +838,10 @@ async def get_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-
 
         findings = await mongodb.get_findings(task_id)
         return [finding.model_dump() for finding in findings]
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error retrieving findings: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving findings: {str(e)}")
 
 @app.post("/tasks/{task_id}/process")

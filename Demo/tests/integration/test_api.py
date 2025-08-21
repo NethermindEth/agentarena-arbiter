@@ -2,37 +2,9 @@
 Integration tests for API endpoints.
 These tests use FastAPI TestClient to test the full request/response cycle.
 """
-import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.models.finding_input import FindingInput, Finding
-
-
-@pytest.fixture
-def client(sample_task_cache, mock_mongodb):
-    """Create FastAPI test client with mocked dependencies."""
-    # Import here to avoid circular imports and initialization issues
-    from fastapi.testclient import TestClient
-    from app.main import app
-    
-    # Mock the database and other dependencies before creating the client
-    with patch('app.main.mongodb', mock_mongodb), \
-         patch('app.main.task_cache', sample_task_cache), \
-         patch('app.main.agents_cache') as mock_agents:
-        
-        # Configure mock_agents to behave like a list
-        test_agents = [{"agent_id": "test-agent", "api_key": "test-key"}]
-        mock_agents.__iter__ = lambda self: iter(test_agents)
-        mock_agents.__len__ = lambda self: len(test_agents)
-        mock_agents.__getitem__ = lambda self, key: test_agents[key]
-
-        # Create client without triggering lifespan events that need real DB
-        client = TestClient(app, base_url="http://testserver")
-        
-        # Attach the mock_mongodb to the client so tests can access it if needed
-        client.mock_db = mock_mongodb
-        
-        yield client
 
 
 class TestProcessFindingsEndpoint:
