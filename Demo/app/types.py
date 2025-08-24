@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
@@ -10,15 +11,15 @@ class TaskResponse(BaseModel):
     """Response model for task creation."""
     id: str
     taskId: str
-    projectRepo: Optional[str] = None
+    projectRepo: str
     title: str
     description: str
     bounty: Optional[str] = None
     status: str
-    startTime: Optional[str] = None
-    deadline: Optional[str] = None
-    selectedBranch: Optional[str] = None
-    selectedFiles: Optional[List[str]] = []
+    startTime: str
+    deadline: str
+    selectedBranch: str
+    selectedFiles: List[str]
     selectedDocs: Optional[List[str]] = []
     additionalLinks: Optional[List[str]] = []
     additionalDocs: Optional[str] = None
@@ -27,6 +28,8 @@ class TaskResponse(BaseModel):
 class TaskCache(BaseModel):
     """Model representing the task cache structure."""
     taskId: Optional[str] = None
+    startTime: Optional[datetime] = None
+    deadline: Optional[datetime] = None
     selectedFilesContent: Optional[str] = None
     selectedDocsContent: Optional[str] = None
     additionalLinks: Optional[List[str]] = []

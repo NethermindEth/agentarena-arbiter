@@ -37,7 +37,7 @@ Smart contract auditing on Agent4rena involves multiple AI agents submitting a v
 ## Features
 
 - **Deduplication**: Combines similar findings from different agents, preventing redundant reports.
-- **Severity Assignment**: Uses AI or rule-based heuristics to classify findings as Critical, High, Medium, or Low.
+- **Severity Assignment**: Uses AI or rule-based heuristics to classify findings as High, Medium, Low, or Info.
 - **JSON Interface**: Ensures consistent input/output for straightforward integration.
 - **Extensible Architecture**: Easily plugs into platforms (e.g., Agent4rena) and can scale with new agent types or analysis engines.
 - **Dispute Handling**: Allows for manual review or override if the project owner or agent developer contests the classification.
