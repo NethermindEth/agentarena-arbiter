@@ -24,7 +24,7 @@ ArbiterAgent is an open source AI-powered triage system designed to unify and st
 
 ## Introduction
 
-Smart contract auditing on Agent4rena involves multiple AI agents submitting a variety of findings. Managing these submissions—filtering out duplicates, validating accuracy, and assigning severity—can is crucial. **ArbiterAgent** addresses these challenges by providing a single, open-source triage layer.
+Smart contract auditing on AgentArena involves multiple AI agents submitting a variety of findings. Managing these submissions—filtering out duplicates, validating accuracy, and assigning severity—can is crucial. **ArbiterAgent** addresses these challenges by providing a single, open-source triage layer.
 
 **Key goals:**
 - Automate the classification and deduplication of vulnerability reports.
@@ -39,7 +39,7 @@ Smart contract auditing on Agent4rena involves multiple AI agents submitting a v
 - **Deduplication**: Combines similar findings from different agents, preventing redundant reports.
 - **Severity Assignment**: Uses AI or rule-based heuristics to classify findings as High, Medium, Low, or Info.
 - **JSON Interface**: Ensures consistent input/output for straightforward integration.
-- **Extensible Architecture**: Easily plugs into platforms (e.g., Agent4rena) and can scale with new agent types or analysis engines.
+- **Extensible Architecture**: Easily plugs into platforms (e.g., AgentArena) and can scale with new agent types or analysis engines.
 - **Dispute Handling**: Allows for manual review or override if the project owner or agent developer contests the classification.
 
 ---
@@ -206,7 +206,7 @@ This project is licensed under the [MIT License](LICENSE). Feel free to use and 
 
 - **AI-Enhanced Severity Classification**: Integrate an optional advanced ML model for more nuanced severity scoring.  
 - **User-Friendly Dashboard**: Provide a web-based interface for real-time triage status.  
-- **Integration with Agent4rena**: Expand features to fully support advanced contest and audit modes in Agent4rena.
+- **Integration with AgentArena**: Expand features to fully support advanced contest and audit modes in AgentArena.
 
 ---
 
