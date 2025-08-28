@@ -373,26 +373,23 @@ async def process_task(task_id: str):
             f"{evaluation_results['application_results']['failed_count']} failed to update"
         )
         
-        # Step 4: Post results to backend endpoint (existing logic)
+        # Step 4: Post results to backend endpoint
         try:
-            # Get all agents who had findings processed
-            agent_ids = set(finding.agent_id for finding in pending_findings)
+            # Get all findings for this task from all agents
+            all_task_findings = await mongodb.get_findings(task_id=task_id)
             
-            for agent_id in agent_ids:
-                findings = await mongodb.get_findings(task_id=task_id, agent_id=agent_id)
-                logger.info(f"Syncing all {len(findings)} findings for task_id: {task_id}, agent_id: {agent_id}")
-
-                # Skip if there are no findings to sync
-                if not findings:
-                    logger.info(f"No new findings to sync with backend endpoint for task_id: {task_id}, agent_id: {agent_id}")
-                    continue
+            if not all_task_findings:
+                logger.info(f"No findings to sync with backend endpoint for task_id: {task_id}")
+            else:
+                logger.info(f"Syncing all {len(all_task_findings)} findings for task_id: {task_id} in one batch")
 
                 # Format findings data for the backend endpoint
                 formatted_findings = []
                 
-                for finding in findings:
+                for finding in all_task_findings:
                     formatted_findings.append({
                         "id": finding.str_id,
+                        "agent_id": finding.agent_id,
                         "title": finding.title,
                         "description": finding.description,
                         "severity": finding.severity,
@@ -402,11 +399,9 @@ async def process_task(task_id: str):
                         "created_at": finding.created_at.isoformat()
                     })
 
-
                 # Prepare payload for backend endpoint
                 payload = {
                     "task_id": task_id,
-                    "agent_id": agent_id,
                     "findings": formatted_findings
                 }
                 
@@ -416,15 +411,15 @@ async def process_task(task_id: str):
                     async with httpx.AsyncClient() as client:
                         headers = {"X-API-Key": config.backend_api_key}
                         response = await client.post(backend_endpoint, json=payload, headers=headers)
-                        logger.debug(f"Backend API response for task_id: {task_id}, agent_id: {agent_id}: {response.json()}")
-                        logger.debug(f"Backend API status code for task_id: {task_id}, agent_id: {agent_id}: {response.status_code}")
+                        logger.debug(f"Backend API response for task_id: {task_id}: {response.json()}")
+                        logger.debug(f"Backend API status code for task_id: {task_id}: {response.status_code}")
                         
                         if response.status_code == 200:
-                            logger.info(f"Successfully posted findings to backend for task_id: {task_id}, agent_id: {agent_id}")
+                            logger.info(f"Successfully posted {len(formatted_findings)} findings to backend for task_id: {task_id}")
                         else:
                             logger.error(f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}")
                 else:
-                    logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}")
+                    logger.warning(f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}")
             
             logger.info(f"Task processing completed successfully for task_id: {task_id}")
             logger.info(f"Processing summary: "
@@ -511,6 +506,7 @@ async def process_task_for_agent(task_id: str, agent_id: str):
             for finding in latest_findings:
                 formatted_findings.append({
                     "id": finding.str_id,
+                    "agent_id": finding.agent_id,
                     "title": finding.title,
                     "description": finding.description,
                     "severity": finding.severity,
@@ -522,7 +518,6 @@ async def process_task_for_agent(task_id: str, agent_id: str):
 
             payload = {
                 "task_id": task_id,
-                "agent_id": agent_id,
                 "findings": formatted_findings
             }
 
@@ -958,49 +953,39 @@ async def post_task_findings(
                 "total_findings": 0
             }
         
-        # Group findings by agent_id
-        agent_findings = {}
+        formatted_findings = []
         for finding in all_findings:
-            if finding.agent_id not in agent_findings:
-                agent_findings[finding.agent_id] = []
-            agent_findings[finding.agent_id].append(finding)
-        
-        # Post findings for each agent
-        for agent_id, findings in agent_findings.items():
-            try:
-                # Format findings data for the backend endpoint
-                formatted_findings = []
-                for finding in findings:
-                    formatted_findings.append({
-                        "id": finding.str_id,
-                        "title": finding.title,
-                        "description": finding.description,
-                        "severity": finding.severity,
-                        "status": finding.status,
-                        "file_paths": finding.file_paths,
-                        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
-                        "created_at": finding.created_at.isoformat()
-                    })
+            formatted_findings.append({
+                "id": finding.str_id,
+                "agent_id": finding.agent_id,
+                "title": finding.title,
+                "description": finding.description,
+                "severity": finding.severity,
+                "status": finding.status,
+                "file_paths": finding.file_paths,
+                "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
+                "created_at": finding.created_at.isoformat()
+            })
 
-                # Prepare payload for backend endpoint
-                payload = {
-                    "task_id": task_id,
-                    "agent_id": agent_id,
-                    "findings": formatted_findings
-                }
+        # Prepare batched payload for backend endpoint
+        payload = {
+            "task_id": task_id,
+            "findings": formatted_findings
+        }
+        
+        try:
+            # Post all findings to the backend endpoint
+            async with httpx.AsyncClient() as client:
+                headers = {"X-API-Key": config.backend_api_key}
+                response = await client.post(config.backend_findings_endpoint, json=payload, headers=headers)
                 
-                # Post to backend endpoint
-                async with httpx.AsyncClient() as client:
-                    headers = {"X-API-Key": config.backend_api_key}
-                    response = await client.post(config.backend_findings_endpoint, json=payload, headers=headers)
+                if response.status_code == 200:
+                    logger.info(f"Successfully posted {len(all_findings)} findings for task {task_id}")
+                else:
+                    logger.error(f"Failed to post findings for task {task_id}. Status code: {response.status_code}, Response: {response.text}")
                     
-                    if response.status_code == 200:
-                        logger.info(f"Successfully posted {len(findings)} findings for task {task_id}, agent {agent_id}")
-                    else:
-                        logger.error(f"Failed to post findings for agent {agent_id}. Status code: {response.status_code}, Response: {response.text}")
-                        
-            except Exception as agent_error:
-                logger.error(f"Error posting findings for agent {agent_id}: {str(agent_error)}")
+        except Exception as batch_error:
+            logger.error(f"Error posting findings batch: {str(batch_error)}")
         
         # Summary
         return {
