@@ -1,4 +1,5 @@
 import httpx
+from typing import List
 from app.types import TaskResponse
 from app.config import Settings
 import os
@@ -6,32 +7,32 @@ import tempfile
 import zipfile
 import logging
 
-# Initialize logger
+
 logger = logging.getLogger(__name__)
 
-async def fetch_task_details(details_url: str, config: Settings) -> TaskResponse:
+async def fetch_submitted_tasks(submitted_url: str, config: Settings) -> List[TaskResponse]:
     """
-    Fetch task details including the list of selected files.
+    Fetch list of submitted tasks. Each item in the response matches TaskResponse.
     
     Args:
-        details_url: URL to fetch task details
+        submitted_url: URL to fetch submitted tasks list
         config: Application configuration
         
     Returns:
-        TaskResponse object containing task details including selected_files
+        List of TaskResponse objects
     """
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                details_url,
+                submitted_url,
                 headers={"X-API-Key": config.backend_api_key}
             )
             response.raise_for_status()
-            task_data = response.json()
-            return TaskResponse(**task_data)
+            tasks_data = response.json() or []
+            return [TaskResponse(**t) for t in tasks_data]
     except Exception as e:
-        logger.error(f"Error fetching task details: {str(e)}", exc_info=True)
-        return None
+        logger.error(f"Error fetching submitted tasks: {str(e)}", exc_info=True)
+        return []
 
 async def download_repository(repo_url: str, config: Settings) -> tuple[str, str]:
     """

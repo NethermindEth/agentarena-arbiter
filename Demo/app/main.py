@@ -23,7 +23,7 @@ from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
-from app.task_utils import fetch_task_details, download_repository, read_and_concatenate_files
+from app.task_utils import fetch_submitted_tasks, download_repository, read_and_concatenate_files
 import logging
 from app.types import TaskCache
 
@@ -45,8 +45,8 @@ logging.basicConfig(
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
 
-# Initialize task cache
-task_cache = TaskCache()
+# Initialize task cache map (task_id -> TaskCache)
+task_cache_map: Dict[str, TaskCache] = {}
 agents_cache = []
 
 # Initialize APScheduler for task processing jobs
@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
         
         try:
             # Initial fetch and cache of data
-            await set_task_cache(config)
+            await set_task_caches(config)
             await set_agent_data(config)
         except Exception as e:
             logger.error(f"Error during initial cache setup: {str(e)}")
@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI):
             while True:
                 try:
                     await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
-                    await set_task_cache(config)
+                    await set_task_caches(config)
                 except Exception as e:
                     logger.error(f"Error refreshing task cache: {str(e)}")
                 
@@ -213,86 +213,87 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-async def set_task_cache(config: Settings):
-    """Fetch file contents from external API and cache in memory."""
-    if not config.backend_task_details_endpoint or not config.backend_task_repository_endpoint or not config.backend_api_key or not config.task_id:
-        logger.warning("BACKEND_TASK_DETAILS_ENDPOINT, BACKEND_TASK_REPOSITORY_ENDPOINT, BACKEND_API_KEY, or TASK_ID not configured, skipping file contents fetch")
+async def set_task_caches(config: Settings):
+    """Fetch file contents for submitted tasks and cache per task_id."""
+    if not config.backend_api_key or not config.backend_task_repository_endpoint or not config.backend_submitted_tasks_endpoint:
+        logger.warning("BACKEND_API_KEY or BACKEND_TASK_REPOSITORY_ENDPOINT or BACKEND_SUBMITTED_TASKS_ENDPOINT not configured, skipping cache update")
         return
 
-    # Construct the full endpoint URL with the taskId
-    task_details_url = f"{config.backend_task_details_endpoint}/{config.task_id}"
-    task_repository_url = f"{config.backend_task_repository_endpoint}/{config.task_id}"
-    logger.info(f"Task details URL: {task_details_url}")
-    logger.info(f"Task repository URL: {task_repository_url}")
-
-    # Fetch task details to get selected files
-    logger.info(f"Fetching task details for task {config.task_id}")
-    task_details = await fetch_task_details(task_details_url, config)
-    if not task_details:
-        logger.error(f"Failed to get task details for task {config.task_id}")
+    logger.info(f"Fetching submitted tasks from {config.backend_submitted_tasks_endpoint}")
+    tasks = await fetch_submitted_tasks(config.backend_submitted_tasks_endpoint, config)
+    if not tasks:
+        logger.warning("No submitted tasks returned; skipping cache update")
         return
 
-    selected_files = task_details.selectedFiles or []
-    if not selected_files:
-        logger.warning(f"No files selected for task {config.task_id}")
-        return
-        
-    # Download and extract repository
-    repo_dir, temp_dir = await download_repository(task_repository_url, config)
-    if not repo_dir or not temp_dir:
-        logger.error(f"Failed to download repository for task {config.task_id}")
-        return
-    
-    # Store repository path for future use
-    repo_storage_path = os.path.join(config.data_dir, f"repo_{config.task_id}")
     if not os.path.exists(config.data_dir):
         os.makedirs(config.data_dir, exist_ok=True)
-        
-    # If the repository already exists for this task, remove it and update
-    if os.path.exists(repo_storage_path):
-        shutil.rmtree(repo_storage_path)
 
-    # Copy the extracted repository to a persistent location
-    shutil.copytree(repo_dir, repo_storage_path)
-    logger.info(f"Repository for task {config.task_id} stored at {repo_storage_path}")
-    
-    # Remove the temporary directory
-    shutil.rmtree(temp_dir)
+    updated_map: Dict[str, TaskCache] = {}
 
-    # Read and concatenate selected files
-    concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
-    if not concatenated_contracts:
-        logger.warning(f"No valid contracts content found for task {config.task_id}")
-        return
-    
-    # Read and concatenate selected docs
-    selected_docs = task_details.selectedDocs or []
-    concatenated_docs = read_and_concatenate_files(repo_storage_path, selected_docs)
-    if not concatenated_docs:
-        logger.warning(f"No valid docs content found for task {config.task_id}")
-        # Continue anyway as docs are optional
-    
-    global task_cache
-    try:
-        task_cache = TaskCache(
-            taskId=config.task_id,
-            startTime=datetime.fromtimestamp(float(task_details.startTime), tz=timezone.utc),
-            deadline=datetime.fromtimestamp(float(task_details.deadline), tz=timezone.utc),
-            selectedFilesContent=concatenated_contracts,
-            selectedDocsContent=concatenated_docs,
-            additionalLinks=task_details.additionalLinks,
-            additionalDocs=task_details.additionalDocs,
-            qaResponses=task_details.qaResponses
-        )
-    except (ValueError, TypeError) as e:
-        logger.error(f"Invalid timestamp format for task {config.task_id}: startTime={task_details.startTime}, deadline={task_details.deadline} - {str(e)}")
-        return
+    for task in tasks:
+        try:
+            task_id = task.taskId
+            if not task_id:
+                logger.warning("Encountered task with missing taskId; skipping")
+                continue
 
-    logger.info(f"Task cache set successfully for task {config.task_id}")
+            selected_files = task.selectedFiles or []
+            if not selected_files:
+                logger.warning(f"No files selected for task {task_id}; skipping")
+                continue
 
-    # Schedule task processing for all tasks except the special TESTTASK
-    if config.task_id != "TESTTASK":
-        await schedule_task_processing(config.task_id, task_cache.startTime, task_cache.deadline)
+            # Download and extract repository
+            repo_dir, temp_dir = await download_repository(f"{config.backend_task_repository_endpoint}/{task_id}", config)
+            if not repo_dir or not temp_dir:
+                logger.error(f"Failed to download repository for task {task_id}")
+                continue
+
+            # Store repository in data directory
+            repo_storage_path = os.path.join(config.data_dir, f"repo_{task_id}")
+            if os.path.exists(repo_storage_path):
+                shutil.rmtree(repo_storage_path)
+            shutil.copytree(repo_dir, repo_storage_path)
+            logger.info(f"Repository for task {task_id} stored at {repo_storage_path}")
+            shutil.rmtree(temp_dir)
+
+            concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
+            if not concatenated_contracts:
+                logger.warning(f"No valid contracts content found for task {task_id}; skipping")
+                continue
+
+            selected_docs = task.selectedDocs or []
+            concatenated_docs = read_and_concatenate_files(repo_storage_path, selected_docs) if selected_docs else ""
+            if not concatenated_docs:
+                logger.warning(f"No valid docs content found for task {task_id}")
+
+            cache_entry = TaskCache(
+                taskId=task_id,
+                startTime=datetime.fromtimestamp(float(task.startTime), tz=timezone.utc),
+                deadline=datetime.fromtimestamp(float(task.deadline), tz=timezone.utc),
+                selectedFilesContent=concatenated_contracts,
+                selectedDocsContent=concatenated_docs,
+                additionalLinks=task.additionalLinks,
+                additionalDocs=task.additionalDocs,
+                qaResponses=task.qaResponses
+            )
+
+            updated_map[task_id] = cache_entry
+        except (ValueError, TypeError) as te:
+            logger.error(f"Invalid timestamp format for task {getattr(task, 'taskId', 'unknown')}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
+            continue
+        except Exception as e:
+            logger.error(f"Error building cache for task {getattr(task, 'taskId', 'unknown')}: {str(e)}")
+            continue
+
+    # Atomically replace
+    global task_cache_map
+    task_cache_map = updated_map
+    logger.info(f"Set task caches for {len(task_cache_map)} task(s): {list(task_cache_map.keys())}")
+
+    # Schedule processing for each task, except TESTTASK
+    for task_id, task_cache in task_cache_map.items():
+        if task_id != "TESTTASK":
+            await schedule_task_processing(task_id, task_cache.startTime, task_cache.deadline)
 
 async def set_agent_data(config: Settings):
     """Fetch agent data from external API and cache in memory."""
@@ -336,8 +337,9 @@ async def process_task(task_id: str):
         
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
         
-        if not task_cache or task_cache.taskId != task_id:
-            logger.error(f"Task cache not available or mismatched for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
+        task_cache = task_cache_map.get(task_id)
+        if not task_cache:
+            logger.error(f"Task cache not available for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
             return
         
         # Step 1: Identify duplicates
@@ -453,9 +455,10 @@ async def process_task_for_agent(task_id: str, agent_id: str):
 
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}, agent_id: {agent_id}")
 
-        if not task_cache or task_cache.taskId != task_id:
+        task_cache = task_cache_map.get(task_id)
+        if not task_cache:
             logger.error(
-                f"Task cache not available or mismatched for task_id: {task_id}. "
+                f"Task cache not available for task_id: {task_id}. "
                 f"Evaluation cannot proceed without smart contract context."
             )
             return
@@ -672,8 +675,8 @@ async def process_findings(
             )
             
         # 2. Check if we're within the submission timeframe
-        global task_cache
-        if not task_cache or task_cache.taskId != input_data.task_id:
+        task_cache = task_cache_map.get(input_data.task_id)
+        if not task_cache:
             raise HTTPException(
                 status_code=404,
                 detail=f"Task {input_data.task_id} not found in cache"
