@@ -53,7 +53,7 @@ agents_cache = []
 scheduler = AsyncIOScheduler()
 
 # Interval for refreshing caches (in seconds)
-REFRESH_INTERVAL_SECONDS = 600  # 10 minutes
+REFRESH_INTERVAL_SECONDS = 60  # 1 minute
 
 # Keep references to background tasks so we can cancel them on shutdown
 refresh_tasks = []  # type: List[asyncio.Task]
