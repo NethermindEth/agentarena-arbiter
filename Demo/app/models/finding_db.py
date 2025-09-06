@@ -31,10 +31,10 @@ class FindingDB(Finding):
     
     # System-added fields
     status: Status = Status.PENDING  # Default status
-    deduplication_comment: Optional[str] = None  # Comment from deduplication
-    evaluation_comment: Optional[str] = None  # Comment from evaluation
-    evaluated_severity: Optional[Severity] = None  # Severity after evaluation
     duplicateOf: Optional[str] = None  # ID of the original finding
+    deduplication_comment: Optional[str] = None  # Comment from deduplication
+    evaluated_severity: Optional[Severity] = None  # Severity after evaluation
+    evaluation_comment: Optional[str] = None  # Comment from evaluation
     
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

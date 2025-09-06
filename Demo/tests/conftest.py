@@ -130,7 +130,7 @@ def client(sample_task_cache, mock_mongodb):
     
     # Mock the database and other dependencies before creating the client
     with patch('app.main.mongodb', mock_mongodb), \
-         patch('app.main.task_cache', sample_task_cache), \
+         patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }), \
          patch('app.main.agents_cache') as mock_agents:
         
         # Configure mock_agents to behave like a list

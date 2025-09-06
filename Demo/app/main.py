@@ -53,7 +53,7 @@ agents_cache = []
 scheduler = AsyncIOScheduler()
 
 # Interval for refreshing caches (in seconds)
-REFRESH_INTERVAL_SECONDS = 60  # 1 minute
+REFRESH_INTERVAL_SECONDS = 120  # 2 minutes
 
 # Keep references to background tasks so we can cancel them on shutdown
 refresh_tasks = []  # type: List[asyncio.Task]
@@ -316,6 +316,22 @@ async def set_agent_data(config: Settings):
         logger.error(f"Error fetching agent data: {str(e)}")
         return
 
+async def format_finding(finding: FindingDB) -> Dict[str, Any]:
+    return {
+        "id": finding.str_id,
+        "agent_id": finding.agent_id,
+        "title": finding.title,
+        "description": finding.description,
+        "severity": finding.severity,
+        "status": finding.status,
+        "file_paths": finding.file_paths,
+        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
+        "deduplication_comment": finding.deduplication_comment if finding.deduplication_comment else None,
+        "evaluated_severity": finding.evaluated_severity if finding.evaluated_severity else None,
+        "evaluation_comment": finding.evaluation_comment if finding.evaluation_comment else None,
+        "created_at": finding.created_at.isoformat()
+    }
+
 async def process_task(task_id: str):
     """
     Process all findings for a task that has ended.
@@ -386,20 +402,7 @@ async def process_task(task_id: str):
                 logger.info(f"Syncing all {len(all_task_findings)} findings for task_id: {task_id} in one batch")
 
                 # Format findings data for the backend endpoint
-                formatted_findings = []
-                
-                for finding in all_task_findings:
-                    formatted_findings.append({
-                        "id": finding.str_id,
-                        "agent_id": finding.agent_id,
-                        "title": finding.title,
-                        "description": finding.description,
-                        "severity": finding.severity,
-                        "status": finding.status,
-                        "file_paths": finding.file_paths,
-                        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
-                        "created_at": finding.created_at.isoformat()
-                    })
+                formatted_findings = [format_finding(finding) for finding in all_task_findings]
 
                 # Prepare payload for backend endpoint
                 payload = {
@@ -504,20 +507,8 @@ async def process_task_for_agent(task_id: str, agent_id: str):
                 )
                 return
 
-            formatted_findings = []
+            formatted_findings = [format_finding(finding) for finding in latest_findings]
             current_sync_time = datetime.now(timezone.utc)
-            for finding in latest_findings:
-                formatted_findings.append({
-                    "id": finding.str_id,
-                    "agent_id": finding.agent_id,
-                    "title": finding.title,
-                    "description": finding.description,
-                    "severity": finding.severity,
-                    "status": finding.status,
-                    "file_paths": finding.file_paths,
-                    "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
-                    "created_at": finding.created_at.isoformat()
-                })
 
             payload = {
                 "task_id": task_id,
@@ -956,19 +947,7 @@ async def post_task_findings(
                 "total_findings": 0
             }
         
-        formatted_findings = []
-        for finding in all_findings:
-            formatted_findings.append({
-                "id": finding.str_id,
-                "agent_id": finding.agent_id,
-                "title": finding.title,
-                "description": finding.description,
-                "severity": finding.severity,
-                "status": finding.status,
-                "file_paths": finding.file_paths,
-                "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
-                "created_at": finding.created_at.isoformat()
-            })
+        formatted_findings = [format_finding(finding) for finding in all_findings]
 
         # Prepare batched payload for backend endpoint
         payload = {

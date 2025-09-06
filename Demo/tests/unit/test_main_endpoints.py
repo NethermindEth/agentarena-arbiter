@@ -228,7 +228,7 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
-        with patch('app.main.task_cache', sample_task_cache):
+        with patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }):
             response = client.post(
                 "/process_findings",
                 headers={"X-API-Key": "test-key"},
@@ -256,7 +256,7 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
-        with patch('app.main.task_cache', sample_task_cache):
+        with patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }):
             response = client.post(
                 "/process_findings",
                 headers={"X-API-Key": "test-key"},
