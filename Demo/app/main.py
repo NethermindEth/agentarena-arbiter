@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
+from collections import defaultdict
 
 from app.models.finding_db import FindingDB, Status
 from app.config import config, Settings
@@ -48,6 +49,10 @@ evaluator = FindingEvaluator()
 # Initialize task cache map (task_id -> TaskCache)
 task_cache_map: Dict[str, TaskCache] = {}
 agents_cache = []
+
+# Initialize per-agent submission locks to prevent concurrent processing
+# Key format: (task_id, agent_id)
+agent_submission_locks: Dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Initialize APScheduler for task processing jobs
 scheduler = AsyncIOScheduler()
@@ -706,24 +711,29 @@ async def process_findings(
         
         logger.info(f"Accepted findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
-        # 4. Delete any existing findings for this agent to allow only one submission
-        deleted_count = await mongodb.delete_agent_findings(input_data.task_id, agent_id)
-        if deleted_count > 0:
-            logger.info(f"Deleted {deleted_count} existing findings for task_id: {input_data.task_id}, agent_id: {agent_id} (overriding previous submission)")
-
-        # 5. Store findings as pending processing
-        for finding in input_data.findings:
-            await mongodb.create_finding(
-                task_id=input_data.task_id,
-                agent_id=agent_id,
-                finding=finding,
-                status=Status.PENDING
-            )
+        # 4-6. Critical section: Must be atomic per agent to prevent race conditions
+        submission_key = (input_data.task_id, agent_id)
+        lock = agent_submission_locks[submission_key]
         
-        logger.info(f"Stored {len(input_data.findings)} findings for task_id: {input_data.task_id}, agent_id: {agent_id} - awaiting task end for processing")    
+        async with lock:
+            # 4. Delete any existing findings for this agent to allow only one submission
+            deleted_count = await mongodb.delete_agent_findings(input_data.task_id, agent_id)
+            if deleted_count > 0:
+                logger.info(f"Deleted {deleted_count} existing findings for task_id: {input_data.task_id}, agent_id: {agent_id} (overriding previous submission)")
 
-        # 6. Post submission to backend
-        await post_submission(input_data.task_id, agent_id, len(input_data.findings))
+            # 5. Store findings as pending processing
+            for finding in input_data.findings:
+                await mongodb.create_finding(
+                    task_id=input_data.task_id,
+                    agent_id=agent_id,
+                    finding=finding,
+                    status=Status.PENDING
+                )
+            
+            logger.info(f"Stored {len(input_data.findings)} findings for task_id: {input_data.task_id}, agent_id: {agent_id} - awaiting task end for processing")    
+
+            # 6. Post submission count to backend
+            await post_submission(input_data.task_id, agent_id, len(input_data.findings))
 
         # 7. Return submission summary
         return {
@@ -776,17 +786,22 @@ async def test_process_findings(
         if not agent_id:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # 3. Store findings as pending
-        for finding in input_data.findings:
-            await mongodb.create_finding(
-                task_id=input_data.task_id,
-                agent_id=agent_id,
-                finding=finding,
-                status=Status.PENDING
-            )
+        # 3-4. Critical section: Must be atomic per agent to prevent race conditions  
+        submission_key = (input_data.task_id, agent_id)
+        lock = agent_submission_locks[submission_key]
+        
+        async with lock:
+            # 3. Store findings as pending
+            for finding in input_data.findings:
+                await mongodb.create_finding(
+                    task_id=input_data.task_id,
+                    agent_id=agent_id,
+                    finding=finding,
+                    status=Status.PENDING
+                )
 
-        # 4. Post submission count
-        await post_submission(input_data.task_id, agent_id, len(input_data.findings))
+            # 4. Post submission count to backend
+            await post_submission(input_data.task_id, agent_id, len(input_data.findings))
 
         # 5. Queue processing in background for only this agent (do not await)
         logger.info(
