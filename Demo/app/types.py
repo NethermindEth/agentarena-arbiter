@@ -7,9 +7,8 @@ class QAPair(BaseModel):
     question: str
     answer: str
 
-class TaskResponse(BaseModel):
+class Task(BaseModel):
     """Response model for task creation."""
-    id: str
     taskId: str
     projectRepo: str
     title: str
@@ -24,6 +23,7 @@ class TaskResponse(BaseModel):
     additionalLinks: Optional[List[str]] = []
     additionalDocs: Optional[str] = None
     qaResponses: Optional[List[QAPair]] = []
+    commitSha: Optional[str] = None
 
 class TaskCache(BaseModel):
     """Model representing the task cache structure."""

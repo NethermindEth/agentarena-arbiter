@@ -48,7 +48,6 @@ evaluator = FindingEvaluator()
 
 # Initialize task cache map (task_id -> TaskCache)
 task_cache_map: Dict[str, TaskCache] = {}
-agents_cache = []
 
 # Initialize per-agent submission locks to prevent concurrent processing
 # Key format: (task_id, agent_id)
@@ -150,7 +149,6 @@ async def lifespan(app: FastAPI):
         try:
             # Initial fetch and cache of data
             await set_task_caches(config)
-            await set_agent_data(config)
         except Exception as e:
             logger.error(f"Error during initial cache setup: {str(e)}")
 
@@ -166,18 +164,9 @@ async def lifespan(app: FastAPI):
                     logger.error(f"Error refreshing task cache: {str(e)}")
                 
 
-        async def _periodic_agent_cache_refresh():
-            while True:
-                try:
-                    await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
-                    await set_agent_data(config)
-                except Exception as e:
-                    logger.error(f"Error refreshing agents cache: {str(e)}")
-
         # Start background tasks and store references
         refresh_tasks.extend([
             asyncio.create_task(_periodic_task_cache_refresh()),
-            asyncio.create_task(_periodic_agent_cache_refresh()),
         ])
         
         yield
@@ -300,26 +289,6 @@ async def set_task_caches(config: Settings):
         if task_id != "TESTTASK":
             await schedule_task_processing(task_id, task_cache.startTime, task_cache.deadline)
 
-async def set_agent_data(config: Settings):
-    """Fetch agent data from external API and cache in memory."""
-    if not config.backend_agents_endpoint or not config.backend_api_key:
-        logger.warning("BACKEND_AGENTS_ENDPOINT or BACKEND_API_KEY not configured, skipping agent data fetch")
-        return
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            headers = {"X-API-Key": config.backend_api_key}
-            response = await client.get(config.backend_agents_endpoint, headers=headers)
-            
-            if response.status_code == 200:
-                global agents_cache
-                agents_cache = response.json()
-                logger.info(f"Agent data fetched and cached. Count: {len(agents_cache)}")
-            else:
-                logger.error(f"Failed to fetch agent data. Status code: {response.status_code}, Response: {response.text}")
-    except Exception as e:
-        logger.error(f"Error fetching agent data: {str(e)}")
-        return
 
 async def format_finding(finding: FindingDB) -> Dict[str, Any]:
     return {
@@ -693,20 +662,11 @@ async def process_findings(
                 detail=f"Submission period has ended. Deadline was: {task_cache.deadline.isoformat()}"
             )
             
-        # 3. Verify API key and get agent_id from agents_cache
-        agent_id = None
-        
-        if not agents_cache:
-            # If agents_cache is empty, reject the request
-            raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
-        else:
-            # Verify API key against known agents
-            for agent in agents_cache:
-                if agent.get("api_key") == x_api_key:
-                    agent_id = agent.get("agent_id")
-                    break
-
-        if not agent_id:
+        # 3. Verify API key and get agent_id from database
+        try:
+            agent_id = await mongodb.get_agent_id(x_api_key)
+        except ValueError as ve:
+            logger.warning(f"Agent authentication failed: {str(ve)}")
             raise HTTPException(status_code=401, detail="Invalid API key")
         
         logger.info(f"Accepted findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
@@ -773,17 +733,11 @@ async def test_process_findings(
                 detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission."
             )
 
-        # 2. Verify API key and resolve agent_id
-        agent_id = None
-        if not agents_cache:
-            raise HTTPException(status_code=503, detail="Agent service unavailable. No agents configured.")
-        else:
-            for agent in agents_cache:
-                if agent.get("api_key") == x_api_key:
-                    agent_id = agent.get("agent_id")
-                    break
-
-        if not agent_id:
+        # 2. Verify API key and get agent_id from database
+        try:
+            agent_id = await mongodb.get_agent_id(x_api_key)
+        except ValueError as ve:
+            logger.warning(f"Agent authentication failed: {str(ve)}")
             raise HTTPException(status_code=401, detail="Invalid API key")
 
         # 3-4. Critical section: Must be atomic per agent to prevent race conditions  

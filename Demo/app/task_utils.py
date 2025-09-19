@@ -1,6 +1,6 @@
 import httpx
 from typing import List
-from app.types import TaskResponse
+from app.types import Task
 from app.config import Settings
 import os
 import tempfile
@@ -10,16 +10,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def fetch_submitted_tasks(submitted_url: str, config: Settings) -> List[TaskResponse]:
+async def fetch_submitted_tasks(submitted_url: str, config: Settings) -> List[Task]:
     """
-    Fetch list of submitted tasks. Each item in the response matches TaskResponse.
+    Fetch list of submitted tasks.
     
     Args:
         submitted_url: URL to fetch submitted tasks list
         config: Application configuration
         
     Returns:
-        List of TaskResponse objects
+        List of Task objects
     """
     try:
         async with httpx.AsyncClient() as client:
@@ -29,7 +29,7 @@ async def fetch_submitted_tasks(submitted_url: str, config: Settings) -> List[Ta
             )
             response.raise_for_status()
             tasks_data = response.json() or []
-            return [TaskResponse(**t) for t in tasks_data]
+            return [Task.model_validate(t) for t in tasks_data]
     except Exception as e:
         logger.error(f"Error fetching submitted tasks: {str(e)}", exc_info=True)
         return []
