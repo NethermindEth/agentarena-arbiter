@@ -46,6 +46,9 @@ logging.basicConfig(
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
 
+# Cache for TESTTASK to avoid re-downloading repository unnecessarily
+test_task_cache: Optional[Dict[str, Any]] = None
+
 # Initialize per-agent submission locks to prevent concurrent processing
 # Key format: (task_id, agent_id)
 agent_submission_locks: Dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -256,6 +259,7 @@ async def schedule_submitted_tasks():
 async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
     """
     Fetch task data from database and download repository.
+    For TESTTASK, uses caching based on commitSha to avoid unnecessary re-downloads.
     
     Args:
         task_id: Task identifier
@@ -274,6 +278,21 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
         if not selected_files:
             logger.warning(f"No files selected for task {task_id}")
             return None
+
+        # Special handling for TESTTASK - use cache if commitSha hasn't changed
+        global test_task_cache
+        if task_id == "TESTTASK":
+            current_commit_sha = task.commitSha
+            
+            # Check if we have cached data with the same commitSha
+            if (test_task_cache and 
+                test_task_cache.get("commitSha") == current_commit_sha and 
+                test_task_cache.get("task_cache")):
+                
+                logger.info(f"Using cached data for TESTTASK (commitSha: {current_commit_sha})")
+                return test_task_cache["task_cache"]
+            
+            logger.info(f"TESTTASK commitSha changed or no cache available. Re-downloading repository (commitSha: {current_commit_sha})")
             
         # Download repository
         repo_dir, temp_dir = await download_repository(f"{config.backend_task_repository_endpoint}/{task_id}", config)
@@ -320,6 +339,15 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
             additionalDocs=task.additionalDocs,
             qaResponses=task.qaResponses
         )
+        
+        # Cache the result for TESTTASK
+        if task_id == "TESTTASK":
+            test_task_cache = {
+                "commitSha": task.commitSha,
+                "task_cache": task_cache,
+                "cached_at": datetime.now(timezone.utc)
+            }
+            logger.info(f"Cached TESTTASK data for commitSha: {task.commitSha}")
         
         logger.info(f"Successfully created task cache for task {task_id}")
         return task_cache
