@@ -707,6 +707,8 @@ async def process_findings(
             start_time = datetime.fromtimestamp(float(task.startTime), tz=timezone.utc)
             deadline = datetime.fromtimestamp(float(task.deadline), tz=timezone.utc)
             
+        except HTTPException as he:
+            raise he
         except (ValueError, TypeError) as te:
             logger.error(f"Invalid timestamp format for task {input_data.task_id}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
             raise HTTPException(

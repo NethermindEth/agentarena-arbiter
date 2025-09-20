@@ -3,12 +3,10 @@ Unit tests for main.py functions and endpoints.
 These tests focus on individual functions and simpler endpoint scenarios.
 """
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch, Mock
 from datetime import datetime, timezone
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.models.finding_db import FindingDB, Status, Severity
 from app.models.finding_input import FindingInput, Finding
 
 
@@ -118,6 +116,7 @@ class TestPostSubmission:
 class TestGetLatestFindings:
     """Test the get_latest_findings utility function."""
     
+    @patch('app.main.mongodb', new_callable=AsyncMock)
     @pytest.mark.asyncio
     async def test_get_latest_findings_with_last_sync(self, mock_mongodb, sample_findings):
         """Test getting findings with existing last sync timestamp."""
@@ -128,8 +127,7 @@ class TestGetLatestFindings:
         mock_mongodb.get_metadata.return_value = {"timestamp": last_sync_time}
         mock_mongodb.get_findings.return_value = sample_findings[:1]  # Only one new finding
         
-        with patch('app.main.mongodb', mock_mongodb):
-            result = await get_latest_findings("test-task", "test-agent")
+        result = await get_latest_findings("test-task", "test-agent")
         
         # Verify the correct call was made
         mock_mongodb.get_metadata.assert_called_once_with("last_sync_test-task_test-agent")
@@ -141,6 +139,7 @@ class TestGetLatestFindings:
         
         assert result == sample_findings[:1]
     
+    @patch('app.main.mongodb', new_callable=AsyncMock)
     @pytest.mark.asyncio
     async def test_get_latest_findings_no_last_sync(self, mock_mongodb, sample_findings):
         """Test getting findings without previous sync timestamp."""
@@ -150,8 +149,7 @@ class TestGetLatestFindings:
         mock_mongodb.get_metadata.return_value = None
         mock_mongodb.get_findings.return_value = sample_findings
         
-        with patch('app.main.mongodb', mock_mongodb):
-            result = await get_latest_findings("test-task", "test-agent")
+        result = await get_latest_findings("test-task", "test-agent")
         
         # Verify the correct call was made
         mock_mongodb.get_metadata.assert_called_once_with("last_sync_test-task_test-agent")
@@ -162,6 +160,7 @@ class TestGetLatestFindings:
         
         assert result == sample_findings
     
+    @patch('app.main.mongodb', new_callable=AsyncMock)
     @pytest.mark.asyncio 
     async def test_get_latest_findings_empty_last_sync(self, mock_mongodb):
         """Test getting findings with empty last sync data."""
@@ -171,8 +170,7 @@ class TestGetLatestFindings:
         mock_mongodb.get_metadata.return_value = {}  # Empty dict, no timestamp key
         mock_mongodb.get_findings.return_value = []
         
-        with patch('app.main.mongodb', mock_mongodb):
-            result = await get_latest_findings("test-task", "test-agent")
+        result = await get_latest_findings("test-task", "test-agent")
         
         # Should call get_findings without since_timestamp when timestamp is missing
         mock_mongodb.get_findings.assert_called_once_with(
@@ -186,9 +184,8 @@ class TestGetLatestFindings:
 class TestProcessFindingsErrorScenarios:
     """Test error scenarios in the process_findings endpoint."""
     
-    @patch('app.main.agents_cache', [])
-    def test_process_findings_no_agents_configured(self, client):
-        """Test process_findings when no agents are configured."""
+    def test_process_findings_invalid_agent_authentication(self, sample_task, client):
+        """Test process_findings when agent authentication fails."""
         findings_data = FindingInput(
             task_id="test-task-123",
             findings=[
@@ -201,20 +198,67 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
+        # Mock get_agent_id to raise ValueError (invalid API key)
+        client.mock_db.get_agent_id = AsyncMock(side_effect=ValueError("Invalid API key"))
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+
+        response = client.post(
+            "/process_findings",
+            headers={"X-API-Key": "invalid-key"},
+            json=findings_data.model_dump()
+        )
+        
+        assert response.status_code == 401
+        assert "Invalid API key" in response.text
+    
+    def test_process_findings_task_not_found(self, client):
+        """Test process_findings when task is not found in database."""
+        findings_data = FindingInput(
+            task_id="nonexistent-task",
+            findings=[
+                Finding(
+                    title="Test Finding",
+                    description="Test description",
+                    severity="High",
+                    file_paths=["test.sol"]
+                )
+            ]
+        )
+        
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=None)
+        
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
             json=findings_data.model_dump()
         )
         
-        assert response.status_code == 503
-        assert "Agent service unavailable" in response.text
+        assert response.status_code == 404
+        assert "not found" in response.text
     
-    def test_process_findings_submission_before_start_time(self, client, sample_task_cache):
+    def test_process_findings_submission_before_start_time(self, client):
         """Test submission before task start time."""
-        # Modify task cache to have future start time
-        future_time = datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        sample_task_cache.startTime = future_time
+        from app.types import Task
+        
+        # Task with future start time
+        future_task = Task(
+            taskId="test-task-123",
+            projectRepo="https://example.com/repo.git",
+            title="Test Task",
+            description="Test",
+            bounty=None,
+            status="Open",
+            startTime=str(int(datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())),  # Future
+            deadline="1893456000",
+            selectedBranch="main",
+            selectedFiles=["contracts/Vault.sol"],
+            selectedDocs=[],
+            additionalLinks=[],
+            additionalDocs=None,
+            qaResponses=[],
+            commitSha="abc123"
+        )
         
         findings_data = FindingInput(
             task_id="test-task-123",
@@ -228,21 +272,40 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
-        with patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }):
-            response = client.post(
-                "/process_findings",
-                headers={"X-API-Key": "test-key"},
-                json=findings_data.model_dump()
-            )
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=future_task)
+        
+        response = client.post(
+            "/process_findings",
+            headers={"X-API-Key": "test-key"},
+            json=findings_data.model_dump()
+        )
         
         assert response.status_code == 403
         assert "Submission period has not started yet" in response.text
     
-    def test_process_findings_submission_after_deadline(self, client, sample_task_cache):
+    def test_process_findings_submission_after_deadline(self, client):
         """Test submission after task deadline."""
-        # Modify task cache to have past deadline
-        past_time = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        sample_task_cache.deadline = past_time
+        from app.types import Task
+        
+        # Task with past deadline
+        past_task = Task(
+            taskId="test-task-123",
+            projectRepo="https://example.com/repo.git",
+            title="Test Task",
+            description="Test",
+            bounty=None,
+            status="Open",
+            startTime="1000000000",  # Past
+            deadline=str(int(datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())),  # Past
+            selectedBranch="main",
+            selectedFiles=["contracts/Vault.sol"],
+            selectedDocs=[],
+            additionalLinks=[],
+            additionalDocs=None,
+            qaResponses=[],
+            commitSha="abc123"
+        )
         
         findings_data = FindingInput(
             task_id="test-task-123",
@@ -256,18 +319,20 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
-        with patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }):
-            response = client.post(
-                "/process_findings",
-                headers={"X-API-Key": "test-key"},
-                json=findings_data.model_dump()
-            )
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=past_task)
+           
+        response = client.post(
+            "/process_findings",
+            headers={"X-API-Key": "test-key"},
+            json=findings_data.model_dump()
+        )
         
         assert response.status_code == 403
         assert "Submission period has ended" in response.text
     
     @patch('app.main.post_submission')
-    def test_process_findings_database_error(self, mock_post_sub, client):
+    def test_process_findings_database_error(self, mock_post_sub, sample_task, client):
         """Test process_findings when database operations fail."""
         # Setup mocks
         client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
@@ -286,6 +351,11 @@ class TestProcessFindingsErrorScenarios:
             ]
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
+        client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
+            
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
@@ -299,12 +369,8 @@ class TestProcessFindingsErrorScenarios:
 class TestBackgroundProcessingErrorScenarios:
     """Test error scenarios in the background processing endpoint."""
     
-    @patch('app.main.agents_cache', [])
-    def test_background_processing_no_agents_configured(self):
-        """Test background processing when no agents are configured."""
-        from app.main import app
-        client = TestClient(app)
-        
+    def test_background_processing_invalid_agent_authentication(self, client):
+        """Test background processing when agent authentication fails."""
         findings_data = FindingInput(
             task_id="TESTTASK",
             findings=[
@@ -317,20 +383,22 @@ class TestBackgroundProcessingErrorScenarios:
             ]
         )
         
+        # Mock get_agent_id to raise ValueError (invalid API key)
+        client.mock_db.get_agent_id = AsyncMock(side_effect=ValueError("Invalid API key"))
+            
         response = client.post(
             "/test/process_findings",
-            headers={"X-API-Key": "test-key"},
+            headers={"X-API-Key": "invalid-key"},
             json=findings_data.model_dump()
         )
         
-        assert response.status_code == 503
-        assert "Agent service unavailable" in response.text
+        assert response.status_code == 401
+        assert "Invalid API key" in response.text
     
     @patch('app.main.config')
-    def test_background_processing_max_findings_exceeded(self, mock_config):
+    def test_background_processing_max_findings_exceeded(self, mock_config, client):
         """Test background processing with too many findings."""
-        from app.main import app
-        
+
         # Set low limit for this test
         mock_config.max_findings_per_submission = 1
         
@@ -349,22 +417,20 @@ class TestBackgroundProcessingErrorScenarios:
             findings=findings
         )
         
-        with patch('app.main.agents_cache', [{"agent_id": "test-agent", "api_key": "test-key"}]):
-            client = TestClient(app)
-            response = client.post(
-                "/test/process_findings",
-                headers={"X-API-Key": "test-key"},
-                json=findings_data.model_dump()
-            )
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+            
+        response = client.post(
+            "/test/process_findings",
+            headers={"X-API-Key": "test-key"},
+            json=findings_data.model_dump()
+        )
         
         assert response.status_code == 400
         assert "Maximum allowed: 1" in response.text
     
     @patch('app.main.post_submission')
-    def test_background_processing_database_error(self, mock_post_sub):
+    def test_background_processing_database_error(self, mock_post_sub, client):
         """Test background processing when database operations fail."""
-        from app.main import app
-        
         mock_post_sub.return_value = AsyncMock()
         
         findings_data = FindingInput(
@@ -379,18 +445,15 @@ class TestBackgroundProcessingErrorScenarios:
             ]
         )
         
-        with patch('app.main.agents_cache', [{"agent_id": "test-agent", "api_key": "test-key"}]), \
-             patch('app.main.mongodb') as mock_mongodb:
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        # Setup mongodb mock to raise exception
+        client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
             
-            # Setup mongodb mock to raise exception
-            mock_mongodb.create_finding = AsyncMock(side_effect=Exception("Database error"))
-            
-            client = TestClient(app)
-            response = client.post(
-                "/test/process_findings",
-                headers={"X-API-Key": "test-key"},
-                json=findings_data.model_dump()
-            )
+        response = client.post(
+            "/test/process_findings",
+            headers={"X-API-Key": "test-key"},
+            json=findings_data.model_dump()
+        )
         
         assert response.status_code == 500
         assert "Error in test processing" in response.text
@@ -399,27 +462,21 @@ class TestBackgroundProcessingErrorScenarios:
 class TestTriggerTaskProcessingEndpoint:
     """Test the trigger_task_processing endpoint basic scenarios."""
     
-    def test_trigger_task_processing_invalid_api_key(self):
+    @patch('app.main.config')
+    def test_trigger_task_processing_invalid_api_key(self, mock_config, client):
         """Test trigger processing with invalid API key."""
-        from app.main import app
-        
-        with patch('app.main.config') as mock_config:
-            mock_config.backend_api_key = "correct-key"
-            client = TestClient(app)
+        mock_config.backend_api_key = "correct-key"
+
+        response = client.post(
+            "/tasks/test-task/process",
+            headers={"X-API-Key": "wrong-key"}
+        )
             
-            response = client.post(
-                "/tasks/test-task/process",
-                headers={"X-API-Key": "wrong-key"}
-            )
-            
-            assert response.status_code == 401
-            assert "Invalid API key" in response.text
+        assert response.status_code == 401
+        assert "Invalid API key" in response.text
     
-    def test_trigger_task_processing_missing_api_key(self):
+    def test_trigger_task_processing_missing_api_key(self, client):
         """Test trigger processing without API key header."""
-        from app.main import app
-        client = TestClient(app)
-        
         response = client.post("/tasks/test-task/process")
         
         assert response.status_code == 422  # Missing required header
@@ -473,31 +530,27 @@ class TestTriggerTaskProcessingEndpoint:
 class TestPostTaskFindingsEndpoint:
     """Test the post_task_findings endpoint basic scenarios."""
     
-    def test_post_task_findings_invalid_api_key(self):
+    @patch('app.main.config')
+    def test_post_task_findings_invalid_api_key(self, mock_config, client):
         """Test posting findings with invalid API key."""
-        from app.main import app
         
-        with patch('app.main.config') as mock_config:
-            mock_config.backend_api_key = "correct-key"
-            client = TestClient(app)
+        mock_config.backend_api_key = "correct-key"
+
+        response = client.post(
+            "/tasks/test-task/post",
+            headers={"X-API-Key": "wrong-key"}
+        )
             
-            response = client.post(
-                "/tasks/test-task/post",
-                headers={"X-API-Key": "wrong-key"}
-            )
-            
-            assert response.status_code == 401
-            assert "Invalid API key" in response.text
+        assert response.status_code == 401
+        assert "Invalid API key" in response.text
     
     @patch('app.main.config')
-    def test_post_task_findings_no_backend_endpoint(self, mock_config):
+    def test_post_task_findings_no_backend_endpoint(self, mock_config, client):
         """Test posting findings when backend endpoint not configured."""
-        from app.main import app
-        
+
         mock_config.backend_api_key = "test-key" 
         mock_config.backend_findings_endpoint = None
         
-        client = TestClient(app)
         response = client.post(
             "/tasks/test-task/post",
             headers={"X-API-Key": "test-key"}
@@ -506,17 +559,14 @@ class TestPostTaskFindingsEndpoint:
         assert response.status_code == 503
         assert "Backend findings endpoint not configured" in response.text
     
-    @patch('app.main.mongodb')
     @patch('app.main.config') 
-    def test_post_task_findings_no_findings(self, mock_config, mock_mongodb):
+    def test_post_task_findings_no_findings(self, mock_config, client):
         """Test posting findings when no findings exist for task."""
-        from app.main import app
-        
+
         mock_config.backend_api_key = "test-key"
         mock_config.backend_findings_endpoint = "http://test.com/findings"
-        mock_mongodb.get_findings = AsyncMock(return_value=[])
+        client.mock_db.get_findings = AsyncMock(return_value=[])
         
-        client = TestClient(app)
         response = client.post(
             "/tasks/test-task/post",
             headers={"X-API-Key": "test-key"}
@@ -533,12 +583,10 @@ class TestGetTaskFindingsEndpoint:
     """Test additional scenarios for get_task_findings endpoint."""
     
     @patch('app.main.config')
-    def test_get_task_findings_invalid_api_key(self, mock_config):
+    def test_get_task_findings_invalid_api_key(self, mock_config, client):
         """Test getting task findings with invalid API key."""
-        from app.main import app
         
         mock_config.backend_api_key = "correct-key"
-        client = TestClient(app)
         
         response = client.get(
             "/tasks/test-task/findings", 
@@ -548,16 +596,13 @@ class TestGetTaskFindingsEndpoint:
         assert response.status_code == 401
         assert "Invalid API key" in response.text
     
-    @patch('app.main.mongodb')
     @patch('app.main.config')
-    def test_get_task_findings_database_error(self, mock_config, mock_mongodb):
+    def test_get_task_findings_database_error(self, mock_config, client):
         """Test getting task findings when database error occurs."""
-        from app.main import app
         
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_findings = AsyncMock(side_effect=Exception("Database connection failed"))
+        client.mock_db.get_findings = AsyncMock(side_effect=Exception("Database connection failed"))
         
-        client = TestClient(app)
         response = client.get(
             "/tasks/test-task/findings",
             headers={"X-API-Key": "test-key"}

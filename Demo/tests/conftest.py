@@ -9,7 +9,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from bson import ObjectId
 
 from app.models.finding_db import Status, Severity
-from app.types import TaskCache
+from app.types import TaskCache, Task
 
 
 @pytest.fixture
@@ -18,6 +18,40 @@ def event_loop():
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
+
+
+def create_sample_task(
+    task_id: str = "test-task-123",
+    title: str = "Test Task", 
+    description: str = "A task for testing",
+    start_time: str = "1735689600",  # 2025-01-01 00:00:00 UTC
+    deadline: str = "1893456000",   # 2030-01-01 00:00:00 UTC
+    commit_sha: str = "abc123"
+) -> Task:
+    """Create a sample task for testing with customizable parameters."""
+    return Task(
+        taskId=task_id,
+        projectRepo="https://example.com/repo.git",
+        title=title,
+        description=description,
+        bounty=None,
+        status="Open",
+        startTime=start_time,
+        deadline=deadline,
+        selectedBranch="main",
+        selectedFiles=["contracts/Vault.sol"],
+        selectedDocs=[],
+        additionalLinks=[],
+        additionalDocs=None,
+        qaResponses=[],
+        commitSha=commit_sha
+    )
+
+
+@pytest.fixture
+def sample_task() -> Task:
+    """Create a sample task fixture for testing."""
+    return create_sample_task()
 
 
 @pytest.fixture
@@ -122,23 +156,14 @@ def mock_httpx_client():
 
 
 @pytest.fixture
-def client(sample_task_cache, mock_mongodb):
+def client(mock_mongodb):
     """Create FastAPI test client with mocked dependencies."""
     # Import here to avoid circular imports and initialization issues
     from fastapi.testclient import TestClient
     from app.main import app
     
     # Mock the database and other dependencies before creating the client
-    with patch('app.main.mongodb', mock_mongodb), \
-         patch('app.main.task_cache_map', { sample_task_cache.taskId: sample_task_cache }), \
-         patch('app.main.agents_cache') as mock_agents:
-        
-        # Configure mock_agents to behave like a list
-        test_agents = [{"agent_id": "test-agent", "api_key": "test-key"}]
-        mock_agents.__iter__ = lambda self: iter(test_agents)
-        mock_agents.__len__ = lambda self: len(test_agents)
-        mock_agents.__getitem__ = lambda self, key: test_agents[key]
-
+    with patch('app.main.mongodb', mock_mongodb):
         # Create client without triggering lifespan events that need real DB
         client = TestClient(app, base_url="http://testserver")
         

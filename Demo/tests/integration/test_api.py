@@ -11,7 +11,7 @@ class TestProcessFindingsEndpoint:
     """Test /process_findings endpoint."""
     
     @patch('app.main.post_submission')
-    def test_process_findings_success(self, mock_post_sub, client):
+    def test_process_findings_success(self, mock_post_sub, sample_task, client):
         """Test successful findings submission."""
         # Setup mocks
         client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
@@ -19,7 +19,7 @@ class TestProcessFindingsEndpoint:
         mock_post_sub.return_value = AsyncMock()
         
         findings_data = FindingInput(
-            task_id="test-task-123",  # Match the taskId from sample_task_cache
+            task_id="test-task-123",
             findings=[
                 Finding(
                     title="Test Finding",
@@ -30,6 +30,11 @@ class TestProcessFindingsEndpoint:
             ]
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
+        client.mock_db.create_finding = AsyncMock()
+
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
@@ -39,19 +44,18 @@ class TestProcessFindingsEndpoint:
         assert response.status_code == 200
         result = response.json()
         
-        assert result["task_id"] == "test-task-123"  # Match the taskId from sample_task_cache
+        assert result["task_id"] == "test-task-123"
         assert result["agent_id"] == "test-agent"
         assert result["total_findings"] == 1
     
     @patch('app.main.post_submission')
-    def test_process_findings_multiple_submissions(self, mock_post_sub, client):
+    def test_process_findings_multiple_submissions(self, mock_post_sub, sample_task, client):
         """Test that multiple submissions overwrite previous ones."""
         # Setup mocks
         client.mock_db.create_finding = AsyncMock()
         mock_post_sub.return_value = AsyncMock()
         
         # First submission
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
         findings_data1 = FindingInput(
             task_id="test-task-123",
             findings=[
@@ -64,6 +68,11 @@ class TestProcessFindingsEndpoint:
             ]
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
+        client.mock_db.create_finding = AsyncMock()
+            
         response1 = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
@@ -88,12 +97,14 @@ class TestProcessFindingsEndpoint:
             ]
         )
         
+        client.mock_db.delete_agent_findings = AsyncMock(return_value=1)  # Shows previous findings were deleted
+        
         response2 = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
             json=findings_data2.model_dump()
         )
-        
+
         assert response2.status_code == 200
         result2 = response2.json()
         assert result2["total_findings"] == 1
@@ -102,7 +113,7 @@ class TestProcessFindingsEndpoint:
         client.mock_db.delete_agent_findings.assert_called_with("test-task-123", "test-agent")
 
     @patch('app.main.config')
-    def test_process_findings_max_findings_limit(self, mock_config, client):
+    def test_process_findings_max_findings_limit(self, mock_config, sample_task, client):
         """Test that submissions exceeding max findings limit are rejected."""
         # Set max findings limit to 2 for this test
         mock_config.max_findings_per_submission = 2
@@ -122,6 +133,9 @@ class TestProcessFindingsEndpoint:
             findings=findings
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
@@ -129,13 +143,12 @@ class TestProcessFindingsEndpoint:
         )
         
         assert response.status_code == 400
-        error_text = response.text
-        assert "Maximum allowed: 2" in error_text
+        assert "Maximum allowed: 2" in response.text
 
     def test_process_findings_task_not_found(self, client):
         """Test that non-existent task returns 404."""
         findings_data = FindingInput(
-            task_id="nonexistent-task-id",  # This doesn't match sample_task_cache
+            task_id="nonexistent-task-id",  # This task won't exist in database
             findings=[
                 Finding(
                     title="Non-existent Task Test",
@@ -146,6 +159,10 @@ class TestProcessFindingsEndpoint:
             ]
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        # Mock task not found
+        client.mock_db.get_task = AsyncMock(return_value=None)
+        
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
@@ -153,13 +170,12 @@ class TestProcessFindingsEndpoint:
         )
         
         assert response.status_code == 404
-        assert "not found in cache" in response.text
+        assert "not found" in response.text
     
-    @patch('app.main.agents_cache', [{"agent_id": "test-agent", "api_key": "valid-key"}])
     def test_process_findings_invalid_api_key(self, client):
         """Test findings submission with invalid API key."""
         findings_data = FindingInput(
-            task_id="test-task-123",  # Match the taskId from sample_task_cache
+            task_id="test-task-123",
             findings=[
                 Finding(
                     title="Test Finding",
@@ -170,15 +186,16 @@ class TestProcessFindingsEndpoint:
             ]
         )
         
+        client.mock_db.get_agent_id = AsyncMock(side_effect=ValueError("Invalid API key"))
+        
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "invalid-key"},
             json=findings_data.model_dump()
         )
         
-        # This might return 404 due to task cache, but invalid API key should be caught
-        # We're testing that the API key validation works
-        assert response.status_code in [401, 404]  # Either auth failure or task not found
+        assert response.status_code == 401
+        assert "Invalid API key" in response.text
     
     def test_process_findings_missing_api_key(self, client):
         """Test findings submission without API key."""
@@ -202,7 +219,7 @@ class TestProcessFindingsEndpoint:
         assert response.status_code == 422  # Missing required header
 
     @patch('app.main.post_submission')
-    def test_process_findings_empty_submission(self, mock_post_sub, client):
+    def test_process_findings_empty_submission(self, mock_post_sub, sample_task, client):
         """Test that empty submission clears previous findings."""
         # Setup mocks
         client.mock_db.delete_agent_findings = AsyncMock(return_value=2)  # Shows previous findings were deleted
@@ -215,12 +232,17 @@ class TestProcessFindingsEndpoint:
             findings=[]  # Empty findings list
         )
         
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
+        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_db.delete_agent_findings = AsyncMock(return_value=2)
+        client.mock_db.create_finding = AsyncMock()
+        
         response = client.post(
             "/process_findings",
             headers={"X-API-Key": "test-key"},
             json=findings_data.model_dump()
         )
-        
+
         assert response.status_code == 200
         result = response.json()
         
@@ -242,8 +264,6 @@ class TestBackgroundProcessingEndpoint:
     @patch('app.main.post_submission')
     def test_background_processing_endpoint(self, mock_post_sub, client):
         """Test the background processing test endpoint."""
-        # Setup mocks
-        client.mock_db.create_finding = AsyncMock()
         mock_post_sub.return_value = AsyncMock()
         
         # Test finding for background processing
@@ -258,6 +278,8 @@ class TestBackgroundProcessingEndpoint:
                 )
             ]
         )
+        
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         
         response = client.post(
             "/test/process_findings",
@@ -290,6 +312,8 @@ class TestBackgroundProcessingEndpoint:
                 )
             ]
         )
+
+        client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         
         response = client.post(
             "/test/process_findings",
