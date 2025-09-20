@@ -1,35 +1,37 @@
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
-    mongodb_url: str = Field(..., env="MONGODB_URL")
-    claude_api_key: str = Field(..., env="CLAUDE_API_KEY")
-    claude_model: str = Field("claude-3-7-sonnet-20250219", env="CLAUDE_MODEL")
-    claude_temperature: float = Field(0.0, env="CLAUDE_TEMPERATURE")
-    claude_max_tokens: int = Field(20000, env="CLAUDE_MAX_TOKENS")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
+    
+    mongodb_url: str = Field(..., description="MongoDB connection URL")
+
+    # Claude configuration for evaluation
+    claude_api_key: str = Field(..., description="Claude API key")
+    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
+    claude_temperature: float = Field(0.0, description="Claude temperature setting")
+    claude_max_tokens: int = Field(20000, description="Claude max tokens")
     
     # Gemini configuration for deduplication
-    gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
-    gemini_model: str = Field("gemini-2.5-pro", env="GEMINI_MODEL")
-    gemini_temperature: float = Field(0.0, env="GEMINI_TEMPERATURE")
-    gemini_max_tokens: int = Field(20000, env="GEMINI_MAX_TOKENS")
+    gemini_api_key: str = Field(..., description="Gemini API key")
+    gemini_model: str = Field("gemini-2.5-pro", description="Gemini model name")
+    gemini_temperature: float = Field(0.0, description="Gemini temperature setting")
+    gemini_max_tokens: int = Field(20000, description="Gemini max tokens")
     
-    debug: bool = Field(False, env="DEBUG")
-    backend_findings_endpoint: str = Field(..., env="BACKEND_FINDINGS_ENDPOINT")
-    backend_submitted_tasks_endpoint: str = Field(..., env="BACKEND_SUBMITTED_TASKS_ENDPOINT")
-    backend_task_repository_endpoint: str = Field(..., env="BACKEND_TASK_REPOSITORY_ENDPOINT")
-    backend_agents_endpoint: str = Field(..., env="BACKEND_AGENTS_ENDPOINT")
-    backend_submissions_endpoint: str = Field(..., env="BACKEND_SUBMISSIONS_ENDPOINT")
-    backend_api_key: str = Field(..., env="BACKEND_API_KEY")
-    max_findings_per_submission: int = Field(20, env="MAX_FINDINGS_PER_SUBMISSION")
-    log_level: str = Field("INFO", env="LOG_LEVEL")
-    data_dir: str = "task_data"  # Hardcoded value - helps with gitignore
+    debug: bool = Field(False, description="Debug mode flag")
+    log_level: str = Field("INFO", description="Logging level")
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    backend_api_key: str = Field(..., description="Backend API key")
+    backend_findings_endpoint: str = Field(..., description="Backend findings endpoint URL")
+    backend_submissions_endpoint: str = Field(..., description="Backend submissions endpoint URL")
+    backend_task_repository_endpoint: str = Field(..., description="Backend task repository endpoint URL")
+    max_findings_per_submission: int = Field(20, description="Maximum findings per submission")
+    data_dir: str = "task_data"  # Hardcoded value - helps with gitignore
 
 # Load environment variables
 load_dotenv(override=True)
