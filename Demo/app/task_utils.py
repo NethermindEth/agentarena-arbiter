@@ -1,38 +1,13 @@
 import httpx
-from typing import List
-from app.types import Task
 from app.config import Settings
 import os
 import tempfile
 import zipfile
 import logging
+import asyncio
 
 
 logger = logging.getLogger(__name__)
-
-async def fetch_submitted_tasks(submitted_url: str, config: Settings) -> List[Task]:
-    """
-    Fetch list of submitted tasks.
-    
-    Args:
-        submitted_url: URL to fetch submitted tasks list
-        config: Application configuration
-        
-    Returns:
-        List of Task objects
-    """
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                submitted_url,
-                headers={"X-API-Key": config.backend_api_key}
-            )
-            response.raise_for_status()
-            tasks_data = response.json() or []
-            return [Task.model_validate(t) for t in tasks_data]
-    except Exception as e:
-        logger.error(f"Error fetching submitted tasks: {str(e)}", exc_info=True)
-        return []
 
 async def download_repository(repo_url: str, config: Settings) -> tuple[str, str]:
     """
@@ -43,47 +18,69 @@ async def download_repository(repo_url: str, config: Settings) -> tuple[str, str
         config: Application configuration
         
     Returns:
-        Path to the extracted repository directory
+        Tuple of (repo_root_path, temp_dir_path) or (None, None) if all attempts fail
     """
-    try:
-        # Create a temporary directory
-        temp_dir = tempfile.mkdtemp()
-        zip_path = os.path.join(temp_dir, "repo.zip")
-        
-        # Download the ZIP file
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                repo_url,
-                headers={"X-API-Key": config.backend_api_key}
-            )
-            response.raise_for_status()
+    last_exception = None
+    max_retries = 3
+    
+    # Retry loop for downloading the repository
+    for attempt in range(max_retries):
+        temp_dir = None
+        try:
+            logger.info(f"Downloading repository from {repo_url} (attempt {attempt + 1}/{max_retries})")
             
-            # Save ZIP file
-            with open(zip_path, "wb") as f:
-                f.write(response.content)
+            # Create a temporary directory
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "repo.zip")
             
-            # Extract ZIP file
-            extract_dir = os.path.join(temp_dir, "extracted")
-            os.makedirs(extract_dir, exist_ok=True)
+            # Download the ZIP file
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(
+                    repo_url,
+                    headers={"X-API-Key": config.backend_api_key}
+                )
+                response.raise_for_status()
+                
+                # Save ZIP file
+                with open(zip_path, "wb") as f:
+                    f.write(response.content)
+                
+                # Extract ZIP file
+                extract_dir = os.path.join(temp_dir, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
+                
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                
+                # Find the actual repository root directory
+                # Most repositories have a single root directory inside the ZIP
+                contents = os.listdir(extract_dir)
+                if len(contents) == 1 and os.path.isdir(os.path.join(extract_dir, contents[0])):
+                    # If there's only one item and it's a directory, that's our repo root
+                    repo_root = os.path.join(extract_dir, contents[0])
+                    logger.info(f"Successfully downloaded repository on attempt {attempt + 1}")
+                    return repo_root, temp_dir
+                else:
+                    # If there are multiple items, use the extract_dir as the root
+                    logger.info(f"Successfully downloaded repository on attempt {attempt + 1}")
+                    return extract_dir, temp_dir
+                    
+        except Exception as e:
+            last_exception = e
+            logger.warning(f"Download attempt {attempt + 1} failed for {repo_url}: {str(e)}")
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+            # Clean up temp directory on failure
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir)
             
-            # Find the actual repository root directory
-            # Most repositories have a single root directory inside the ZIP
-            contents = os.listdir(extract_dir)
-            if len(contents) == 1 and os.path.isdir(os.path.join(extract_dir, contents[0])):
-                # If there's only one item and it's a directory, that's our repo root
-                repo_root = os.path.join(extract_dir, contents[0])
-                logger.info(f"Found repository root directory: {contents[0]}")
-                return repo_root, temp_dir
-            else:
-                # If there are multiple items, use the extract_dir as the root
-                logger.info("Using extracted directory as repository root")
-                return extract_dir, temp_dir
-    except Exception as e:
-        logger.error(f"Error downloading repository: {str(e)}", exc_info=True)
-        return None, None
+            # Wait before retry with exponential backoff
+            wait_time = 2 ** attempt
+            logger.info(f"Waiting {wait_time} seconds before retry...")
+            await asyncio.sleep(wait_time)
+    
+    logger.error(f"Failed to download repository from {repo_url} after {max_retries} attempts. Last error: {last_exception}")
+    return None, None
 
 def read_and_concatenate_files(repo_dir: str, selected_files: list) -> str:
     """

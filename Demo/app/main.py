@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import traceback
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import httpx
 import shutil
 import os
@@ -19,12 +19,12 @@ from apscheduler.triggers.date import DateTrigger
 from collections import defaultdict
 
 from app.models.finding_db import FindingDB, Status
-from app.config import config, Settings
+from app.config import config
 from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
-from app.task_utils import fetch_submitted_tasks, download_repository, read_and_concatenate_files
+from app.task_utils import download_repository, read_and_concatenate_files
 import logging
 from app.types import TaskCache
 
@@ -46,9 +46,6 @@ logging.basicConfig(
 deduplicator = FindingDeduplication()
 evaluator = FindingEvaluator()
 
-# Initialize task cache map (task_id -> TaskCache)
-task_cache_map: Dict[str, TaskCache] = {}
-
 # Initialize per-agent submission locks to prevent concurrent processing
 # Key format: (task_id, agent_id)
 agent_submission_locks: Dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -56,11 +53,11 @@ agent_submission_locks: Dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 # Initialize APScheduler for task processing jobs
 scheduler = AsyncIOScheduler()
 
-# Interval for refreshing caches (in seconds)
-REFRESH_INTERVAL_SECONDS = 120  # 2 minutes
+# Interval for refreshing task scheduling (in seconds)
+REFRESH_INTERVAL_SECONDS = 1800  # 30 minutes
 
-# Keep references to background tasks so we can cancel them on shutdown
-refresh_tasks = []  # type: List[asyncio.Task]
+# Reference to refresh schedule background task so we can cancel it on shutdown
+refresh_schedule_task = None
 
 async def schedule_task_processing(task_id: str, start_time: datetime, deadline: datetime):
     """
@@ -147,38 +144,48 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Started APScheduler for task processing jobs")
         
         try:
-            # Initial fetch and cache of data
-            await set_task_caches(config)
+            # Initial scheduling of task processing jobs
+            await schedule_submitted_tasks()
         except Exception as e:
-            logger.error(f"Error during initial cache setup: {str(e)}")
+            logger.error(f"Error during initial task scheduling: {str(e)}")
 
         # --------------------------------------------------------------
-        # Schedule periodic refreshers, so caches stay reasonably fresh
+        # Schedule periodic task scheduling refresh
         # --------------------------------------------------------------
-        async def _periodic_task_cache_refresh():
+        async def _periodic_task_scheduling_refresh():
             while True:
                 try:
                     await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
-                    await set_task_caches(config)
+                    await schedule_submitted_tasks()
                 except Exception as e:
-                    logger.error(f"Error refreshing task cache: {str(e)}")
+                    logger.error(f"Error refreshing task scheduling: {str(e)}")
                 
 
-        # Start background tasks and store references
-        refresh_tasks.extend([
-            asyncio.create_task(_periodic_task_cache_refresh()),
-        ])
+        # Start background task and store reference
+        global refresh_schedule_task
+        refresh_schedule_task = asyncio.create_task(_periodic_task_scheduling_refresh())
         
         yield
         
         # Shutdown
-        # Cancel background refresher tasks
-        for task in refresh_tasks:
-            task.cancel()
-        # Wait for cancellation (ignore errors)
-        if refresh_tasks:
-            await asyncio.gather(*refresh_tasks, return_exceptions=True)
+        # Cancel refresh schedule background task
+        if refresh_schedule_task:
+            refresh_schedule_task.cancel()
+            try:
+                await refresh_schedule_task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling
+            except Exception as e:
+                logger.error(f"Error during background task shutdown: {str(e)}")
 
+        # Cancel scheduler
+        try:
+            scheduler.shutdown()
+            logger.info("✅ Shut down APScheduler")
+        except Exception as e:
+            logger.error(f"Error shutting down scheduler: {str(e)}")
+
+        # Close MongoDB connection
         await mongodb.close()
         logger.info("✅ Disconnected from MongoDB")
         
@@ -207,23 +214,20 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-async def set_task_caches(config: Settings):
-    """Fetch file contents for submitted tasks and cache per task_id."""
-    if not config.backend_api_key or not config.backend_task_repository_endpoint or not config.backend_submitted_tasks_endpoint:
-        logger.warning("BACKEND_API_KEY or BACKEND_TASK_REPOSITORY_ENDPOINT or BACKEND_SUBMITTED_TASKS_ENDPOINT not configured, skipping cache update")
+async def schedule_submitted_tasks():
+    """Fetch submitted tasks metadata from database and schedule processing jobs."""
+    logger.info("Fetching submitted tasks from database")
+    try:
+        tasks = await mongodb.get_submitted_tasks()
+    except Exception as e:
+        logger.error(f"Error fetching submitted tasks from database: {str(e)}")
         return
-
-    logger.info(f"Fetching submitted tasks from {config.backend_submitted_tasks_endpoint}")
-    tasks = await fetch_submitted_tasks(config.backend_submitted_tasks_endpoint, config)
+        
     if not tasks:
-        logger.warning("No submitted tasks returned; skipping cache update")
+        logger.info("No submitted tasks found in database; skipping task scheduling")
         return
 
-    if not os.path.exists(config.data_dir):
-        os.makedirs(config.data_dir, exist_ok=True)
-
-    updated_map: Dict[str, TaskCache] = {}
-
+    scheduled_count = 0
     for task in tasks:
         try:
             task_id = task.taskId
@@ -231,16 +235,56 @@ async def set_task_caches(config: Settings):
                 logger.warning("Encountered task with missing taskId; skipping")
                 continue
 
-            selected_files = task.selectedFiles or []
-            if not selected_files:
-                logger.warning(f"No files selected for task {task_id}; skipping")
-                continue
+            # Parse timestamps for scheduling
+            start_time = datetime.fromtimestamp(float(task.startTime), tz=timezone.utc)
+            deadline = datetime.fromtimestamp(float(task.deadline), tz=timezone.utc)
 
-            # Download and extract repository
-            repo_dir, temp_dir = await download_repository(f"{config.backend_task_repository_endpoint}/{task_id}", config)
-            if not repo_dir or not temp_dir:
-                logger.error(f"Failed to download repository for task {task_id}")
-                continue
+            # Schedule processing for each task, except TESTTASK
+            if task_id != "TESTTASK":
+                await schedule_task_processing(task_id, start_time, deadline)
+                scheduled_count += 1
+
+        except (ValueError, TypeError) as te:
+            logger.error(f"Invalid timestamp format for task {getattr(task, 'taskId', 'unknown')}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
+            continue
+        except Exception as e:
+            logger.error(f"Error scheduling processing for task {getattr(task, 'taskId', 'unknown')}: {str(e)}")
+            continue
+
+    logger.info(f"Scheduled processing jobs for {scheduled_count} task(s)")
+
+async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
+    """
+    Fetch task data from database and download repository.
+    
+    Args:
+        task_id: Task identifier
+        
+    Returns:
+        TaskCache object with downloaded data or None if failed
+    """
+    try:
+        # Fetch task from database
+        task = await mongodb.get_task(task_id)
+        if not task:
+            logger.error(f"Task {task_id} not found in database")
+            return None
+            
+        selected_files = task.selectedFiles or []
+        if not selected_files:
+            logger.warning(f"No files selected for task {task_id}")
+            return None
+            
+        # Download repository
+        repo_dir, temp_dir = await download_repository(f"{config.backend_task_repository_endpoint}/{task_id}", config)
+        
+        if not repo_dir or not temp_dir:
+            logger.error(f"Failed to download repository for task {task_id}")
+            return None
+            
+        try:
+            if not os.path.exists(config.data_dir):
+                os.makedirs(config.data_dir, exist_ok=True)
 
             # Store repository in data directory
             repo_storage_path = os.path.join(config.data_dir, f"repo_{task_id}")
@@ -248,47 +292,44 @@ async def set_task_caches(config: Settings):
                 shutil.rmtree(repo_storage_path)
             shutil.copytree(repo_dir, repo_storage_path)
             logger.info(f"Repository for task {task_id} stored at {repo_storage_path}")
-            shutil.rmtree(temp_dir)
-
-            concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
-            if not concatenated_contracts:
-                logger.warning(f"No valid contracts content found for task {task_id}; skipping")
-                continue
-
-            selected_docs = task.selectedDocs or []
-            concatenated_docs = read_and_concatenate_files(repo_storage_path, selected_docs) if selected_docs else ""
-            if not concatenated_docs:
-                logger.warning(f"No valid docs content found for task {task_id}")
-
-            cache_entry = TaskCache(
-                taskId=task_id,
-                startTime=datetime.fromtimestamp(float(task.startTime), tz=timezone.utc),
-                deadline=datetime.fromtimestamp(float(task.deadline), tz=timezone.utc),
-                selectedFilesContent=concatenated_contracts,
-                selectedDocsContent=concatenated_docs,
-                additionalLinks=task.additionalLinks,
-                additionalDocs=task.additionalDocs,
-                qaResponses=task.qaResponses
-            )
-
-            updated_map[task_id] = cache_entry
-        except (ValueError, TypeError) as te:
-            logger.error(f"Invalid timestamp format for task {getattr(task, 'taskId', 'unknown')}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
-            continue
-        except Exception as e:
-            logger.error(f"Error building cache for task {getattr(task, 'taskId', 'unknown')}: {str(e)}")
-            continue
-
-    # Atomically replace
-    global task_cache_map
-    task_cache_map = updated_map
-    logger.info(f"Set task caches for {len(task_cache_map)} task(s): {list(task_cache_map.keys())}")
-
-    # Schedule processing for each task, except TESTTASK
-    for task_id, task_cache in task_cache_map.items():
-        if task_id != "TESTTASK":
-            await schedule_task_processing(task_id, task_cache.startTime, task_cache.deadline)
-
+        finally:
+            # Always clean up temp directory
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+                
+        # Concatenate contract files
+        concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
+        if not concatenated_contracts:
+            logger.warning(f"No valid contracts content found for task {task_id}")
+            return None
+            
+        # Concatenate documentation files
+        selected_docs = task.selectedDocs or []
+        concatenated_docs = read_and_concatenate_files(repo_storage_path, selected_docs) if selected_docs else ""
+        if not concatenated_docs:
+            logger.warning(f"No valid docs content found for task {task_id}")
+            
+        # Create TaskCache object
+        task_cache = TaskCache(
+            taskId=task_id,
+            startTime=datetime.fromtimestamp(float(task.startTime), tz=timezone.utc),
+            deadline=datetime.fromtimestamp(float(task.deadline), tz=timezone.utc),
+            selectedFilesContent=concatenated_contracts,
+            selectedDocsContent=concatenated_docs,
+            additionalLinks=task.additionalLinks,
+            additionalDocs=task.additionalDocs,
+            qaResponses=task.qaResponses
+        )
+        
+        logger.info(f"Successfully created task cache for task {task_id}")
+        return task_cache
+        
+    except (ValueError, TypeError) as te:
+        logger.error(f"Invalid timestamp format for task {task_id}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching task data for task {task_id}: {str(e)}")
+        return None
 
 async def format_finding(finding: FindingDB) -> Dict[str, Any]:
     return {
@@ -327,9 +368,10 @@ async def process_task(task_id: str):
         
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
         
-        task_cache = task_cache_map.get(task_id)
+        # Fetch task data with repository download
+        task_cache = await fetch_task_data(task_id)
         if not task_cache:
-            logger.error(f"Task cache not available for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
+            logger.error(f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
             return
         
         # Step 1: Identify duplicates
@@ -432,12 +474,10 @@ async def process_task_for_agent(task_id: str, agent_id: str):
 
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}, agent_id: {agent_id}")
 
-        task_cache = task_cache_map.get(task_id)
+        # Fetch task data with repository download
+        task_cache = await fetch_task_data(task_id)
         if not task_cache:
-            logger.error(
-                f"Task cache not available for task_id: {task_id}. "
-                f"Evaluation cannot proceed without smart contract context."
-            )
+            logger.error(f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
             return
 
         # Deduplicate only this agent's pending findings
@@ -554,26 +594,6 @@ async def get_latest_findings(task_id: str, agent_id: str) -> List[FindingDB]:
         
     return latest_findings
 
-@app.on_event("shutdown")
-async def shutdown():
-    """Disconnect from MongoDB on shutdown."""
-    # Cancel background refresher tasks
-    for task in refresh_tasks:
-        task.cancel()
-    # Wait for cancellation (ignore errors)
-    if refresh_tasks:
-        await asyncio.gather(*refresh_tasks, return_exceptions=True)
-
-    # Shutdown the scheduler
-    try:
-        scheduler.shutdown()
-        logger.info("✅ Shut down APScheduler")
-    except Exception as e:
-        logger.error(f"Error shutting down scheduler: {str(e)}")
-
-    await mongodb.close()
-    logger.info("✅ Disconnected from MongoDB")
-
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -632,44 +652,62 @@ async def process_findings(
         Processing confirmation
     """
     try:
-        # 1. Basic validation
+        # 1. Verify API key and get agent_id from database
+        try:
+            agent_id = await mongodb.get_agent_id(x_api_key)
+        except ValueError as ve:
+            logger.warning(f"Agent authentication failed: {str(ve)}")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # 2. Submission size validation
         if len(input_data.findings) > config.max_findings_per_submission:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission."
             )
             
-        # 2. Check if we're within the submission timeframe
-        task_cache = task_cache_map.get(input_data.task_id)
-        if not task_cache:
+        # 3. Check if we're within the submission timeframe
+        try:
+            task = await mongodb.get_task(input_data.task_id)
+            if not task:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Task {input_data.task_id} not found"
+                )
+                
+            # Parse timestamps
+            start_time = datetime.fromtimestamp(float(task.startTime), tz=timezone.utc)
+            deadline = datetime.fromtimestamp(float(task.deadline), tz=timezone.utc)
+            
+        except (ValueError, TypeError) as te:
+            logger.error(f"Invalid timestamp format for task {input_data.task_id}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}")
             raise HTTPException(
-                status_code=404,
-                detail=f"Task {input_data.task_id} not found in cache"
+                status_code=500,
+                detail=f"Invalid task configuration for {input_data.task_id}"
+            )
+        except Exception as e:
+            logger.error(f"Error fetching task {input_data.task_id}: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error validating task {input_data.task_id}"
             )
         
         # Check if submission is allowed
         current_time = datetime.now(timezone.utc)
         
-        if current_time < task_cache.startTime:
+        if current_time < start_time:
             raise HTTPException(
                 status_code=403,
-                detail=f"Submission period has not started yet. Starts at: {task_cache.startTime.isoformat()}"
+                detail=f"Submission period has not started yet. Starts at: {start_time.isoformat()}"
             )
         
-        if current_time > task_cache.deadline:
+        if current_time > deadline:
             raise HTTPException(
                 status_code=403,
-                detail=f"Submission period has ended. Deadline was: {task_cache.deadline.isoformat()}"
+                detail=f"Submission period has ended. Deadline was: {deadline.isoformat()}"
             )
             
-        # 3. Verify API key and get agent_id from database
-        try:
-            agent_id = await mongodb.get_agent_id(x_api_key)
-        except ValueError as ve:
-            logger.warning(f"Agent authentication failed: {str(ve)}")
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        
-        logger.info(f"Accepted findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
+        logger.info(f"Accepting findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}")
         
         # 4-6. Critical section: Must be atomic per agent to prevent race conditions
         submission_key = (input_data.task_id, agent_id)

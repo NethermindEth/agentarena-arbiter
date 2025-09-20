@@ -299,7 +299,7 @@ class MongoDBHandler:
         
         return user.get("agent_id")
 
-    async def get_active_tasks(self) -> List[Task]:
+    async def get_submitted_tasks(self) -> List[Task]:
         """
         Get all active tasks with status "submitted" from agent_arena database.
         
