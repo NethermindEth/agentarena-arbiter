@@ -146,8 +146,8 @@ class FindingDeduplication:
             return Status.UNIQUE_VALID
         
         if is_duplicate and is_original:
-            logger.error(f"Finding {finding.str_id} is both a duplicate and an original")
-            return Status.PENDING
+            logger.error(f"Finding {finding.str_id} is both a duplicate and an original - treating as unique")
+            return Status.UNIQUE_VALID
         
         if is_original:
             # This finding is the best/original version of a group with duplicates
@@ -182,8 +182,9 @@ class FindingDeduplication:
                 # Different agents reported all other findings in the group
                 return Status.SIMILAR_VALID
         
-        # Fallback (shouldn't reach here)
-        return Status.PENDING
+        # Fallback (theoretically impossible to reach here) - treat as unique for safety
+        logger.error("Finding status determination fell through to fallback")
+        return Status.UNIQUE_VALID
 
     async def apply_finding_statuses(self, task_id: str, findings: List[FindingDB], dedup_results: Dict[str, Any]) -> Dict[str, Any]:
         """

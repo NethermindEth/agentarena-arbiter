@@ -289,15 +289,18 @@ class MongoDBHandler:
         user = await users_collection.find_one({"api_key": api_key})
         
         if not user:
-            raise ValueError(f"Agent with API key {api_key} not found")
+            raise ValueError(f"User with API key {api_key} not found")
         
         if user.get("role") not in ["AgentBuilder", "Admin"] or user.get("status") != "active":
             raise ValueError(f"Invalid role or status for user with API key {api_key}")
         
-        if user.get("agent_id") is None:
-            raise ValueError(f"Agent ID not found for user with API key {api_key}")
+        if user.get("agent_name") is None:
+            raise ValueError(f"Agent name not found for user with API key {api_key}")
         
-        return user.get("agent_id")
+        return user.get("agent_name")
+        
+        # TODO: The agent ID is the user ID for now
+        return str(user.get("_id"))
 
     async def get_submitted_tasks(self) -> List[Task]:
         """

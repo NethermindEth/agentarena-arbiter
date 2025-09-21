@@ -359,7 +359,7 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
         logger.error(f"Error fetching task data for task {task_id}: {str(e)}")
         return None
 
-async def format_finding(finding: FindingDB) -> Dict[str, Any]:
+def format_finding(finding: FindingDB) -> Dict[str, Any]:
     return {
         "id": finding.str_id,
         "agent_id": finding.agent_id,
