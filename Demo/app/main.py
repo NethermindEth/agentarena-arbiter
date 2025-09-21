@@ -946,6 +946,69 @@ async def trigger_task_processing(
         logger.error(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Error processing task: {str(e)}")
 
+@app.post("/schedule-task/{task_id}")
+async def schedule_task(
+    task_id: str,
+    x_api_key: str = Header(..., alias="X-API-Key")
+):
+    """
+    Schedule a task for processing by fetching it from the database and scheduling it based on its deadline.
+    
+    Args:
+        task_id: Task identifier for the task to schedule
+        x_api_key: API key for authentication
+        
+    Returns:
+        Scheduling status and details
+    """
+    try:
+        if x_api_key != config.backend_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        # Validate task_id
+        if not task_id:
+            raise HTTPException(status_code=400, detail="Missing required field: task_id")
+        
+        # Fetch task from database
+        try:
+            task = await mongodb.get_task(task_id)
+        except Exception as e:
+            logger.error(f"Error fetching task {task_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error retrieving task {task_id} from database")
+        
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found in database")
+        
+        # Parse timestamps
+        try:
+            start_time = datetime.fromtimestamp(float(task.startTime), tz=timezone.utc)
+            deadline = datetime.fromtimestamp(float(task.deadline), tz=timezone.utc)
+        except (ValueError, TypeError) as te:
+            logger.error(f"Invalid timestamp format for task {task_id}: startTime={task.startTime}, deadline={task.deadline} - {str(te)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid timestamp format for task {task_id}"
+            )
+        
+        await schedule_task_processing(task_id, start_time, deadline)
+        
+        return {
+            "task_id": task_id,
+            "status": "scheduled",
+            "message": f"Task {task_id} scheduled for processing",
+            "start_time": start_time.isoformat(),
+            "deadline": deadline.isoformat(),
+            "scheduled_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Error scheduling task: {str(e)}")
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Error scheduling task: {str(e)}")
+
 @app.post("/tasks/{task_id}/post")
 async def post_task_findings(
     task_id: str,
