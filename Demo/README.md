@@ -207,12 +207,11 @@ The application requires the following environment variables:
 - `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
 - `GEMINI_MAX_TOKENS`: Maximum tokens for Gemini AI model (default: 20000)
 - `DEBUG`: Enable debug mode (default: true)
-- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
-- `BACKEND_SUBMISSION_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
-- `BACKEND_FILES_ENDPOINT`: Endpoint for retrieving task files from AgentArena backend
-- `BACKEND_AGENTS_ENDPOINT`: Endpoint for retrieving agents from AgentArena backend
+- `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
-- `TASK_ID`: Task ID from AgentArena backend
+- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
+- `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
+- `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
 
 ## API Endpoints
 

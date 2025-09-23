@@ -11,6 +11,7 @@ from bson import ObjectId
 from app.models.finding_input import FindingInput, Finding
 from app.models.finding_db import FindingDB, Status
 from app.config import config
+from app.types import Task
 
 class MongoDBHandler:
     """
@@ -26,35 +27,38 @@ class MongoDBHandler:
             connection_string: MongoDB connection string
         """
         self.client = None
-        self.db = None
+        self.findings_db = None
+        self.agent_arena_db = None
         
         # Automatically select MongoDB URL based on environment
         is_docker = os.path.exists("/.dockerenv")  # Docker environment detection
         default_mongo_url = "mongodb://mongodb:27017" if is_docker else "mongodb://localhost:27017"
         
         self.connection_string = connection_string or config.mongodb_url or default_mongo_url
-        self.database_name = "security_findings"
+        self.findings_db_name = "security_findings"
+        self.agent_arena_db_name = "agent_arena"
         self.metadata_collection = "metadata"
     
     async def connect(self):
-        """Connect to MongoDB database."""
+        """Connect to MongoDB databases."""
         self.client = motor.motor_asyncio.AsyncIOMotorClient(self.connection_string)
-        self.db = self.client[self.database_name]
+        self.findings_db = self.client[self.findings_db_name]
+        self.agent_arena_db = self.client[self.agent_arena_db_name]
     
     async def close(self):
         """Close MongoDB connection."""
         if self.client:
             self.client.close()
     
-    def get_collection_name(self, task_id: str) -> str:
+    def get_findings_collection_name(self, task_id: str) -> str:
         """
-        Get collection name for a task.
+        Get findings collection name for a task.
         
         Args:
             task_id: Task identifier
             
         Returns:
-            Collection name for the task
+            Findings collection name for the task
         """
         return f"findings_{task_id}"
     
@@ -80,8 +84,8 @@ class MongoDBHandler:
             updated_at=datetime.now(timezone.utc)
         )
         
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
+        collection_name = self.get_findings_collection_name(task_id)
+        collection = self.findings_db[collection_name]
         
         # Convert to dict and insert
         doc_dict = finding_db.model_dump(by_alias=True, exclude_unset=True)
@@ -125,8 +129,8 @@ class MongoDBHandler:
             )
             finding_dbs.append(finding_db)
         
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
+        collection_name = self.get_findings_collection_name(task_id)
+        collection = self.findings_db[collection_name]
         
         # Convert to dicts and insert
         docs = []
@@ -154,8 +158,8 @@ class MongoDBHandler:
         Returns:
             True if update was successful, False otherwise
         """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
+        collection_name = self.get_findings_collection_name(task_id)
+        collection = self.findings_db[collection_name]
         
         if isinstance(update_fields, FindingDB):
             update_fields = update_fields.model_dump(by_alias=True, exclude_unset=True)
@@ -190,8 +194,8 @@ class MongoDBHandler:
         Returns:
             Number of findings deleted
         """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
+        collection_name = self.get_findings_collection_name(task_id)
+        collection = self.findings_db[collection_name]
         
         # Delete all findings for this agent and task
         result = await collection.delete_many({"agent_id": agent_id})
@@ -209,7 +213,7 @@ class MongoDBHandler:
             Metadata value if found, None otherwise
         """
         # Query database
-        doc = await self.db[self.metadata_collection].find_one({"key": key})
+        doc = await self.findings_db[self.metadata_collection].find_one({"key": key})
         
         return doc
         
@@ -228,7 +232,7 @@ class MongoDBHandler:
         value["key"] = key
         
         # Upsert the document (insert if not exists, update if exists)
-        result = await self.db[self.metadata_collection].update_one(
+        result = await self.findings_db[self.metadata_collection].update_one(
             {"key": key},
             {"$set": value},
             upsert=True
@@ -251,8 +255,8 @@ class MongoDBHandler:
         Returns:
             List of all findings matching the filters
         """
-        collection_name = self.get_collection_name(task_id)
-        collection = self.db[collection_name]
+        collection_name = self.get_findings_collection_name(task_id)
+        collection = self.findings_db[collection_name]
         
         # Query database for task findings
         query = {}
@@ -270,6 +274,68 @@ class MongoDBHandler:
             findings.append(FindingDB(**doc))
         
         return findings
+
+    async def get_agent_id(self, api_key: str) -> str:
+        """
+        Get agent ID from the agent_arena database.
+        
+        Args:
+            api_key: Agent API key
+            
+        Returns:
+            Agent ID if agent is found and valid
+        """
+        users_collection = self.agent_arena_db["users"]
+        user = await users_collection.find_one({"api_key": api_key})
+        
+        if not user:
+            raise ValueError(f"User with API key {api_key} not found")
+        
+        if user.get("role") not in ["AgentBuilder", "Admin"] or user.get("status") != "active":
+            raise ValueError(f"Invalid role or status for user with API key {api_key}")
+        
+        if user.get("agent_name") is None:
+            raise ValueError(f"Agent name not found for user with API key {api_key}")
+        
+        return user.get("agent_name")
+        
+        # TODO: The agent ID is the user ID for now
+        return str(user.get("_id"))
+
+    async def get_submitted_tasks(self) -> List[Task]:
+        """
+        Get all active tasks with status "submitted" from agent_arena database.
+        
+        Returns:
+            List of submitted tasks
+        """
+        tasks_collection = self.agent_arena_db["tasks"]
+        cursor = tasks_collection.find({"status": "submitted"})
+        tasks = []
+        
+        async for doc in cursor:
+            task = Task.model_validate(doc)
+            tasks.append(task)
+            
+        return tasks
+
+    async def get_task(self, task_id: str) -> Task:
+        """
+        Get a specific task by taskId from agent_arena database.
+        
+        Args:
+            task_id: Task identifier
+            
+        Returns:
+            Task object
+        """
+        tasks_collection = self.agent_arena_db["tasks"]
+        doc = await tasks_collection.find_one({"taskId": task_id})
+        
+        if not doc:
+            raise ValueError(f"Task {task_id} not found")
+        
+        return Task.model_validate(doc)
 
 # Global MongoDB handler instance
 mongodb = MongoDBHandler()

@@ -127,38 +127,49 @@ async def find_duplicates_structured(
 You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
 ## TASK:
-1. **Identify duplicate findings** - Find vulnerabilities that describe the same underlying security issue
-2. **Select the highest quality original** - For each group of duplicates, choose the best finding as the original
-3. **Provide detailed explanations** - Explain why each finding is considered a duplicate
+1. **Group duplicate findings** - Identify vulnerabilities that describe the same underlying security issue affecting the same function and code section
+2. **Select the best finding in each group** - For each group of duplicates, choose the highest quality finding as the original
+3. **Provide explanation** - Explain why each finding is considered a duplicate of the original
+
+## DUPLICATE IDENTIFICATION - Four-Step Validation:
+1. **Same contract file**: Do findings reference the same contract?
+2. **Same function**: Do findings reference the exact same function name?
+3. **Same code section**: Do findings reference the same or overlapping code lines?
+4. **Same root cause**: Is the underlying vulnerability mechanism identical?
+
+✅ **THESE ARE DUPLICATES:**
+- Same vulnerability type and attack vector in the exact same function with different descriptions
+- Identical root cause affecting the exact same code lines with different wording
+
+❌ **THESE ARE NOT DUPLICATES:**
+- Similar vulnerability types in different functions (e.g., reentrancy in different functions)
+- Similar descriptions but different contract files or code sections
+- Different root causes, attack vectors, or consequences despite similar terminology
+
+## CRITICAL RULES TO PREVENT ERRORS:
+
+🚫 **NO CIRCULAR RELATIONSHIPS:**
+- Each duplicate group has exactly ONE original that others point to
+- If Finding A is duplicate of Finding B, then Finding B CANNOT be duplicate of Finding A
+- No finding can appear as both original and duplicate
+
+🚫 **NO OVER-GROUPING:**
+- Findings affecting different functions or code sectionsare never duplicates, even if vulnerability types are similar
+- Example: "Missing access control in withdraw()" vs "Missing access control in deposit()" = NOT duplicates
+- Example: "Reentrancy in claimReward()" vs "Reentrancy in processRefund()" = NOT duplicates
 
 ## QUALITY CRITERIA for selecting the original:
 - **Technical accuracy**: Most precise vulnerability description
 - **Completeness**: Contains comprehensive details about the issue
+- **Clarity**: Easy to understand and identify
 - **Evidence**: Better code references, examples, or proof-of-concept
-
-## DUPLICATE IDENTIFICATION RULES:
-
-✅ **THESE ARE DUPLICATES:**
-- Same underlying issue affecting the same function or code section
-- Identical root cause with different descriptions
-- Same security risk and attack vector with different wording
-
-❌ **THESE ARE NOT DUPLICATES:**
-- Similar issue affecting different functions or code sections
-- Different root causes, even if descriptions are similar
-- Different security risks or consequences that happen to use similar terminology
 
 ## OUTPUT REQUIREMENTS:
 - **For each duplicate**: Include findingId, duplicateOf, and detailed explanation
-- **Only duplicates in results**: Don't include the original findings
+- **Only duplicates in results**: Don't include the original findings in the results
 - **Empty list if no duplicates**: Return [] if no duplicate relationships exist
 - **Clear explanations**: Each explanation should be 2-3 sentences describing why it's a duplicate
 - **Use exact Finding IDs**: Make sure to use the exact Finding ID from the analysis
-
-## EXAMPLE DUPLICATE SCENARIOS:
-- **Reentrancy**: Multiple findings about external calls before state updates in the same function
-- **Access Control**: Different descriptions of the same missing authorization check
-- **Integer Overflow**: Various reports about the same arithmetic operation vulnerability
 
 ## RETURN FORMAT
 Return a JSON object with the following structure:
@@ -166,9 +177,9 @@ Return a JSON object with the following structure:
 {{
     "results": [
         {{
-            "findingId": "Finding ID",
+            "findingId": "Finding ID that is a duplicate",
             "duplicateOf": "Original Finding ID",
-            "explanation": "Explanation of why it's a duplicate"
+            "explanation": "Explanation including specific code section match and reason why it's a duplicate"
         }}
     ]
 }}
@@ -180,7 +191,7 @@ Return a JSON object with the following structure:
 ## FINDINGS TO ANALYZE
 {[finding.dump() for finding in findings]}
 
-Analyze systematically: group similar findings, examine the actual vulnerability against the smart contract context, compare root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability. Use the smart contract context above to validate that findings are referring to the same code sections and vulnerabilities.
+Analyze systematically: group similar findings, examine each vulnerability against the smart contract context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
 """
 
     return await model_with_structured_output.ainvoke(prompt)

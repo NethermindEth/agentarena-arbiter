@@ -1,18 +1,17 @@
 """
-Integration tests for cache functionality.
+Integration tests for task data functionality.
 Tests real behavior with actual HTTP servers and file system operations.
 """
 import pytest
-import asyncio
-import json
 import tempfile
 import io
 import zipfile
 import shutil
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from unittest.mock import patch, AsyncMock
 
-from app.config import Settings
+from app.types import Task, TaskCache
 
 
 @pytest.fixture
@@ -23,39 +22,11 @@ def test_data_dir():
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-class TestHTTPHandler(BaseHTTPRequestHandler):
+class MockHTTPHandler(BaseHTTPRequestHandler):
     """Test HTTP handler for mock server."""
     
     def do_GET(self):
-        if self.path == "/agents" and self.headers.get("X-API-Key") == "test_key":
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            test_agents = [{"agent_id": "test_agent", "api_key": "test_key"}]
-            self.wfile.write(json.dumps(test_agents).encode())
-        elif self.path == "/tasks/submitted" and self.headers.get("X-API-Key") == "test_key":
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            task_list = [{
-                "id": "abc123",
-                "taskId": "TEST123",
-                "projectRepo": "https://example.com/repo.git",
-                "title": "Test Task",
-                "description": "A task for integration testing",
-                "bounty": None,
-                "status": "Open",
-                "startTime": "1735689600",
-                "deadline": "1893456000",
-                "selectedBranch": "main",
-                "selectedFiles": ["contracts/Vault.sol"],
-                "selectedDocs": [],
-                "additionalLinks": [],
-                "additionalDocs": None,
-                "qaResponses": []
-            }]
-            self.wfile.write(json.dumps(task_list).encode())
-        elif self.path.startswith("/repo/") and self.headers.get("X-API-Key") == "test_key":
+        if self.path.startswith("/repo/") and self.headers.get("X-API-Key") == "test_key":
             # Serve a real ZIP containing selected files so the app can extract and read them
             # Extract task_id from the path (e.g., /repo/TEST123 -> TEST123)
             task_id = self.path.split("/repo/")[1]
@@ -81,7 +52,7 @@ class TestHTTPHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def mock_http_server():
     """Create a mock HTTP server for testing."""
-    server = HTTPServer(('127.0.0.1', 0), TestHTTPHandler)
+    server = HTTPServer(('127.0.0.1', 0), MockHTTPHandler)
     port = server.server_address[1]
     
     server_thread = threading.Thread(target=server.serve_forever)
@@ -94,90 +65,48 @@ def mock_http_server():
     server_thread.join(timeout=1)
 
 
-@pytest.mark.asyncio
-class TestAgentCacheIntegration:
-    """Integration tests for agent cache with real HTTP communication."""
+@pytest.mark.asyncio 
+class TestFetchTaskDataIntegration:
+    """Integration tests for fetch_task_data with real HTTP communication and file operations."""
 
-    async def test_agent_cache_with_real_http_server(self, mock_http_server, test_data_dir):
-        """Test agent cache update with real HTTP server."""
+    async def test_fetch_task_data_with_real_http_server(self, mock_http_server, test_data_dir):
+        """Test fetch_task_data with real HTTP server."""
         from app import main as app_main
+        from tests.conftest import create_sample_task
         
-        config = Settings(
-            backend_agents_endpoint=f"{mock_http_server}/agents",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
+        sample_task = create_sample_task(
+            task_id="TEST123",
+            description="A task for integration testing"
         )
         
-        # Clear cache before test
-        app_main.agents_cache.clear()
-        
-        await app_main.set_agent_data(config)
-        
-        # Verify cache was updated
-        expected_agents = [{"agent_id": "test_agent", "api_key": "test_key"}]
-        assert app_main.agents_cache == expected_agents
+        with patch('app.main.config') as mock_config, \
+             patch('app.main.mongodb') as mock_mongodb:
+            
+            mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
+            mock_config.backend_api_key = "test_key"
+            mock_config.data_dir = test_data_dir
+            
+            mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+            
+            result = await app_main.fetch_task_data("TEST123")
+            
+            # Verify task cache was created successfully
+            assert result is not None
+            assert isinstance(result, TaskCache)
+            assert result.taskId == "TEST123"
+            assert result.selectedFilesContent
+            assert "contract Vault { function withdraw() public {} }" in result.selectedFilesContent
 
-    async def test_agent_cache_with_unreachable_server(self, test_data_dir):
-        """Test agent cache behavior with unreachable server."""
-        from app import main as app_main
-        
-        original_cache = app_main.agents_cache.copy()
-        
-        config = Settings(
-            backend_agents_endpoint="http://127.0.0.1:9999/nonexistent",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
-        )
-        
-        await app_main.set_agent_data(config)
-        
-        # Cache should remain unchanged
-        assert app_main.agents_cache == original_cache
-
-    async def test_agent_cache_with_invalid_auth(self, mock_http_server, test_data_dir):
-        """Test agent cache behavior with invalid authentication."""
-        from app import main as app_main
-        
-        original_cache = app_main.agents_cache.copy()
-        
-        config = Settings(
-            backend_agents_endpoint=f"{mock_http_server}/agents",
-            backend_api_key="invalid_key",  # Wrong API key
-            data_dir=test_data_dir
-        )
-        
-        await app_main.set_agent_data(config)
-        
-        # Cache should remain unchanged due to auth failure
-        assert app_main.agents_cache == original_cache
-
-
-@pytest.mark.asyncio
-class TestTaskCacheIntegration:
-    """Integration tests for task cache with real HTTP communication and file operations."""
-
-    async def test_task_cache_with_real_http_server(self, mock_http_server, test_data_dir):
-        """Test task cache update with real HTTP server."""
-        from app import main as app_main
-        
-        config = Settings(
-            backend_submitted_tasks_endpoint=f"{mock_http_server}/tasks/submitted",
-            backend_task_repository_endpoint=f"{mock_http_server}/repo",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
-        )
-        
-        await app_main.set_task_caches(config)
-        
-        print(app_main.task_cache_map)
-
-        # Verify cache map was updated
-        assert "TEST123" in app_main.task_cache_map
-
-    async def test_task_cache_data_directory_creation(self, mock_http_server):
-        """Test that task cache creates data directories as needed."""
+    async def test_fetch_task_data_directory_creation(self, mock_http_server):
+        """Test that fetch_task_data creates data directories as needed."""
         import os
         from app import main as app_main
+        from tests.conftest import create_sample_task
+        
+        sample_task = create_sample_task(
+            task_id="TEST123",
+            description="A task for integration testing"
+        )
         
         with tempfile.TemporaryDirectory() as temp_dir:
             # Use nested directory that doesn't exist
@@ -186,110 +115,143 @@ class TestTaskCacheIntegration:
             # Verify the directory doesn't exist initially
             assert not os.path.exists(data_dir)
             
-            config = Settings(
-                backend_submitted_tasks_endpoint=f"{mock_http_server}/tasks/submitted",
-                backend_task_repository_endpoint=f"{mock_http_server}/repo", 
-                backend_api_key="test_key",
-                data_dir=data_dir
-            )
-            
-            await app_main.set_task_caches(config)
-            
-            # Verify the data directory was created
-            assert os.path.exists(data_dir)
-            assert os.path.isdir(data_dir)
-            
-            # Verify task repository was stored
-            repo_dir = os.path.join(data_dir, "repo_TEST123")
-            assert os.path.exists(repo_dir)
-            assert os.path.isdir(repo_dir)
-            
-            # Verify the task was added to cache map
-            assert "TEST123" in app_main.task_cache_map
-            
-            # Verify the selected file exists in the repository
-            contracts_file = os.path.join(repo_dir, "contracts", "Vault.sol")
-            assert os.path.exists(contracts_file)
-            
-            # Verify the file content matches what we put in the mock ZIP
-            with open(contracts_file, 'r') as f:
-                content = f.read()
-                assert "contract Vault { function withdraw() public {} }" in content
+            with patch('app.main.config') as mock_config, \
+                 patch('app.main.mongodb') as mock_mongodb:
+                
+                mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
+                mock_config.backend_api_key = "test_key"
+                mock_config.data_dir = data_dir
+                
+                mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+                
+                result = await app_main.fetch_task_data("TEST123")
+                
+                # Verify the data directory was created
+                assert os.path.exists(data_dir)
+                assert os.path.isdir(data_dir)
+                
+                # Verify task repository was stored
+                repo_dir = os.path.join(data_dir, "repo_TEST123")
+                assert os.path.exists(repo_dir)
+                assert os.path.isdir(repo_dir)
+                
+                # Verify the selected file exists in the repository
+                contracts_file = os.path.join(repo_dir, "contracts", "Vault.sol")
+                assert os.path.exists(contracts_file)
+                
+                # Verify the file content matches what we put in the mock ZIP
+                with open(contracts_file, 'r') as f:
+                    content = f.read()
+                    assert "contract Vault { function withdraw() public {} }" in content
+                
+                # Verify result contains processed content
+                assert result is not None
+                assert result.selectedFilesContent
+                assert "contract Vault { function withdraw() public {} }" in result.selectedFilesContent
 
-    async def test_task_cache_with_unreachable_servers(self, test_data_dir):
-        """Test task cache behavior with unreachable servers."""
-        from app import main as app_main
-        
-        original_cache = app_main.task_cache_map.copy()
-        
-        config = Settings(
-            backend_submitted_tasks_endpoint="http://127.0.0.1:99999/tasks/submitted",
-            backend_task_repository_endpoint="http://127.0.0.1:99999/repo",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
-        )
-        
-        await app_main.set_task_caches(config)
-        
-        # Cache should remain unchanged
-        assert app_main.task_cache_map == original_cache
 
 
 @pytest.mark.asyncio
-class TestCacheErrorScenarios:
-    """Integration tests for various error scenarios."""
+class TestTESSTASKCacheIntegration:
+    """Integration tests for TESTTASK caching behavior."""
 
-    async def test_mixed_success_failure_scenarios(self, mock_http_server, test_data_dir):
-        """Test behavior when some operations succeed and others fail."""
+    async def test_testtask_cache_hit_integration(self, mock_http_server, test_data_dir):
+        """Test TESTTASK cache hit with real HTTP server."""
         from app import main as app_main
         
-        # Test agent cache success followed by task cache failure
-        agent_config = Settings(
-            backend_agents_endpoint=f"{mock_http_server}/agents",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
+        testtask = Task(
+            taskId="TESTTASK",
+            projectRepo="https://example.com/repo.git",
+            title="Test Task",
+            description="A task for testing cache",
+            bounty=None,
+            status="Open",
+            startTime="1735689600", 
+            deadline="1893456000",
+            selectedBranch="main",
+            selectedFiles=["contracts/Vault.sol"],
+            selectedDocs=[],
+            additionalLinks=[],
+            additionalDocs=None,
+            qaResponses=[],
+            commitSha="abc123def456"
         )
         
-        task_config = Settings(
-            backend_submitted_tasks_endpoint="http://127.0.0.1:99999/tasks/submitted",
-            backend_task_repository_endpoint="http://127.0.0.1:99999/repo",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
-        )
-        
-        # Clear caches
-        app_main.agents_cache.clear()
-        original_task_cache = app_main.task_cache_map.copy()
-        
-        # First operation should succeed
-        await app_main.set_agent_data(agent_config)
-        assert len(app_main.agents_cache) > 0
-        
-        # Second operation should fail gracefully
-        await app_main.set_task_caches(task_config)
-        assert app_main.task_cache_map == original_task_cache
+        with patch('app.main.config') as mock_config, \
+             patch('app.main.mongodb') as mock_mongodb:
+            
+            mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
+            mock_config.backend_api_key = "test_key"
+            mock_config.data_dir = test_data_dir
+            
+            mock_mongodb.get_task = AsyncMock(return_value=testtask)
+            
+            # First call - should download and cache
+            result1 = await app_main.fetch_task_data("TESTTASK")
+            assert result1 is not None
+            assert app_main.test_task_cache is not None
+            assert app_main.test_task_cache["commitSha"] == "abc123def456"
+            
+            # Second call with same commitSha - should use cache
+            result2 = await app_main.fetch_task_data("TESTTASK")
+            assert result2 is result1  # Should be the same object from cache
 
-    async def test_concurrent_cache_operations(self, mock_http_server, test_data_dir):
-        """Test concurrent cache operations don't interfere with each other."""
+    async def test_testtask_cache_miss_integration(self, mock_http_server, test_data_dir):
+        """Test TESTTASK cache miss when commitSha changes."""
         from app import main as app_main
         
-        config1 = Settings(
-            backend_agents_endpoint=f"{mock_http_server}/agents",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
+        testtask_v1 = Task(
+            taskId="TESTTASK",
+            projectRepo="https://example.com/repo.git",
+            title="Test Task V1",
+            description="A task for testing cache v1",
+            bounty=None,
+            status="Open", 
+            startTime="1735689600",
+            deadline="1893456000",
+            selectedBranch="main",
+            selectedFiles=["contracts/Vault.sol"],
+            selectedDocs=[],
+            additionalLinks=[],
+            additionalDocs=None,
+            qaResponses=[],
+            commitSha="old123commit456"
         )
         
-        config2 = Settings(
-            backend_agents_endpoint=f"{mock_http_server}/agents",
-            backend_api_key="test_key",
-            data_dir=test_data_dir
+        testtask_v2 = Task(
+            taskId="TESTTASK",
+            projectRepo="https://example.com/repo.git",
+            title="Test Task V2",
+            description="A task for testing cache v2",
+            bounty=None,
+            status="Open",
+            startTime="1735689600",
+            deadline="1893456000",
+            selectedBranch="main",
+            selectedFiles=["contracts/Vault.sol"],
+            selectedDocs=[],
+            additionalLinks=[],
+            additionalDocs=None,
+            qaResponses=[],
+            commitSha="new789commit012"
         )
         
-        # Run concurrent operations
-        await asyncio.gather(
-            app_main.set_agent_data(config1),
-            app_main.set_agent_data(config2)
-        )
-        
-        # Cache should be in a consistent state
-        assert isinstance(app_main.agents_cache, list)
+        with patch('app.main.config') as mock_config, \
+             patch('app.main.mongodb') as mock_mongodb:
+            
+            mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
+            mock_config.backend_api_key = "test_key"
+            mock_config.data_dir = test_data_dir
+            
+            # First call with old commitSha
+            mock_mongodb.get_task = AsyncMock(return_value=testtask_v1)
+            result1 = await app_main.fetch_task_data("TESTTASK")
+            assert result1 is not None
+            assert app_main.test_task_cache["commitSha"] == "old123commit456"
+            
+            # Second call with new commitSha - should re-download
+            mock_mongodb.get_task = AsyncMock(return_value=testtask_v2)
+            result2 = await app_main.fetch_task_data("TESTTASK")
+            assert result2 is not None
+            assert result2 is not result1  # Should be different objects
+            assert app_main.test_task_cache["commitSha"] == "new789commit012"

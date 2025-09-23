@@ -1,14 +1,13 @@
 """
-Integration tests for API connectivity.
+Integration tests for AI models.
 These tests verify that API keys are valid and can connect to external services.
 """
 import pytest
 from unittest.mock import patch, Mock, AsyncMock
-import asyncio
 from app.config import config
 
 
-class TestClaudeAPIConnectivity:
+class TestClaudeIntegration:
     """Test Claude API connectivity and key validation."""
     
     @pytest.mark.asyncio
@@ -57,8 +56,22 @@ class TestClaudeAPIConnectivity:
             with pytest.raises(ValueError, match="CLAUDE_API_KEY"):
                 create_claude_model()
 
+    @pytest.mark.skip(reason="Requires actual API keys - run manually for connectivity testing")
+    @pytest.mark.asyncio
+    async def test_real_claude_api_connectivity(self):
+        """Test actual Claude API connectivity - requires CLAUDE_API_KEY env var."""
+        if not config.claude_api_key or not config.claude_api_key.startswith("sk-ant-"):
+            pytest.skip("Valid CLAUDE_API_KEY required for this test")
+        
+        from app.core.claude_model import create_claude_model
+        
+        client = create_claude_model()
+        response = await client.ainvoke("Hello, please respond with exactly the word 'Working'")
+        
+        assert "Working" in response.content
 
-class TestGeminiAPIConnectivity:
+
+class TestGeminiIntegration:
     """Test Gemini API connectivity and key validation."""
     
     @pytest.mark.asyncio
@@ -104,25 +117,7 @@ class TestGeminiAPIConnectivity:
             with pytest.raises(ValueError, match="GEMINI_API_KEY"):
                 create_gemini_model()
 
-
-# Mark tests that require actual API keys (for manual testing)
-@pytest.mark.skip(reason="Requires actual API keys - run manually for connectivity testing")
-class TestRealAPIConnectivity:
-    """Tests that require real API keys - run manually."""
-    
-    @pytest.mark.asyncio
-    async def test_real_claude_api_connectivity(self):
-        """Test actual Claude API connectivity - requires CLAUDE_API_KEY env var."""
-        if not config.claude_api_key or not config.claude_api_key.startswith("sk-ant-"):
-            pytest.skip("Valid CLAUDE_API_KEY required for this test")
-        
-        from app.core.claude_model import create_claude_model
-        
-        client = create_claude_model()
-        response = await client.ainvoke("Hello, please respond with exactly the word 'Working'")
-        
-        assert "Working" in response.content
-    
+    @pytest.mark.skip(reason="Requires actual API keys - run manually for connectivity testing")
     @pytest.mark.asyncio
     async def test_real_gemini_api_connectivity(self):
         """Test actual Gemini API connectivity - requires GEMINI_API_KEY env var."""
