@@ -36,6 +36,9 @@ class FindingDB(Finding):
     evaluated_severity: Optional[Severity] = None  # Severity after evaluation
     evaluation_comment: Optional[str] = None  # Comment from evaluation
     
+    # Temporary index field for deduplication (not stored in DB)
+    index: Optional[int] = Field(default=None, exclude=True)
+    
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
