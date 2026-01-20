@@ -427,15 +427,15 @@ class FindingEvaluator:
                         logger.debug("[EVALUATION] Using formatted_docs from TaskCache")
                     else:
                         # Fallback to raw concatenation if formatted_docs not available
-                    dev_doc_parts = []
-                    if task_cache.selectedDocsContent:
-                        dev_doc_parts.append(task_cache.selectedDocsContent)
-                    if task_cache.additionalDocs:
-                        dev_doc_parts.append(task_cache.additionalDocs)
-                    if task_cache.qaResponses:
-                        qa_text = "\n\n".join([f"Q: {qa.question}\nA: {qa.answer}" for qa in task_cache.qaResponses])
-                        dev_doc_parts.append(qa_text)
-                    dev_doc = "\n\n".join(dev_doc_parts) if dev_doc_parts else ""
+                        dev_doc_parts = []
+                        if task_cache.selectedDocsContent:
+                            dev_doc_parts.append(task_cache.selectedDocsContent)
+                        if task_cache.additionalDocs:
+                            dev_doc_parts.append(task_cache.additionalDocs)
+                        if task_cache.qaResponses:
+                            qa_text = "\n\n".join([f"Q: {qa.question}\nA: {qa.answer}" for qa in task_cache.qaResponses])
+                            dev_doc_parts.append(qa_text)
+                        dev_doc = "\n\n".join(dev_doc_parts) if dev_doc_parts else ""
                         logger.debug("[EVALUATION] Using raw concatenated docs (formatted_docs not available)")
             else:
                 if summary is None:
