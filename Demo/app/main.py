@@ -328,6 +328,37 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
         if not concatenated_docs:
             logger.warning(f"No valid docs content found for task {task_id}")
             
+        # Format documentation and build context storage
+        formatted_docs = None
+        context_store_paths = None
+        try:
+            from app.core.docs_formatter import format_docs_for_scan
+            from app.core.context_storage.service import create_doc_context_storage
+            from app.core.context_storage.schema import ContextStoragePaths
+            
+            # Format documentation (includes link processing and summarization)
+            formatted_docs = await format_docs_for_scan(
+                selected_docs_content=concatenated_docs,
+                additional_docs=task.additionalDocs,
+                additional_links=task.additionalLinks,
+                qa_responses=task.qaResponses
+            )
+            
+            # Build context storage if we have formatted docs
+            if formatted_docs and formatted_docs != "None Given":
+                logger.info(f"[TaskCache] Building context storage for task {task_id}...")
+                storage_paths = await create_doc_context_storage(
+                    documents={"formatted_docs.md": formatted_docs},
+                    project_dir=None,  # Use temp directory
+                    max_iterations=3
+                )
+                if storage_paths and storage_paths.doc_graphs_dir:
+                    context_store_paths = storage_paths.model_dump()
+                    logger.info(f"[TaskCache] Context storage built at {storage_paths.doc_graphs_dir}")
+        except Exception as e:
+            logger.warning(f"[TaskCache] Failed to build context storage: {e}")
+            context_store_paths = None
+            
         # Create TaskCache object
         task_cache = TaskCache(
             taskId=task_id,
@@ -337,7 +368,9 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,
             additionalDocs=task.additionalDocs,
-            qaResponses=task.qaResponses
+            qaResponses=task.qaResponses,
+            formatted_docs=formatted_docs,  # Store formatted docs for fallback
+            context_store_paths=context_store_paths
         )
         
         # Cache the result for TESTTASK

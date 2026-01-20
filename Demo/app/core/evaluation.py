@@ -85,6 +85,7 @@ class FindingEvaluator:
         contract_language: str,
         summary: str,
         dev_doc: str,
+        context_store_paths=None,
     ) -> Optional[DirectValidationResult]:
         """
         Validates a single finding by formatting a detailed prompt and querying the LLM.
@@ -103,8 +104,21 @@ class FindingEvaluator:
             # 1. Get contract code using simple lookup (NO file search)
             finding_contract_code = get_finding_contract_code(finding, contract_contents)
             
-            # 2. Use dev_doc directly (can be empty string)
-            retrieved_doc = dev_doc  # Can be empty string 
+            # 2. Try to retrieve relevant docs from knowledge graph, fallback to dev_doc
+            retrieved_doc = dev_doc  # Default fallback
+            if context_store_paths:
+                try:
+                    from app.core.retrieval.retrieval_context import build_retrieved_doc_for_finding
+                    retrieved = await build_retrieved_doc_for_finding(
+                        finding=finding,
+                        context_store_paths=context_store_paths,
+                        max_iterations=5
+                    )
+                    if retrieved:
+                        retrieved_doc = retrieved
+                        logger.debug(f"[VALIDATION] Retrieved {len(retrieved)} chars of relevant docs for finding {finding.str_id}")
+                except Exception as e:
+                    logger.warning(f"[VALIDATION] Retrieval failed, using fallback doc: {e}") 
             
             # 3. Get category metadata using CategoryUtils 
             from app.core.category_utils import CategoryUtils, CategoryEnum
@@ -197,6 +211,7 @@ class FindingEvaluator:
         contract_language: str = "solidity",
         summary: str = "",
         dev_doc: str = "",
+        context_store_paths=None,
     ) -> Tuple[List[FindingDB], Dict[str, DirectValidationResult]]:
         """
         Validate findings one-by-one using a step-by-step LLM analysis.
@@ -232,6 +247,7 @@ class FindingEvaluator:
                 contract_language=contract_language,
                 summary=summary,
                 dev_doc=dev_doc,
+                context_store_paths=context_store_paths,
             )
             for f in findings
         ]
@@ -405,6 +421,12 @@ class FindingEvaluator:
                 if summary is None:
                     summary = ""  # Would come from task description in practice
                 if dev_doc is None:
+                    # Prefer formatted_docs (includes link summaries) over raw concatenation
+                    if task_cache.formatted_docs and task_cache.formatted_docs != "None Given":
+                        dev_doc = task_cache.formatted_docs
+                        logger.debug("[EVALUATION] Using formatted_docs from TaskCache")
+                    else:
+                        # Fallback to raw concatenation if formatted_docs not available
                     dev_doc_parts = []
                     if task_cache.selectedDocsContent:
                         dev_doc_parts.append(task_cache.selectedDocsContent)
@@ -414,11 +436,21 @@ class FindingEvaluator:
                         qa_text = "\n\n".join([f"Q: {qa.question}\nA: {qa.answer}" for qa in task_cache.qaResponses])
                         dev_doc_parts.append(qa_text)
                     dev_doc = "\n\n".join(dev_doc_parts) if dev_doc_parts else ""
+                        logger.debug("[EVALUATION] Using raw concatenated docs (formatted_docs not available)")
             else:
                 if summary is None:
                     summary = ""
                 if dev_doc is None:
                     dev_doc = ""
+        
+        # Get context storage paths from task_cache if available
+        context_store_paths = None
+        if task_cache and hasattr(task_cache, 'context_store_paths') and task_cache.context_store_paths:
+            from app.core.context_storage.schema import ContextStoragePaths
+            try:
+                context_store_paths = ContextStoragePaths(**task_cache.context_store_paths)
+            except Exception as e:
+                logger.warning(f"Failed to parse context_store_paths: {e}")
         
         # Validate findings one-by-one
         validated_findings, validation_results = await self.validate_findings_one_by_one(
@@ -427,6 +459,7 @@ class FindingEvaluator:
             contract_language="solidity",
             summary=summary,
             dev_doc=dev_doc,
+            context_store_paths=context_store_paths,
         )
         
         # Apply evaluation results to database

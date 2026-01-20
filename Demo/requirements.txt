@@ -10,3 +10,6 @@ langchain==0.3.26
 langchain-anthropic==0.3.17
 langchain-core==0.3.71
 langchain_google_genai==2.1.9
+tiktoken==0.8.0
+beautifulsoup4==4.12.3
+aiofiles==24.1.0
