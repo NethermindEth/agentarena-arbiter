@@ -148,7 +148,7 @@ async def lifespan(app: FastAPI):
         
         try:
             # Initial scheduling of task processing jobs
-            await schedule_submitted_tasks()
+            await schedule_funded_tasks()
         except Exception as e:
             logger.error(f"Error during initial task scheduling: {str(e)}")
 
@@ -159,7 +159,7 @@ async def lifespan(app: FastAPI):
             while True:
                 try:
                     await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
-                    await schedule_submitted_tasks()
+                    await schedule_funded_tasks()
                 except Exception as e:
                     logger.error(f"Error refreshing task scheduling: {str(e)}")
                 
@@ -217,17 +217,17 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-async def schedule_submitted_tasks():
-    """Fetch submitted tasks metadata from database and schedule processing jobs."""
-    logger.info("Fetching submitted tasks from database")
+async def schedule_funded_tasks():
+    """Fetch funded tasks metadata from database and schedule processing jobs."""
+    logger.info("Fetching funded tasks from database")
     try:
-        tasks = await mongodb.get_submitted_tasks()
+        tasks = await mongodb.get_funded_tasks()
     except Exception as e:
-        logger.error(f"Error fetching submitted tasks from database: {str(e)}")
+        logger.error(f"Error fetching funded tasks from database: {str(e)}")
         return
         
     if not tasks:
-        logger.info("No submitted tasks found in database; skipping task scheduling")
+        logger.info("No funded tasks found in database; skipping task scheduling")
         return
 
     scheduled_count = 0
