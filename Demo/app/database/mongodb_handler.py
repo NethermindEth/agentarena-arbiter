@@ -297,15 +297,15 @@ class MongoDBHandler:
         # The agent ID is the user ID for now
         return str(user.get("_id"))
 
-    async def get_submitted_tasks(self) -> List[Task]:
+    async def get_approved_tasks(self) -> List[Task]:
         """
-        Get all active tasks with status "submitted" from agent_arena database.
+        Get all active tasks with status "approved" from agent_arena database.
         
         Returns:
-            List of submitted tasks
+            List of approved tasks
         """
         tasks_collection = self.agent_arena_db["tasks"]
-        cursor = tasks_collection.find({"status": "submitted"})
+        cursor = tasks_collection.find({"status": "approved"})
         tasks = []
         
         async for doc in cursor:
