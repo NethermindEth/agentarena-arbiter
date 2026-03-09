@@ -174,32 +174,32 @@ class TestGetLatestFindings:
 
 
 @pytest.mark.asyncio
-class TestScheduleSubmittedTasks:
+class TestScheduleApprovedTasks:
     """Unit tests for scheduling functionality."""
 
     @patch('app.main.schedule_task_processing')
     @patch('app.main.mongodb')
-    async def test_schedule_submitted_tasks_no_database_tasks(self, mock_mongodb, mock_schedule):
-        """Test scheduling when no tasks are in database."""
+    async def test_schedule_approved_tasks_no_database_tasks(self, mock_mongodb, mock_schedule):
+        """Test scheduling when no approved tasks are in database."""
         from app import main as app_main
         
-        mock_mongodb.get_submitted_tasks = AsyncMock(return_value=[])
+        mock_mongodb.get_approved_tasks = AsyncMock(return_value=[])
         mock_mongodb.schedule_task_processing = AsyncMock()
             
-        await app_main.schedule_submitted_tasks()
+        await app_main.schedule_approved_tasks()
         
-        mock_mongodb.get_submitted_tasks.assert_called_once()
+        mock_mongodb.get_approved_tasks.assert_called_once()
         mock_schedule.assert_not_called()
 
     @patch('app.main.mongodb')
-    async def test_schedule_submitted_tasks_database_error(self, mock_mongodb):
+    async def test_schedule_approved_tasks_database_error(self, mock_mongodb):
         """Test scheduling when database error occurs."""
         from app import main as app_main
         
-        mock_mongodb.get_submitted_tasks = AsyncMock(side_effect=Exception("Database error"))
+        mock_mongodb.get_approved_tasks = AsyncMock(side_effect=Exception("Database error"))
 
         # Should not raise exception
-        await app_main.schedule_submitted_tasks()
+        await app_main.schedule_approved_tasks()
 
     @patch('app.main.schedule_task_processing')
     @patch('app.main.mongodb')
@@ -210,9 +210,9 @@ class TestScheduleSubmittedTasks:
         
         tasks = [create_sample_task(task_id="TESTTASK")]
         
-        mock_mongodb.get_submitted_tasks = AsyncMock(return_value=tasks)
+        mock_mongodb.get_approved_tasks = AsyncMock(return_value=tasks)
             
-        await app_main.schedule_submitted_tasks()
+        await app_main.schedule_approved_tasks()
             
         # Should not schedule TESTTASK
         mock_schedule.assert_not_called()
