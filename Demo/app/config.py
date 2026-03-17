@@ -11,7 +11,13 @@ class Settings(BaseSettings):
     
     mongodb_url: str = Field(..., description="MongoDB connection URL")
 
-    # Claude configuration for evaluation
+    # OpenAI configuration for validation
+    openai_api_key: str = Field(..., description="OpenAI API key")
+    openai_validation_model: str = Field("o3-2025-04-16", description="OpenAI validation model (O3)")
+    openai_temperature: float = Field(0.0, description="OpenAI temperature setting")
+    openai_max_tokens: int = Field(20000, description="OpenAI max tokens")
+    
+    # Claude configuration for evaluation (fallback)
     claude_api_key: str = Field(..., description="Claude API key")
     claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
     claude_temperature: float = Field(0.0, description="Claude temperature setting")

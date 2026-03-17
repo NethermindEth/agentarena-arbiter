@@ -25,6 +25,13 @@ class DeduplicationResult(BaseModel):
     """Result of deduplication analysis."""
     results: List[DuplicateFinding] = Field(description="List of duplicate relationships")
 
+
+# Schema for index-based deduplication
+class DeduplicatedFindings(BaseModel):
+    """Result of index-based deduplication."""
+    indexes: List[int] = Field(description="List of indexes to KEEP (not list positions)")
+    removed_duplicates: List[Dict[str, Any]] = Field(default_factory=list, description="Optional metadata about removed duplicates")
+
 def get_gemini_config() -> Dict[str, Any]:
     """
     Get Gemini model configuration from environment variables.
@@ -101,6 +108,24 @@ def create_structured_deduplication_model(
         model = create_gemini_model()
     
     return model.with_structured_output(DeduplicationResult)
+
+
+def create_index_based_deduplication_model(
+    model: Optional[ChatGoogleGenerativeAI] = None
+) -> any:
+    """
+    Create a Gemini model with structured output for index-based deduplication.
+    
+    Args:
+        model: Optional ChatGoogleGenerativeAI model (created from environment if not provided)
+        
+    Returns:
+        Configured model with structured output for index-based deduplication
+    """
+    if not model:
+        model = create_gemini_model()
+    
+    return model.with_structured_output(DeduplicatedFindings)
 
 async def find_duplicates_structured(
     model_with_structured_output: any,

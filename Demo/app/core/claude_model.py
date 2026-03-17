@@ -18,6 +18,18 @@ class EvaluationResult(BaseModel):
     """Evaluation result."""
     results: List[FindingEvaluation] = Field(description="List of evaluation results")
 
+
+# Schema for one-by-one validation
+class ValidationStep(BaseModel):
+    """Single step in the validation process."""
+    reasoning: str = Field(description="Reasoning for this step")
+    step_result: bool = Field(description="Result of this step (True = passed, False = failed)")
+
+class DirectValidationResult(BaseModel):
+    """Result of one-by-one validation."""
+    steps: List[ValidationStep] = Field(description="List of validation steps with reasoning")
+    final_result: bool = Field(description="Final decision: True = keep finding, False = discard")
+
 def get_model_config() -> Dict[str, Any]:
     """
     Get Claude model configuration from environment variables.

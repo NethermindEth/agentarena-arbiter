@@ -35,3 +35,5 @@ class TaskCache(BaseModel):
     additionalLinks: Optional[List[str]] = []
     additionalDocs: Optional[str] = None
     qaResponses: Optional[List[QAPair]] = []
+    formatted_docs: Optional[str] = None  # Formatted documentation with link summaries
+    context_store_paths: Optional[dict] = None  # ContextStoragePaths as dict
