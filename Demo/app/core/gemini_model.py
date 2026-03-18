@@ -82,7 +82,7 @@ def create_gemini_model(
         model=gemini_config["model"],
         temperature=gemini_config["temperature"],
         max_output_tokens=gemini_config["max_output_tokens"],
-        google_api_key=gemini_config["google_api_key"]
+        api_key=gemini_config["google_api_key"]
     )
 
 def create_structured_deduplication_model(
