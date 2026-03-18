@@ -74,7 +74,7 @@ def create_claude_model(
     return ChatAnthropic(
         model=claude_config["model_name"],
         temperature=claude_config["temperature"],
-        max_tokens_to_sample=claude_config["max_tokens"],
+        max_tokens=claude_config["max_tokens"],
         anthropic_api_key=claude_config["anthropic_api_key"]
     )
 
