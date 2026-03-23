@@ -35,7 +35,7 @@ class FindingDB(Finding):
     deduplication_comment: Optional[str] = None  # Comment from deduplication
     evaluated_severity: Optional[Severity] = None  # Severity after evaluation
     evaluation_comment: Optional[str] = None  # Comment from evaluation
-    
+
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -63,13 +63,15 @@ class FindingDB(Finding):
                 "description": self.description,
                 "severity": self.severity,
                 "file_paths": self.file_paths,
+                "poc": self.poc,
                 "duplicateOf": self.duplicateOf
             }
-        
+
         return {
             "id": str(self.id),
             "title": self.title,
             "description": self.description,
             "severity": self.severity,
-            "file_paths": self.file_paths
+            "file_paths": self.file_paths,
+            "poc": self.poc
         }

@@ -368,6 +368,7 @@ def format_finding(finding: FindingDB) -> Dict[str, Any]:
         "severity": finding.severity,
         "status": finding.status,
         "file_paths": finding.file_paths,
+        "poc": finding.poc,
         "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
         "deduplication_comment": finding.deduplication_comment if finding.deduplication_comment else None,
         "evaluated_severity": finding.evaluated_severity if finding.evaluated_severity else None,

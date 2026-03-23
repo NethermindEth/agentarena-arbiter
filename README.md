@@ -123,7 +123,8 @@ Once running, ArbiterAgent exposes an endpoint (e.g., `/deduplicate` or `/triage
       "description": "Possible reentrancy in withdraw() function",
       "severity": "High",
       "recommendation": "Use checks-effects-interactions or a reentrancy guard",
-      "code_reference": "contracts/MyContract.sol:45"
+      "code_reference": "contracts/MyContract.sol:45",
+      "poc": "Snippet(s) to reproduce/exploit the vulnerability"
     }
   ],
   "metadata": {
@@ -143,6 +144,7 @@ ArbiterAgent responds with a consolidated JSON object, e.g.:
       "severity": "High",
       "recommendation": "Use checks-effects-interactions or a reentrancy guard",
       "code_reference": "contracts/MyContract.sol:45",
+      "poc": "Snippet(s) to reproduce/exploit the vulnerability",
       "duplicate_reports": ["finding_id_from_other_agent"]
     }
   ],
