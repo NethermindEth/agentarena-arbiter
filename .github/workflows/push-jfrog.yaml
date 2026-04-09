@@ -1,0 +1,31 @@
+name: Build and Push images on jfrog
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  attestations: write
+  contents: read
+
+jobs:
+  push-arbiter-image:
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@v1.12.0
+    with:
+      repo_name: ${{ github.ref_name == 'main' && 'kyoto-oci-local-prod' || 'kyoto-oci-local-staging' }}
+      image_name: agentarena-arbiter
+      platforms: "linux/amd64"
+      ignore_trivy: false
+      run_trivy: true
+      context: ./Demo
+      dockerfile_path: ./Demo/Dockerfile
+      docker_build_args: |
+        GITHUB_SHA=${{ github.sha }}
+      push: ${{ github.event_name != 'pull_request' }}
