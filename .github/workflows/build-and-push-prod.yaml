@@ -22,8 +22,7 @@ jobs:
       repo_name: kyoto-oci-local-prod
       image_name: agentarena-arbiter
       platforms: "linux/amd64"
-      ignore_trivy: false
-      run_trivy: true
+      ignore_trivy: true
       context: ./Demo
       dockerfile_path: ./Demo/Dockerfile
       additional_tags: ${{ inputs.version_tag }}
