@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.0.0...v1.0.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* Updated the trivy config in the workflow ([85234ba](https://github.com/NethermindEth/agentarena-arbiter/commit/85234ba73f82148eaf32f1fd103eec9a1172ad3d))
+* Updated the trivy config in the workflow ([aa82f42](https://github.com/NethermindEth/agentarena-arbiter/commit/aa82f4288a32c5b051b0f4440809568f63dbad94))
+
 ## 1.0.0 (2026-04-21)
 
 
