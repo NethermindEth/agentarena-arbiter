@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 from enum import Enum
 
@@ -14,6 +14,7 @@ class Finding(BaseModel):
     description: str
     severity: Severity
     file_paths: List[str]
+    poc: Optional[str] = None
 
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""
