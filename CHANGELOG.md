@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.0.1...v1.1.0) (2026-05-25)
+
+
+### Features
+
+* update config to support latest models ([75a6ede](https://github.com/NethermindEth/agentarena-arbiter/commit/75a6ede909b978281d915439a8146e89e238a11a))
+* update config to support latest models ([e4c2666](https://github.com/NethermindEth/agentarena-arbiter/commit/e4c266602890757e9c97bc984fe44fa81e66fd70))
+
 ## [1.0.1](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.0.0...v1.0.1) (2026-04-21)
 
 
