@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Dict, Any, List
 from app.models.finding_db import FindingDB
 from app.config import config
@@ -5,6 +6,9 @@ from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from app.types import TaskCache
 from app.core.prompt_utils import build_context_section
+
+
+logger = logging.getLogger(__name__)
 
 
 class FindingEvaluation(BaseModel):
@@ -27,56 +31,71 @@ def get_model_config() -> Dict[str, Any]:
     """
     return {
         "model_name": config.claude_model,
-        "temperature": config.claude_temperature,
         "max_tokens": config.claude_max_tokens,
+        "temperature": config.claude_temperature,
         "anthropic_api_key": config.claude_api_key
     }
 
+# Model name prefixes that do not accept a temperature override (extended thinking).
+_TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7",)
+
 def create_claude_model(
     model_name: Optional[str] = None,
-    temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
     api_key: Optional[str] = None
 ) -> ChatAnthropic:
     """
     Create a Claude model instance with specified parameters or from environment variables.
-    
+
     Args:
         model_name: Optional model name override
-        temperature: Optional temperature override
         max_tokens: Optional max tokens override
+        temperature: Optional temperature override; ignored (with a warning) for
+            models in _TEMPERATURE_INCOMPATIBLE_PREFIXES (extended thinking).
         api_key: Optional API key override
-        
+
     Returns:
         Configured ChatAnthropic instance
-        
+
     Raises:
-        ValueError: If API key is not provided and not in environment variables
+        ValueError: If API key is missing.
     """
     # Get config from environment variables
     claude_config = get_model_config()
-    
+
     # Override with any provided parameters
     if model_name:
         claude_config["model_name"] = model_name
-    if temperature is not None:
-        claude_config["temperature"] = temperature
     if max_tokens:
         claude_config["max_tokens"] = max_tokens
+    if temperature is not None:
+        claude_config["temperature"] = temperature
     if api_key:
         claude_config["anthropic_api_key"] = api_key
-        
+
     # Validate API key
     if not claude_config["anthropic_api_key"]:
         raise ValueError("CLAUDE_API_KEY environment variable is not set")
-    
-    # Return configured model
-    return ChatAnthropic(
-        model=claude_config["model_name"],
-        temperature=claude_config["temperature"],
-        max_tokens=claude_config["max_tokens"],
-        anthropic_api_key=claude_config["anthropic_api_key"]
-    )
+
+    kwargs: Dict[str, Any] = {
+        "model": claude_config["model_name"],
+        "max_tokens": claude_config["max_tokens"],
+        "anthropic_api_key": claude_config["anthropic_api_key"],
+    }
+
+    # Only pass temperature for models that accept it; warn and drop it otherwise.
+    if claude_config["temperature"] is not None:
+        if claude_config["model_name"].startswith(_TEMPERATURE_INCOMPATIBLE_PREFIXES):
+            logger.warning(
+                "Ignoring temperature=%s for model '%s' (extended-thinking models require the default temperature).",
+                claude_config["temperature"],
+                claude_config["model_name"],
+            )
+        else:
+            kwargs["temperature"] = claude_config["temperature"]
+
+    return ChatAnthropic(**kwargs)
 
 def create_structured_evaluation_model(
     model: Optional[ChatAnthropic] = None
