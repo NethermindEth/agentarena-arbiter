@@ -6,16 +6,18 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_file_encoding="utf-8"
+        env_file_encoding="utf-8",
+        extra="ignore"  # tolerate unrelated env vars (e.g. TASK_ID) present in .env
     )
     
     mongodb_url: str = Field(..., description="MongoDB connection URL")
 
-    # Claude configuration for evaluation
-    claude_api_key: str = Field(..., description="Claude API key")
-    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
-    claude_temperature: float = Field(0.0, description="Claude temperature setting")
-    claude_max_tokens: int = Field(20000, description="Claude max tokens")
+    # Claude Code (CLI) configuration for evaluation. The evaluator drives the `claude` CLI
+    # as a read-only subprocess inside the repository checkout, so it needs the binary name,
+    # the model id, and the API key (passed to the subprocess as ANTHROPIC_API_KEY).
+    claude_api_key: str = Field(..., description="Anthropic API key for the Claude Code subprocess")
+    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model id passed to `claude --model`")
+    claude_command: str = Field("claude", description="Claude Code CLI binary name/path")
     
     # Gemini configuration for deduplication
     gemini_api_key: str = Field(..., description="Gemini API key")

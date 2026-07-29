@@ -37,7 +37,9 @@
 ### Prerequisites
 - Python 3.13+
 - MongoDB
-- Claude API key
+- Anthropic API key (`CLAUDE_API_KEY`)
+- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code`) — the Docker
+  image below bundles it
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
@@ -198,10 +200,9 @@ class FindingDB(Finding):
 The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
-- `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
-- `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
-- `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
-- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
+- `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
+- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-sonnet-4-20250514)
+- `CLAUDE_CMD`: Claude Code CLI binary name/path (default: claude)
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
 - `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
 - `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
