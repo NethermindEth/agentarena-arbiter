@@ -22,15 +22,24 @@
 
 ## Final Evaluation
 
-- Remaining `PENDING` findings undergo evaluation using the Claude AI model
-- The evaluation assesses:
-    - Validity: determines if the finding is a genuine smart contract vulnerability
-    - Category: assigns a standard smart contract vulnerability category
-    - Severity: evaluates severity as `High`, `Medium`, `Low`, or `Info`
+- Remaining `PENDING` findings undergo evaluation driven by **Claude Code** (Anthropic's
+  `claude` CLI), run as a read-only subprocess **inside the task's repository checkout**
+  (`--permission-mode plan`). Rather than being handed a concatenated blob of source, the
+  agent explores the real files itself to verify each claim.
+- The evaluation uses a single **fixed prompt** (`app/core/evaluation_prompt.py`) and returns,
+  per finding, a verdict:
+    - Validity: `approved` (a genuine, reachable vulnerability) or `disapproved`
+    - Severity: the real impact re-assessed as `High`, `Medium`, `Low`, or `Info`
+    - Rationale: a short explanation citing the in-scope code that drove the decision
+- Duplicates (identified during deduplication) are judged once on their representative finding
+  and the same verdict is propagated across the group, so related reports stay consistent.
 - Results are applied as follows:
-    - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
-    - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
-- Each unique category receives a distinct **category_id** for tracking similar issues
+    - `approved` findings keep their valid status, with `evaluated_severity` and
+      `evaluation_comment` set from the verdict
+    - `disapproved` findings → `Status.DISPUTED`, with `evaluated_severity` and
+      `evaluation_comment` set from the verdict
+- A failed or unparseable CLI run abstains to `disapproved` (keeping the claimed severity) so
+  an auth/config failure never silently passes a finding.
 
 ## Setup and Installation
 

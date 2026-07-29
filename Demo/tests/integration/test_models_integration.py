@@ -3,72 +3,98 @@ Integration tests for AI models.
 These tests verify that API keys are valid and can connect to external services.
 """
 import pytest
+from pathlib import Path
 from unittest.mock import patch, Mock, AsyncMock
 from app.config import config
 
 
-class TestClaudeIntegration:
-    """Test Claude API connectivity and key validation."""
-    
-    @pytest.mark.asyncio
-    async def test_claude_api_with_mock(self):
-        """Test Claude API using LangChain with mocked response."""
-        # Mock the LangChain ChatAnthropic client
-        with patch('app.core.claude_model.ChatAnthropic') as mock_chat_anthropic:
-            mock_client = Mock()
-            mock_response = Mock()
-            mock_response.content = "Working"
-            mock_client.ainvoke = AsyncMock(return_value=mock_response)
-            mock_chat_anthropic.return_value = mock_client
-            
-            # Import here to avoid circular import issues
-            from app.core.claude_model import create_claude_model
-            
-            client = create_claude_model(api_key="sk-ant-test-key")
-            response = await client.ainvoke("Hello, please respond with the word 'Working'")
-            
-            assert response.content == "Working"
-            mock_client.ainvoke.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_claude_api_error_handling(self):
-        """Test error handling for Claude API failures."""
-        with patch('app.core.claude_model.ChatAnthropic') as mock_chat_anthropic:
-            mock_client = Mock()
-            mock_client.ainvoke = AsyncMock(side_effect=Exception("API Error"))
-            mock_chat_anthropic.return_value = mock_client
-            
-            from app.core.claude_model import create_claude_model
-            
-            client = create_claude_model(api_key="sk-ant-test-key")
-            
-            with pytest.raises(Exception, match="API Error"):
-                await client.ainvoke("Test message")
-    
-    def test_missing_api_key_handling(self):
-        """Test behavior when Claude API key is not configured."""
-        with patch('app.core.claude_model.config') as mock_config:
-            mock_config.claude_api_key = None
-            
-            # Should raise an error when trying to create client without API key
-            from app.core.claude_model import create_claude_model
-            
-            with pytest.raises(ValueError, match="CLAUDE_API_KEY"):
-                create_claude_model()
+class TestClaudeCodeDetector:
+    """Test the Claude Code detector that drives the `claude` CLI as a subprocess."""
 
-    @pytest.mark.skip(reason="Requires actual API keys - run manually for connectivity testing")
+    def test_argv_includes_print_flags_and_model(self):
+        """The CLI must be invoked in non-interactive print mode with the configured model."""
+        from app.core.claude_code_detector import ClaudeCodeDetector
+
+        detector = ClaudeCodeDetector(model="claude-test", command="claude", api_key="sk-ant-test-key")
+        argv = detector.argv()
+
+        assert argv[0] == "claude"
+        assert "-p" in argv
+        # acceptEdits lets the agent write its scratch finding_data.json while gating bash.
+        assert "--permission-mode" in argv and "acceptEdits" in argv
+        assert argv[argv.index("--model") + 1] == "claude-test"
+        assert detector.env() == {"ANTHROPIC_API_KEY": "sk-ant-test-key"}
+
+    def test_parse_fenced_verdict(self):
+        """A fenced JSON verdict is parsed and normalized (severity + clamped confidence)."""
+        from app.core.claude_code_detector import ClaudeCodeDetector
+
+        detector = ClaudeCodeDetector(model="m", command="claude", api_key="k")
+        raw = 'reasoning... ```json {"label":"approved","severity":"critical","confidence":1.4,"rationale":"r"} ```'
+        verdict = detector._parse(raw, default_severity="Low")
+
+        assert verdict is not None
+        assert verdict.label == "approved"
+        assert verdict.severity == "High"       # "critical" -> High
+        assert verdict.confidence == 1.0          # clamped into [0, 1]
+        assert verdict.rationale == "r"
+
+    def test_parse_unparseable_returns_none(self):
+        """Output without any JSON object yields None so the caller can retry/abstain."""
+        from app.core.claude_code_detector import ClaudeCodeDetector
+
+        detector = ClaudeCodeDetector(model="m", command="claude", api_key="k")
+        assert detector._parse("no json here", default_severity="Low") is None
+
     @pytest.mark.asyncio
-    async def test_real_claude_api_connectivity(self):
-        """Test actual Claude API connectivity - requires CLAUDE_API_KEY env var."""
-        if not config.claude_api_key or not config.claude_api_key.startswith("sk-ant-"):
-            pytest.skip("Valid CLAUDE_API_KEY required for this test")
-        
-        from app.core.claude_model import create_claude_model
-        
-        client = create_claude_model()
-        response = await client.ainvoke("Hello, please respond with exactly the word 'Working'")
-        
-        assert "Working" in response.content
+    async def test_classify_removes_scratch_file(self, tmp_path):
+        """The scratch finding_data.json is deleted from the checkout after the verdict."""
+        from app.core.claude_code_detector import ClaudeCodeDetector, SCRATCH_FILENAME
+
+        # Simulate the agent having written its scratch working-memory file into the checkout.
+        scratch = tmp_path / SCRATCH_FILENAME
+        scratch.write_text('{"factually_accurate": "approved"}')
+        assert scratch.exists()
+
+        detector = ClaudeCodeDetector(model="m", command="claude", api_key="k")
+        good = '```json {"label":"approved","severity":"High","confidence":0.9,"rationale":"r"} ```'
+        with patch.object(detector, "_run", AsyncMock(return_value=good)):
+            verdict = await detector.classify(
+                "prompt",
+                finding_title="t",
+                finding_description="d",
+                finding_severity="High",
+                finding_file_paths=[],
+                task_title="task",
+                task_description="desc",
+                repo_path=tmp_path,
+                in_scope_files=[],
+            )
+
+        assert verdict.label == "approved"
+        assert not scratch.exists()  # cleaned up regardless of outcome
+
+    @pytest.mark.asyncio
+    async def test_classify_abstains_on_unparseable_output(self):
+        """A persistently unparseable CLI response abstains to the negative label."""
+        from app.core.claude_code_detector import ClaudeCodeDetector, NEGATIVE_LABEL
+
+        detector = ClaudeCodeDetector(model="m", command="claude", api_key="k")
+        with patch.object(detector, "_run", AsyncMock(return_value="garbage, no verdict")):
+            verdict = await detector.classify(
+                "prompt {{FINDING_TITLE}}",
+                finding_title="t",
+                finding_description="d",
+                finding_severity="High",
+                finding_file_paths=["a.sol"],
+                task_title="task",
+                task_description="desc",
+                repo_path=Path("."),
+                in_scope_files=[],
+            )
+        assert verdict.label == NEGATIVE_LABEL
+        assert verdict.confidence == 0.0
+        assert verdict.severity == "High"  # falls back to the finding's claimed severity
 
 
 class TestGeminiIntegration:
