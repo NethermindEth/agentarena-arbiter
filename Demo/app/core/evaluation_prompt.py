@@ -16,7 +16,6 @@ Keep the tokens intact. Available placeholders:
   {{TASK_TITLE}}            {{TASK_DESCRIPTION}}
   {{IN_SCOPE_FILES}}        (list of paths the audit was restricted to; empty = whole repo)
   {{REPO_PATH}}             (local checkout root the CLI runs inside)
-  {{PROJECT_CONTEXT}}       (docs / Q&A / links; "" if none)
   {{FINDING_TITLE}}         {{FINDING_DESCRIPTION}}
   {{FINDING_SEVERITY}}      {{FINDING_FILE_PATHS}}
   {{POSITIVE_LABEL}}        {{NEGATIVE_LABEL}}
