@@ -28,8 +28,14 @@ class Task(BaseModel):
 class TaskCache(BaseModel):
     """Model representing the task cache structure."""
     taskId: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
     startTime: Optional[datetime] = None
     deadline: Optional[datetime] = None
+    # Local repository checkout the Claude Code evaluator runs inside (read-only).
+    repoPath: Optional[str] = None
+    # Audit scope: the files the task restricted the review to (empty => whole repo).
+    selectedFiles: Optional[List[str]] = []
     selectedFilesContent: Optional[str] = None
     selectedDocsContent: Optional[str] = None
     additionalLinks: Optional[List[str]] = []

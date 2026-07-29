@@ -328,11 +328,17 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
         if not concatenated_docs:
             logger.warning(f"No valid docs content found for task {task_id}")
             
-        # Create TaskCache object
+        # Create TaskCache object. repoPath + selectedFiles let the Claude Code evaluator run
+        # inside the actual checkout and scope its review; the concatenated content is still
+        # kept for the Gemini deduplication step.
         task_cache = TaskCache(
             taskId=task_id,
+            title=task.title,
+            description=task.description,
             startTime=datetime.fromtimestamp(float(task.startTime), tz=timezone.utc),
             deadline=datetime.fromtimestamp(float(task.deadline), tz=timezone.utc),
+            repoPath=repo_storage_path,
+            selectedFiles=selected_files,
             selectedFilesContent=concatenated_contracts,
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,
