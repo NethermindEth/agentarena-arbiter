@@ -41,6 +41,9 @@ The code under review is checked out at {{REPO_PATH}}. The audit was restricted 
 following in-scope files (if empty, the whole repository is in scope):
 {{IN_SCOPE_FILES}}
 
+The following in-scope documentation files provide additional context:
+{{IN_SCOPE_DOCS}}
+
 Reason primarily about code inside the in-scope files, **and take the task/contest trust
 model seriously**: if the description states that certain actors are trusted (deployer,
 admin, manager, node operator, timelock, emergency committee), that only standard/well-behaved

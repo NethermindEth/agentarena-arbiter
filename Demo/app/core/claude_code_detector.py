@@ -143,6 +143,7 @@ class ClaudeCodeDetector:
         task_description: str,
         repo_path: Path,
         in_scope_files: List[str],
+        in_scope_docs: List[str]
     ) -> Verdict:
         """
         Render the prompt, run the detector in ``repo_path``, and parse its verdict.
@@ -163,6 +164,7 @@ class ClaudeCodeDetector:
             task_description=task_description,
             repo_path=repo_path,
             in_scope_files=in_scope_files,
+            in_scope_docs=in_scope_docs
         )
         default_severity = _normalize_severity(finding_severity)
         last_raw = ""
@@ -206,17 +208,24 @@ class ClaudeCodeDetector:
         task_description: str,
         repo_path: Path,
         in_scope_files: List[str],
+        in_scope_docs: List[str]
     ) -> str:
         """Fill the template placeholders (see evaluation_prompt.py for the token list)."""
-        scope = (
+        scope_files = (
             "\n".join(f"- {p}" for p in in_scope_files)
             if in_scope_files
-            else "(whole repository)"
+            else "(whole repository code)"
+        )
+        scope_docs = (
+            "\n".join(f"- {p}" for p in in_scope_docs)
+            if in_scope_docs
+            else "(whole repository docs)"
         )
         replacements = {
             "{{TASK_TITLE}}": task_title or "(no title)",
             "{{TASK_DESCRIPTION}}": task_description or "(no description)",
-            "{{IN_SCOPE_FILES}}": scope,
+            "{{IN_SCOPE_FILES}}": scope_files,
+            "{{IN_SCOPE_DOCS}}": scope_docs,
             "{{REPO_PATH}}": str(repo_path),
             "{{FINDING_TITLE}}": finding_title,
             "{{FINDING_DESCRIPTION}}": finding_description,

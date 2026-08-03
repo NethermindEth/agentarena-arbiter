@@ -339,6 +339,7 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
             deadline=datetime.fromtimestamp(float(task.deadline), tz=timezone.utc),
             repoPath=repo_storage_path,
             selectedFiles=selected_files,
+            selectedDocs=selected_docs,
             selectedFilesContent=concatenated_contracts,
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,

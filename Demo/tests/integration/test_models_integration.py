@@ -69,6 +69,7 @@ class TestClaudeCodeDetector:
                 task_description="desc",
                 repo_path=tmp_path,
                 in_scope_files=[],
+                in_scope_docs=[]
             )
 
         assert verdict.label == "approved"
@@ -91,6 +92,7 @@ class TestClaudeCodeDetector:
                 task_description="desc",
                 repo_path=Path("."),
                 in_scope_files=[],
+                in_scope_docs=[]
             )
         assert verdict.label == NEGATIVE_LABEL
         assert verdict.confidence == 0.0

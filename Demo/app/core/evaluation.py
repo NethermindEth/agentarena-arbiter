@@ -189,6 +189,7 @@ class FindingEvaluator:
             task_description=task_cache.description or "",
             repo_path=Path(repo_path),
             in_scope_files=list(task_cache.selectedFiles or []),
+            in_scope_docs=list(task_cache.selectedDocs or [])
         )
 
     def _to_evaluation(self, finding: FindingDB, verdict: Verdict) -> FindingEvaluation:

@@ -36,6 +36,7 @@ class TaskCache(BaseModel):
     repoPath: Optional[str] = None
     # Audit scope: the files the task restricted the review to (empty => whole repo).
     selectedFiles: Optional[List[str]] = []
+    selectedDocs: Optional[List[str]] = []
     selectedFilesContent: Optional[str] = None
     selectedDocsContent: Optional[str] = None
     additionalLinks: Optional[List[str]] = []
