@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # as a read-only subprocess inside the repository checkout, so it needs the binary name,
     # the model id, and the API key (passed to the subprocess as ANTHROPIC_API_KEY).
     claude_api_key: str = Field(..., description="Anthropic API key for the Claude Code subprocess")
-    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model id passed to `claude --model`")
+    claude_model: str = Field("claude-opus-4-8", description="Claude model id passed to `claude --model`")
     claude_command: str = Field("claude", description="Claude Code CLI binary name/path")
     
     # Gemini configuration for deduplication
