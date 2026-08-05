@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     )
     
     mongodb_url: str = Field(..., description="MongoDB connection URL")
+    mongodb_name: str = Field("agent_arena", description="The name of the database")
 
     # Claude Code (CLI) configuration for evaluation. The evaluator drives the `claude` CLI
     # as a read-only subprocess inside the repository checkout, so it needs the binary name,
