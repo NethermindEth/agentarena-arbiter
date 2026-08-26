@@ -27,14 +27,12 @@ def get_model_config() -> Dict[str, Any]:
     """
     return {
         "model_name": config.claude_model,
-        "temperature": config.claude_temperature,
         "max_tokens": config.claude_max_tokens,
         "anthropic_api_key": config.claude_api_key
     }
 
 def create_claude_model(
     model_name: Optional[str] = None,
-    temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     api_key: Optional[str] = None
 ) -> ChatAnthropic:
@@ -43,7 +41,6 @@ def create_claude_model(
     
     Args:
         model_name: Optional model name override
-        temperature: Optional temperature override
         max_tokens: Optional max tokens override
         api_key: Optional API key override
         
@@ -59,8 +56,6 @@ def create_claude_model(
     # Override with any provided parameters
     if model_name:
         claude_config["model_name"] = model_name
-    if temperature is not None:
-        claude_config["temperature"] = temperature
     if max_tokens:
         claude_config["max_tokens"] = max_tokens
     if api_key:
@@ -73,7 +68,6 @@ def create_claude_model(
     # Return configured model
     return ChatAnthropic(
         model=claude_config["model_name"],
-        temperature=claude_config["temperature"],
         max_tokens=claude_config["max_tokens"],
         anthropic_api_key=claude_config["anthropic_api_key"]
     )

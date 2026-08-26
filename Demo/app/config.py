@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     # Claude configuration for evaluation
     claude_api_key: str = Field(..., description="Claude API key")
     claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
-    claude_temperature: float = Field(0.0, description="Claude temperature setting")
     claude_max_tokens: int = Field(20000, description="Claude max tokens")
     
     # Gemini configuration for deduplication

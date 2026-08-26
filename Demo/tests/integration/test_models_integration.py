@@ -29,6 +29,7 @@ class TestClaudeIntegration:
             
             assert response.content == "Working"
             mock_client.ainvoke.assert_called_once()
+            assert "temperature" not in mock_chat_anthropic.call_args.kwargs
     
     @pytest.mark.asyncio
     async def test_claude_api_error_handling(self):
