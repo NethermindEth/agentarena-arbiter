@@ -1,13 +1,54 @@
 from app.types import TaskCache
 
 
+# Default language assumed when a task does not declare one, preserving the
+# historical Solidity-only behaviour.
+DEFAULT_LANGUAGE = "Solidity"
+
+# Mapping of task languages to their markdown code-fence tags. Unknown
+# languages fall back to a lower-cased version of the language name.
+_FENCE_TAGS = {
+    "solidity": "solidity",
+    "rust": "rust",
+}
+
+
+def resolve_language(task_cache: TaskCache) -> str:
+    """Return the human-readable source language for a task."""
+    language = (task_cache.language or "").strip()
+    return language or DEFAULT_LANGUAGE
+
+
+def _fence_tag(language: str) -> str:
+    """Return the markdown code-fence tag for a source language."""
+    key = language.strip().lower()
+    return _FENCE_TAGS.get(key, key or DEFAULT_LANGUAGE.lower())
+
+
+def build_language_directive(task_cache: TaskCache) -> str:
+    """Build the instruction telling the model which language to focus on.
+
+    This is prepended to every task-describing prompt so the model restricts
+    its analysis to source code written in the task's language.
+    """
+    language = resolve_language(task_cache)
+    return (
+        f"The source code under analysis is written in {language}. "
+        f"Focus your analysis exclusively on {language} source code, applying "
+        f"the vulnerability classes, idioms, and semantics specific to {language}. "
+        f"Disregard issues that do not apply to {language}."
+    )
+
+
 def build_context_section(task_cache: TaskCache) -> str:
     """Build the context section for evaluation prompts."""
     context_parts = []
-    
+
+    language = resolve_language(task_cache)
+
     # Smart contract files
     if task_cache.selectedFilesContent:
-        context_parts.append(f"### SMART CONTRACT CODE:\n```solidity\n{task_cache.selectedFilesContent}\n```\n")
+        context_parts.append(f"### SMART CONTRACT CODE:\n```{_fence_tag(language)}\n{task_cache.selectedFilesContent}\n```\n")
     
     # Documentation files
     if task_cache.selectedDocsContent:

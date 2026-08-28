@@ -4,7 +4,7 @@ from app.config import config
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from app.types import TaskCache
-from app.core.prompt_utils import build_context_section
+from app.core.prompt_utils import build_context_section, build_language_directive, resolve_language
 
 
 class FindingEvaluation(BaseModel):
@@ -128,9 +128,14 @@ def _get_related_findings_prompt(findings_batch: List[FindingDB], task_cache: Ta
     
     # Build context section
     context_section = build_context_section(task_cache)
-    
+    language = resolve_language(task_cache)
+    language_directive = build_language_directive(task_cache)
+
     return f"""
-You are a smart contract security expert tasked with evaluating a batch of RELATED findings that refer to the same underlying vulnerability.
+You are a {language} smart contract security expert tasked with evaluating a batch of RELATED findings that refer to the same underlying vulnerability.
+
+## LANGUAGE
+{language_directive}
 
 ## BATCH CONTEXT
 This batch contains multiple findings that are duplicates or variations of the same underlying security issue. They should be evaluated collectively as they represent different reports of the same vulnerability.
@@ -208,9 +213,14 @@ def _get_individual_findings_prompt(findings_batch: List[FindingDB], task_cache:
     
     # Build context section
     context_section = build_context_section(task_cache)
-    
+    language = resolve_language(task_cache)
+    language_directive = build_language_directive(task_cache)
+
     return f"""
-You are a smart contract security expert tasked with evaluating a batch of INDIVIDUAL findings that describe different vulnerabilities within the same protocol or smart contract.
+You are a {language} smart contract security expert tasked with evaluating a batch of INDIVIDUAL findings that describe different vulnerabilities within the same protocol or smart contract.
+
+## LANGUAGE
+{language_directive}
 
 ## BATCH CONTEXT
 This batch contains unrelated findings that must be evaluated independently. Each finding represents a potentially different type of vulnerability or issue and should be assessed on its own merits.
