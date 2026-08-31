@@ -33,10 +33,13 @@ def build_language_directive(task_cache: TaskCache) -> str:
     """
     language = resolve_language(task_cache)
     return (
-        f"The source code under analysis is written in {language}. "
-        f"Focus your analysis exclusively on {language} source code, applying "
+        f"The source code under analysis may be written in many languages. "
+        f"However, a finding / vulnerability is in scope only {language} source files. "
+        f"Focus your analysis exclusively on {language} source code findings, applying "
         f"the vulnerability classes, idioms, and semantics specific to {language}. "
-        f"Disregard issues that do not apply to {language}."
+        f"Disregard issues that do not apply to {language}. However, related files"
+        f"could be in different languages (e.g. a Solidity contract having a finding"
+        f"which is related to a .json or .js file in a Hardhat project... is allowed)."
     )
 
 
@@ -48,7 +51,7 @@ def build_context_section(task_cache: TaskCache) -> str:
 
     # Smart contract files
     if task_cache.selectedFilesContent:
-        context_parts.append(f"### SMART CONTRACT CODE:\n```{_fence_tag(language)}\n{task_cache.selectedFilesContent}\n```\n")
+        context_parts.append(f"### SMART CONTRACT CODE:\n```\n{task_cache.selectedFilesContent}\n```\n")
     
     # Documentation files
     if task_cache.selectedDocsContent:
