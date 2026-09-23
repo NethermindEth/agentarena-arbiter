@@ -51,6 +51,20 @@ _JSON_FENCE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _JSON_BARE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _json_block(obj: dict) -> str:
+    """
+    Serialize untrusted, attacker-influenced data for safe embedding in the prompt.
+
+    ``ensure_ascii=True`` (the default) escapes quotes, backslashes, newlines *and every
+    non-ASCII character* (including the U+2028/U+2029 line separators that JSON leaves raw
+    otherwise). The result is therefore single-physical-line-per-value pure ASCII, so a value
+    cannot terminate the surrounding ```json fence, start a new markdown heading, or otherwise
+    escape the block it is placed in. ``indent=2`` only adds structural newlines between keys,
+    never inside an escaped value.
+    """
+    return json.dumps(obj, indent=2)
+
+
 def _stderr_tail(stderr: str, limit: int = 800) -> str:
     """
     Return the last ``limit`` chars of ``stderr`` for logging a CLI failure.
@@ -210,27 +224,40 @@ class ClaudeCodeDetector:
         in_scope_files: List[str],
         in_scope_docs: List[str]
     ) -> str:
-        """Fill the template placeholders (see evaluation_prompt.py for the token list)."""
-        scope_files = (
-            "\n".join(f"- {p}" for p in in_scope_files)
-            if in_scope_files
-            else "(whole repository code)"
+        """
+        Fill the template placeholders (see evaluation_prompt.py for the token list).
+
+        The task metadata and finding are attacker-influenced (a participant controls the finding
+        text; the sponsor controls the task metadata), so they are never spliced into the prompt as
+        raw prose. They are injected only as JSON-serialized values via :func:`_json_block`, which
+        escapes quotes, backslashes and — crucially — newlines. That confines each value to a single
+        physical line and pure-ASCII output, so it cannot break out of its fenced block or introduce
+        new markdown/instructions; the template's prose tells the model to treat those blocks as data.
+
+        The substitution itself is a single regex pass with a *callable* replacement, so an injected
+        placeholder token (e.g. a literal ``{{FINDING_JSON}}`` inside a description) is not re-expanded
+        and a JSON value containing ``\\g<1>``-style text is not interpreted as a backreference.
+        """
+        task_json = _json_block(
+            {
+                "title": task_title or "(no title)",
+                "description": task_description or "(no description)",
+                "in_scope_files": list(in_scope_files) or "WHOLE REPOSITORY CODE",
+                "in_scope_docs": list(in_scope_docs) or "WHOLE REPOSITORY DOCS",
+            }
         )
-        scope_docs = (
-            "\n".join(f"- {p}" for p in in_scope_docs)
-            if in_scope_docs
-            else "(whole repository docs)"
+        finding_json = _json_block(
+            {
+                "title": finding_title or "(no title)",
+                "claimed_severity": finding_severity or "unknown",
+                "referenced_files": list(finding_file_paths or []),
+                "description": finding_description or "(no description)",
+            }
         )
         replacements = {
-            "{{TASK_TITLE}}": task_title or "(no title)",
-            "{{TASK_DESCRIPTION}}": task_description or "(no description)",
-            "{{IN_SCOPE_FILES}}": scope_files,
-            "{{IN_SCOPE_DOCS}}": scope_docs,
             "{{REPO_PATH}}": str(repo_path),
-            "{{FINDING_TITLE}}": finding_title,
-            "{{FINDING_DESCRIPTION}}": finding_description,
-            "{{FINDING_SEVERITY}}": finding_severity or "unknown",
-            "{{FINDING_FILE_PATHS}}": ", ".join(finding_file_paths) or "(none listed)",
+            "{{TASK_JSON}}": task_json,
+            "{{FINDING_JSON}}": finding_json,
             "{{POSITIVE_LABEL}}": POSITIVE_LABEL,
             "{{NEGATIVE_LABEL}}": NEGATIVE_LABEL,
             "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
