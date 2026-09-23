@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore"  # tolerate unrelated env vars (e.g. TASK_ID) present in .env
+        extra="ignore",  # tolerate unrelated env vars (e.g. TASK_ID) present in .env
+        populate_by_name=True  # allow fields to be set by name as well as by alias
     )
     
     mongodb_url: str = Field(..., description="MongoDB connection URL")
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     # the model id, and the API key (passed to the subprocess as ANTHROPIC_API_KEY).
     claude_api_key: str = Field(..., description="Anthropic API key for the Claude Code subprocess")
     claude_model: str = Field("claude-opus-4-8", description="Claude model id passed to `claude --model`")
-    claude_command: str = Field("claude", description="Claude Code CLI binary name/path")
+    claude_command: str = Field("claude", alias="CLAUDE_CMD", description="Claude Code CLI binary name/path")
     
     # Gemini configuration for deduplication
     gemini_api_key: str = Field(..., description="Gemini API key")
