@@ -235,10 +235,8 @@ class ClaudeCodeDetector:
             "{{NEGATIVE_LABEL}}": NEGATIVE_LABEL,
             "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
         }
-        rendered = prompt_text
-        for token, value in replacements.items():
-            rendered = rendered.replace(token, value)
-        return rendered
+        pattern = re.compile("|".join(re.escape(token) for token in replacements))
+        return pattern.sub(lambda m: replacements[m.group(0)], prompt_text)
 
     async def _run(self, rendered_prompt: str, repo_path: Path) -> str:
         """Run the CLI with the prompt on stdin, inside the repo checkout; return stdout."""
