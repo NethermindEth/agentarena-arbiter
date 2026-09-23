@@ -28,7 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from app.core.claude_code_cli import ClaudeCodeCLI, VALID_SEVERITIES, _normalize_severity
+from app.core.claude_code_cli import (
+    ClaudeCodeCLI,
+    VALID_SEVERITIES,
+    json_block,
+    normalize_severity,
+    render_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,47 +50,6 @@ SCRATCH_FILENAME = "finding_data.json"
 # Matches the first ```json ... ``` fenced block, else we fall back to a bare object.
 _JSON_FENCE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _JSON_BARE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _json_block(obj: dict) -> str:
-    """
-    Serialize untrusted, attacker-influenced data for safe embedding in the prompt.
-
-    ``ensure_ascii=True`` (the default) escapes quotes, backslashes, newlines *and every
-    non-ASCII character* (including the U+2028/U+2029 line separators that JSON leaves raw
-    otherwise). The result is therefore single-physical-line-per-value pure ASCII, so a value
-    cannot terminate the surrounding ```json fence, start a new markdown heading, or otherwise
-    escape the block it is placed in. ``indent=2`` only adds structural newlines between keys,
-    never inside an escaped value.
-    """
-    return json.dumps(obj, indent=2)
-
-
-def _stderr_tail(stderr: str, limit: int = 800) -> str:
-    """
-    Return the last ``limit`` chars of ``stderr`` for logging a CLI failure.
-
-    Errors are emitted at the end of the stream (after any startup banner), so we keep the
-    tail rather than the head; a leading ellipsis marks truncation.
-    """
-    text = (stderr or "").strip()
-    if not text:
-        return "(empty)"
-    return text if len(text) <= limit else "..." + text[-limit:]
-
-
-def _normalize_severity(value: str, default: str = "Info") -> str:
-    """Map free-form severity text onto the canonical vocabulary, falling back to ``default``."""
-    v = (value or "").strip().lower()
-    if v in ("high", "critical"):
-        return "High"
-    if v == "medium":
-        return "Medium"
-    if v == "low":
-        return "Low"
-    if v in ("info", "informational", "none"):
-        return "Info"
-    return default
 
 
 @dataclass(frozen=True)
@@ -159,7 +124,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
             in_scope_files=in_scope_files,
             in_scope_docs=in_scope_docs
         )
-        default_severity = _normalize_severity(finding_severity)
+        default_severity = normalize_severity(finding_severity)
         last_raw = ""
         try:
             for _ in range(2):
@@ -208,7 +173,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
 
         The task metadata and finding are attacker-influenced (a participant controls the finding
         text; the sponsor controls the task metadata), so they are never spliced into the prompt as
-        raw prose. They are injected only as JSON-serialized values via :func:`_json_block`, which
+        raw prose. They are injected only as JSON-serialized values via :func:`json_block`, which
         escapes quotes, backslashes and — crucially — newlines. That confines each value to a single
         physical line and pure-ASCII output, so it cannot break out of its fenced block or introduce
         new markdown/instructions; the template's prose tells the model to treat those blocks as data.
@@ -217,7 +182,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
         placeholder token (e.g. a literal ``{{FINDING_JSON}}`` inside a description) is not re-expanded
         and a JSON value containing ``\\g<1>``-style text is not interpreted as a backreference.
         """
-        task_json = _json_block(
+        task_json = json_block(
             {
                 "title": task_title or "(no title)",
                 "description": task_description or "(no description)",
@@ -225,7 +190,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
                 "in_scope_docs": list(in_scope_docs) or "WHOLE REPOSITORY DOCS",
             }
         )
-        finding_json = _json_block(
+        finding_json = json_block(
             {
                 "title": finding_title or "(no title)",
                 "claimed_severity": finding_severity or "unknown",
@@ -241,8 +206,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
             "{{NEGATIVE_LABEL}}": NEGATIVE_LABEL,
             "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
         }
-        pattern = re.compile("|".join(re.escape(token) for token in replacements))
-        return pattern.sub(lambda m: replacements[m.group(0)], prompt_text)
+        return render_template(prompt_text, replacements)
 
     def _parse(self, raw: str, default_severity: str) -> Optional[Verdict]:
         """Extract and validate a JSON verdict from raw detector output."""
@@ -264,7 +228,7 @@ class ClaudeCodeDetector(ClaudeCodeCLI):
             confidence = 0.0
         return Verdict(
             label=label,
-            severity=_normalize_severity(str(data.get("severity", "")), default_severity),
+            severity=normalize_severity(str(data.get("severity", "")), default_severity),
             confidence=max(0.0, min(1.0, confidence)),
             rationale=str(data.get("rationale", "")),
             raw=raw,

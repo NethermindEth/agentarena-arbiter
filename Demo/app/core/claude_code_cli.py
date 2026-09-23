@@ -13,10 +13,12 @@ owns its own prompt/parse logic.
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 from app.config import config
 
 
@@ -25,6 +27,35 @@ logger = logging.getLogger(__name__)
 
 # The severity vocabulary the models may return (mirrors app.models.finding_input.Severity).
 VALID_SEVERITIES = ("High", "Medium", "Low", "Info")
+
+
+def json_block(obj) -> str:
+    """
+    Serialize untrusted, attacker-influenced data for safe embedding in a prompt.
+
+    ``ensure_ascii=True`` (the default) escapes quotes, backslashes, newlines *and every
+    non-ASCII character* (including the U+2028/U+2029 line separators that JSON leaves raw
+    otherwise). The result is therefore single-physical-line-per-value pure ASCII, so a value
+    cannot terminate the surrounding ```json fence, start a new markdown heading, or otherwise
+    escape the block it is placed in. ``indent=2`` only adds structural newlines between keys,
+    never inside an escaped value.
+    """
+    return json.dumps(obj, indent=2)
+
+
+def render_template(template: str, replacements: Dict[str, str]) -> str:
+    """
+    Substitute ``{{TOKEN}}`` placeholders in a *single* left-to-right regex pass.
+
+    A single pass (rather than a per-token ``str.replace`` loop) means a value inserted for one
+    token is never re-scanned for another token, so untrusted content that happens to contain a
+    placeholder string cannot be re-expanded. The callable replacement also stops any ``\\g<1>``-
+    style text inside a value from being interpreted as a regex backreference.
+    """
+    if not replacements:
+        return template
+    pattern = re.compile("|".join(re.escape(token) for token in replacements))
+    return pattern.sub(lambda m: replacements[m.group(0)], template)
 
 
 def _stderr_tail(stderr: str, limit: int = 800) -> str:
@@ -40,7 +71,7 @@ def _stderr_tail(stderr: str, limit: int = 800) -> str:
     return text if len(text) <= limit else "..." + text[-limit:]
 
 
-def _normalize_severity(value: str, default: str = "Info") -> str:
+def normalize_severity(value: str, default: str = "Info") -> str:
     """Map free-form severity text onto the canonical vocabulary, falling back to ``default``."""
     v = (value or "").strip().lower()
     if v in ("high", "critical"):

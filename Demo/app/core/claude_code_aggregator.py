@@ -21,7 +21,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.aggregation_prompt import AGGREGATION_PROMPT
-from app.core.claude_code_cli import ClaudeCodeCLI, VALID_SEVERITIES, _normalize_severity
+from app.core.claude_code_cli import (
+    ClaudeCodeCLI,
+    VALID_SEVERITIES,
+    json_block,
+    normalize_severity,
+    render_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,28 +107,39 @@ class ClaudeCodeAggregator(ClaudeCodeCLI):
         task_title: str,
         task_description: str,
     ) -> str:
-        """Fill the template placeholders (see aggregation_prompt.py for the token list)."""
-        blocks = []
-        for i, finding in enumerate(findings, start=1):
-            file_paths = list(finding.get("file_paths") or [])
-            files = ", ".join(str(p) for p in file_paths) or "(none listed)"
-            blocks.append(
-                f"### Finding {i}\n"
-                f"Title: {finding.get('title', '')}\n"
-                f"Severity (as claimed): {finding.get('severity', 'unknown')}\n"
-                f"Referenced files: {files}\n"
-                f"Description:\n{finding.get('description', '')}"
-            )
+        """
+        Fill the template placeholders (see aggregation_prompt.py for the token list).
+
+        The task metadata and every finding are attacker-influenced, so they are never spliced into
+        the prompt as raw prose: they are injected only as JSON-serialized values via
+        :func:`json_block` (which escapes quotes, backslashes and newlines, confining each value to
+        a single physical line) and substituted in a single regex pass via :func:`render_template`
+        (so an injected placeholder token inside a value is not re-expanded). See the detector's
+        ``render_prompt`` for the same hardening on the classification side.
+        """
+        task_json = json_block(
+            {
+                "title": task_title or "(no title)",
+                "description": task_description or "(no description)",
+            }
+        )
+        findings_json = json_block(
+            [
+                {
+                    "title": finding.get("title", ""),
+                    "claimed_severity": finding.get("severity", "unknown"),
+                    "referenced_files": [str(p) for p in (finding.get("file_paths") or [])],
+                    "description": finding.get("description", ""),
+                }
+                for finding in findings
+            ]
+        )
         replacements = {
-            "{{TASK_TITLE}}": task_title or "(no title)",
-            "{{TASK_DESCRIPTION}}": task_description or "(no description)",
-            "{{FINDINGS}}": "\n\n".join(blocks),
+            "{{TASK_JSON}}": task_json,
+            "{{FINDINGS_JSON}}": findings_json,
             "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
         }
-        rendered = AGGREGATION_PROMPT
-        for token, value in replacements.items():
-            rendered = rendered.replace(token, value)
-        return rendered
+        return render_template(AGGREGATION_PROMPT, replacements)
 
     def _parse(
         self,
@@ -150,7 +167,7 @@ class ClaudeCodeAggregator(ClaudeCodeCLI):
         if not title or not description:
             return None
 
-        severity = _normalize_severity(str(data.get("severity", "")), default_severity)
+        severity = normalize_severity(str(data.get("severity", "")), default_severity)
         file_paths = self._union_file_paths(data.get("file_paths"), findings)
         return AggregatedFinding(
             title=title,
