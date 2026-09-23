@@ -24,7 +24,7 @@
 
 - Remaining `PENDING` findings undergo evaluation driven by **Claude Code** (Anthropic's
   `claude` CLI), run as a read-only subprocess **inside the task's repository checkout**
-  (`--permission-mode plan`). Rather than being handed a concatenated blob of source, the
+  (`--permission-mode acceptEdits`). Rather than being handed a concatenated blob of source, the
   agent explores the real files itself to verify each claim.
 - The evaluation uses a single **fixed prompt** (`app/core/evaluation_prompt.py`) and returns,
   per finding, a verdict:
@@ -210,7 +210,7 @@ The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
-- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-sonnet-4-20250514)
+- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-4-8)
 - `CLAUDE_CMD`: Claude Code CLI binary name/path (default: claude)
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
 - `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
