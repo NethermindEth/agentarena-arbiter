@@ -28,8 +28,6 @@ class MockHTTPHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/repo/") and self.headers.get("X-API-Key") == "test_key":
             # Serve a real ZIP containing selected files so the app can extract and read them
-            # Extract task_id from the path (e.g., /repo/TEST123 -> TEST123)
-            task_id = self.path.split("/repo/")[1]
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
                 # Create a proper repository structure with a root directory

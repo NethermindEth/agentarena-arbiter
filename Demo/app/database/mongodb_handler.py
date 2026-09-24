@@ -36,7 +36,7 @@ class MongoDBHandler:
         
         self.connection_string = connection_string or config.mongodb_url or default_mongo_url
         self.findings_db_name = "security_findings"
-        self.agent_arena_db_name = "agent_arena"
+        self.agent_arena_db_name = config.mongodb_name
         self.metadata_collection = "metadata"
     
     async def connect(self):
