@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from tests.conftest import mock_mongodb
-from app.core.claude_model import FindingEvaluation
+from app.core.evaluation import FindingEvaluation
 from app.models.finding_db import Severity
 from app.core.gemini_model import DuplicateFinding
 from app.core.evaluation import FindingEvaluator

@@ -7,9 +7,8 @@ from unittest.mock import AsyncMock, patch
 from datetime import datetime, timezone
 from bson import ObjectId
 
-from app.core.evaluation import FindingEvaluator
+from app.core.evaluation import FindingEvaluator, FindingEvaluation
 from app.core.deduplication import FindingDeduplication
-from app.core.claude_model import FindingEvaluation
 from app.core.gemini_model import DuplicateFinding, DeduplicationResult
 from app.models.finding_db import FindingDB, Status, Severity
 

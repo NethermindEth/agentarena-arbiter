@@ -1,20 +1,28 @@
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from datetime import datetime, timezone
+
+from pydantic import BaseModel, Field
 
 from app.models.finding_input import Severity
 from app.types import TaskCache
 from app.core.gemini_model import DuplicateFinding
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
-from app.core.claude_model import (
-    EvaluationResult,
-    create_structured_evaluation_model,
-    evaluate_findings_structured,
-    FindingEvaluation
-)
+from app.core.claude_code_detector import ClaudeCodeDetector, Verdict, POSITIVE_LABEL
+from app.core.claude_code_aggregator import ClaudeCodeAggregator
+from app.core.evaluation_prompt import EVALUATION_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+class FindingEvaluation(BaseModel):
+    """Single finding evaluation result (the verdict applied to the database)."""
+    finding_id: str = Field(description="ID of the evaluated finding")
+    is_valid: bool = Field(description="Whether the finding represents a valid security issue")
+    severity: str = Field(description="Severity level: High, Medium, Low, or Info")
+    comment: str = Field(description="Brief explanation of the evaluation")
 
 class FindingEvaluator:
     """
@@ -26,24 +34,16 @@ class FindingEvaluator:
     def __init__(self, mongodb_client=None, batch_size: int = 10):
         """
         Initialize the finding evaluator.
-        
+
         Args:
             mongodb_client: MongoDB client instance (uses global instance if None)
-            batch_size: Maximum number of findings to evaluate in a single batch
+            batch_size: Maximum number of individual findings to group per evaluation pass
         """
         self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
-        self.evaluation_model = self._setup_structured_evaluation_model()
+        self.detector = ClaudeCodeDetector()
+        self.aggregator = ClaudeCodeAggregator()
         self.batch_size = batch_size
-    
-    def _setup_structured_evaluation_model(self) -> any:
-        """
-        Setup structured output model for batch finding evaluation.
-        
-        Returns:
-            Claude model configured with structured output for evaluation
-        """
-        return create_structured_evaluation_model()
-    
+
     def _normalize_severity(self, severity_text: str) -> Severity:
         """
         Normalize severity text to Severity enum.
@@ -134,28 +134,131 @@ class FindingEvaluator:
     
     async def evaluate_findings_batch(self, findings_batch: List[FindingDB], task_cache: TaskCache, related_findings: bool = False) -> List[FindingEvaluation]:
         """
-        Evaluate a batch of findings using structured output.
-        
+        Evaluate a batch of findings by driving the Claude Code CLI over the repository checkout.
+
+        The detector runs one autonomous, read-only Claude Code pass *per distinct issue*:
+        - When ``related_findings`` is True the batch is a group of duplicates describing the
+          same vulnerability. The group is first *merged* into a single consolidated finding
+          (see :meth:`_aggregate`) so its unioned context is judged as a whole; that single
+          verdict (validity + severity) is then propagated to every member.
+        - Otherwise each finding is judged independently on its own merits.
+
         Args:
-            findings_batch: List of findings to evaluate (should be related to same vulnerability)
-            related_findings: Whether the findings are related to each other
-            task_cache: Task context containing smart contract files and documentation
-            
+            findings_batch: List of findings to evaluate
+            task_cache: Task context (checkout path, audit scope, docs/Q&A)
+            related_findings: Whether the findings are duplicates of the same underlying issue
+
         Returns:
-            List of evaluation results
+            List of evaluation results, one per finding in the batch
         """
         if not findings_batch:
             return []
-        
-        eval_result: EvaluationResult = await evaluate_findings_structured(self.evaluation_model, findings_batch, task_cache, related_findings)
-        evaluation_results: List[FindingEvaluation] = eval_result.results
-        
-        # Ensure we have results for all findings in the batch
-        if len(evaluation_results) != len(findings_batch):
-            logger.warning(f"Evaluation returned {len(evaluation_results)} results for {len(findings_batch)} findings")
-        
-        return evaluation_results
-    
+
+        if related_findings:
+            # Duplicates share one verdict: merge the group into a single consolidated finding,
+            # judge that, and propagate the verdict to every member.
+            verdict = await self._classify(await self._aggregate(findings_batch, task_cache), task_cache)
+            return [self._to_evaluation(finding, verdict) for finding in findings_batch]
+
+        results: List[FindingEvaluation] = []
+        for finding in findings_batch:
+            verdict = await self._classify(finding, task_cache)
+            results.append(self._to_evaluation(finding, verdict))
+        return results
+
+    async def _aggregate(self, findings_batch: List[FindingDB], task_cache: TaskCache) -> FindingDB:
+        """
+        Merge a group of duplicate findings into a single consolidated finding to classify.
+
+        The findings are already known to be duplicates of the same underlying issue, so rather
+        than judging one representative and discarding the others' context, we ask the
+        aggregation service to fold the group into one digest finding: the shared root cause with
+        the distinct consequences/assets each report surfaced unioned together. The returned
+        object is a synthetic :class:`FindingDB` (a copy of the representative with merged
+        title/description/severity/file_paths) — only those fields are read by :meth:`_classify`.
+
+        A single-member group needs no merge, and a failed/unparseable merge falls back to the
+        representative finding, so classification always has a finding to judge.
+        """
+
+        representative = findings_batch[0]
+        if len(findings_batch) == 1:
+            return representative
+
+        payload = [
+            {
+                "title": finding.title,
+                "description": finding.description,
+                "severity": self._severity_str(finding.severity),
+                "file_paths": list(finding.file_paths or []),
+            }
+            for finding in findings_batch
+        ]
+
+        merged = await self.aggregator.aggregate(
+            findings=payload,
+            task_title=task_cache.title or "",
+            task_description=task_cache.description or "",
+            repo_path=task_cache.repoPath,
+            default_severity=self._severity_str(representative.severity),
+        )
+        if merged is None:
+            logger.warning(
+                "Aggregation failed for a group of %d duplicates; falling back to the representative finding.",
+                len(findings_batch),
+            )
+            return representative
+
+        return representative.model_copy(update={
+            "title": merged.title,
+            "description": merged.description,
+            "severity": self._normalize_severity(merged.severity),
+            "file_paths": merged.file_paths,
+        })
+
+    async def _classify(self, finding: FindingDB, task_cache: TaskCache) -> Verdict:
+        """Run the Claude Code detector for a single finding against the task's checkout."""
+        repo_path = task_cache.repoPath
+        default_severity = self._severity_str(finding.severity)
+        if not repo_path or not Path(repo_path).is_dir():
+            logger.error(
+                "No repository checkout available for finding '%s' (repoPath=%s); abstaining.",
+                finding.title, repo_path,
+            )
+            return Verdict(
+                label="disapproved",
+                severity=default_severity,
+                confidence=0.0,
+                rationale="repository checkout unavailable (abstained)",
+            )
+
+        return await self.detector.classify(
+            EVALUATION_PROMPT,
+            finding_title=finding.title,
+            finding_description=finding.description,
+            finding_severity=default_severity,
+            finding_file_paths=list(finding.file_paths or []),
+            task_title=task_cache.title or "",
+            task_description=task_cache.description or "",
+            repo_path=Path(repo_path),
+            in_scope_files=list(task_cache.selectedFiles or []),
+            in_scope_docs=list(task_cache.selectedDocs or [])
+        )
+
+    def _to_evaluation(self, finding: FindingDB, verdict: Verdict) -> FindingEvaluation:
+        """Map a detector :class:`Verdict` onto the DB-facing :class:`FindingEvaluation`."""
+        return FindingEvaluation(
+            finding_id=finding.str_id,
+            is_valid=(verdict.label == POSITIVE_LABEL),
+            severity=verdict.severity,
+            comment=verdict.rationale,
+        )
+
+    @staticmethod
+    def _severity_str(severity: Any) -> str:
+        """Coerce a Severity enum / string into its plain string value."""
+        return severity.value if isinstance(severity, Severity) else str(severity)
+
     async def apply_evaluation_results(self, task_id: str, evaluation_results: List[FindingEvaluation]) -> Dict[str, Any]:
         """
         Apply evaluation results to findings in the database.
