@@ -285,17 +285,27 @@ class MongoDBHandler:
         Returns:
             Agent ID if agent is found and valid
         """
+
+        agents_collection = self.agent_arena_db["agents"]
+        agent = await agents_collection.find_one({"api_key": api_key, "status": "active"})
+
+        if not agent:
+            raise ValueError(f"Agent with API key {api_key} not found")
+
+        user_id = agent.get("owner_user_id")
+        if not user_id:
+            # Why? Because there might be standalone agents, with no users.
+            # These are system agents. And it's OK.
+            return str(agent.get("_id"))
+
         users_collection = self.agent_arena_db["users"]
-        user = await users_collection.find_one({"api_key": api_key})
-        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
-            raise ValueError(f"User with API key {api_key} not found")
-        
+            raise ValueError(f"Owner user not found for the agent with API key {api_key}")
         if user.get("role") not in ["AgentBuilder", "Admin"] or user.get("status") != "active":
-            raise ValueError(f"Invalid role or status for user with API key {api_key}")
-        
-        # The agent ID is the user ID for now
-        return str(user.get("_id"))
+            raise ValueError(f"Invalid role or status for owner of the agent with API key {api_key}")
+
+        return str(agent.get("_id"))
 
     async def get_approved_tasks(self) -> List[Task]:
         """
