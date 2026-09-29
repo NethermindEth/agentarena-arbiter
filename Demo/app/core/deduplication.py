@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class FindingDeduplication:
     """
-    Handles deduplication of findings using Gemini 2.5 Pro.
+    Handles deduplication of findings using Gemini.
     Processes all findings in a single prompt to identify duplicates.
     """
     
@@ -32,7 +32,7 @@ class FindingDeduplication:
     
     async def deduplicate_findings(self, findings: List[FindingDB], task_cache: TaskCache) -> Dict[str, Any]:
         """
-        Deduplicate findings using Gemini 2.5 Pro with structured output.
+        Deduplicate findings using Gemini with structured output.
         
         Args:
             findings: List of findings to deduplicate

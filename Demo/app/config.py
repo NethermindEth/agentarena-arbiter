@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
@@ -14,15 +16,16 @@ class Settings(BaseSettings):
     # Claude configuration for evaluation
     claude_api_key: str = Field(..., description="Claude API key")
     claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
-    claude_temperature: float = Field(0.0, description="Claude temperature setting")
-    claude_max_tokens: int = Field(20000, description="Claude max tokens")
+    claude_max_tokens: int = Field(60000, description="Claude max tokens")
+    claude_temperature: Optional[float] = Field(None, description="Optional Claude temperature; leave unset for thinking models (e.g. claude-opus-4-7)")
     
     # Gemini configuration for deduplication
     gemini_api_key: str = Field(..., description="Gemini API key")
-    gemini_model: str = Field("gemini-2.5-pro", description="Gemini model name")
-    gemini_temperature: float = Field(0.0, description="Gemini temperature setting")
-    gemini_max_tokens: int = Field(20000, description="Gemini max tokens")
-    
+    gemini_model: str = Field("gemini-3.5-flash", description="Gemini model name")
+    gemini_max_tokens: int = Field(65536, description="Gemini max output tokens (model cap for gemini-3.5-flash)")
+    gemini_thinking_level: Optional[str] = Field(None, description="Optional Gemini thinking level (low/medium/high); only used for thinking models (e.g. gemini-3.5-flash)")
+    gemini_temperature: Optional[float] = Field(None, description="Optional Gemini temperature; ignored for thinking models (e.g. gemini-3.5-flash)")
+
     debug: bool = Field(False, description="Debug mode flag")
     log_level: str = Field("INFO", description="Logging level")
 

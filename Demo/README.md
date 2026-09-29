@@ -199,13 +199,14 @@ The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
-- `CLAUDE_MODEL`: Model version to use (default: claude-3-7-sonnet-20250219)
-- `CLAUDE_TEMPERATURE`: Temperature for Claude AI model (0.0-1.0, default: 0.0)
-- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 20000)
+- `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
+- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
+- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (e.g. `claude-opus-4-7`).
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
-- `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
-- `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
-- `GEMINI_MAX_TOKENS`: Maximum tokens for Gemini AI model (default: 20000)
+- `GEMINI_MODEL`: Gemini model version to use (default: `gemini-3.5-flash`)
+- `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
+- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`). Used only for thinking models (e.g. `gemini-3.5-flash`); ignored with a warning for other Gemini models.
+- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (e.g. `gemini-3.5-flash`).
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
