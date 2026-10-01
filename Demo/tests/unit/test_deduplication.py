@@ -2,11 +2,12 @@
 Unit tests for deduplication logic.
 """
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from tests.conftest import mock_mongodb
 from app.core.gemini_model import DeduplicationResult, DuplicateFinding
 from app.core.deduplication import FindingDeduplication
+from app.models.finding_db import Status
 
 class TestFindingDeduplication:
     """Test FindingDeduplication class."""
@@ -82,3 +83,86 @@ class TestFindingDeduplication:
             assert dup_rel.duplicateOf == sample_findings[0].str_id
 
             mock_mongodb.update_finding.assert_called()
+
+
+class TestDetermineFindingStatus:
+    """Status assignment must be deterministic and credit each agent once per group."""
+
+    @pytest.fixture
+    def deduplicator(self):
+        return FindingDeduplication(mongodb_client=mock_mongodb)
+
+    @staticmethod
+    def _finding(str_id: str, agent_id: str) -> Mock:
+        f = Mock()
+        f.str_id = str_id
+        f.agent_id = agent_id
+        f.status = Status.PENDING
+        return f
+
+    def test_duplicate_from_same_agent_as_original_is_already_reported(self, deduplicator):
+        # Alice reports the same issue three times: one original + two duplicates.
+        o = self._finding("o", "alice")
+        d1 = self._finding("d1", "alice")
+        d2 = self._finding("d2", "alice")
+        finding_map = {"o": o, "d1": d1, "d2": d2}
+        original_to_duplicates = {"o": ["d1", "d2"]}
+        duplicate_to_original = {"d1": "o", "d2": "o"}
+
+        assert (
+            deduplicator.determine_finding_status(o, original_to_duplicates, duplicate_to_original, finding_map)
+            == Status.BEST_VALID
+        )
+        # Alice is already credited through the original, so both duplicates are already reported.
+        assert (
+            deduplicator.determine_finding_status(d1, original_to_duplicates, duplicate_to_original, finding_map)
+            == Status.ALREADY_REPORTED
+        )
+        assert (
+            deduplicator.determine_finding_status(d2, original_to_duplicates, duplicate_to_original, finding_map)
+            == Status.ALREADY_REPORTED
+        )
+
+    def test_duplicate_from_different_agent_is_similar_valid(self, deduplicator):
+        o = self._finding("o", "alice")
+        d = self._finding("d", "bob")
+        finding_map = {"o": o, "d": d}
+        assert (
+            deduplicator.determine_finding_status(d, {"o": ["d"]}, {"d": "o"}, finding_map)
+            == Status.SIMILAR_VALID
+        )
+
+    def test_repeated_duplicate_from_same_agent_is_credited_once(self, deduplicator):
+        # Original by alice; carol reports the same issue twice.
+        o = self._finding("o", "alice")
+        c1 = self._finding("c1", "carol")
+        c2 = self._finding("c2", "carol")
+        finding_map = {"o": o, "c1": c1, "c2": c2}
+        original_to_duplicates = {"o": ["c1", "c2"]}
+        duplicate_to_original = {"c1": "o", "c2": "o"}
+        s1 = deduplicator.determine_finding_status(c1, original_to_duplicates, duplicate_to_original, finding_map)
+        s2 = deduplicator.determine_finding_status(c2, original_to_duplicates, duplicate_to_original, finding_map)
+        assert {s1, s2} == {Status.SIMILAR_VALID, Status.ALREADY_REPORTED}
+
+    def test_status_is_order_independent(self, deduplicator):
+        o = self._finding("o", "alice")
+        d1 = self._finding("d1", "alice")
+        d2 = self._finding("d2", "alice")
+        finding_map = {"o": o, "d1": d1, "d2": d2}
+        original_to_duplicates = {"o": ["d1", "d2"]}
+        duplicate_to_original = {"d1": "o", "d2": "o"}
+
+        def statuses(order):
+            return [
+                deduplicator.determine_finding_status(
+                    f, original_to_duplicates, duplicate_to_original, finding_map
+                )
+                for f in order
+            ]
+
+        forward = statuses([o, d1, d2])
+        reverse = statuses([d2, d1, o])
+        assert sorted(s.value for s in forward) == sorted(s.value for s in reverse)
+        assert forward.count(Status.BEST_VALID) == 1
+        assert forward.count(Status.ALREADY_REPORTED) == 2
+        assert forward.count(Status.SIMILAR_VALID) == 0

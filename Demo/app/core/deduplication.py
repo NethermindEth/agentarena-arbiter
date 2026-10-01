@@ -154,33 +154,33 @@ class FindingDeduplication:
             return Status.BEST_VALID
         
         if is_duplicate:
-            # This finding is a duplicate of another finding
+            # This finding is a duplicate of another finding. Each agent is
+            # credited at most once per duplicate group, so we choose between
+            # SIMILAR_VALID (this agent's first credited finding in the group)
+            # and ALREADY_REPORTED (this agent already has a credited finding
+            # here). The decision is derived from ids only, so it does not depend
+            # on the order in which findings are processed. The previous version
+            # inspected the mutated ``status`` of other findings, which made the
+            # result order-dependent: the same agent reporting a finding twice
+            # could be credited once or twice depending on iteration order.
             original_id = duplicate_to_original[finding.str_id]
-            
-            # Get all findings in this duplicate group (original + all its duplicates)
-            findings_in_group = []
-            
-            # Add the original finding
-            if original_id in finding_map:
-                findings_in_group.append(finding_map[original_id])
-            
-            # Add all duplicates in this group
-            duplicate_ids = original_to_duplicates.get(original_id, [])
-            for dup_id in duplicate_ids:
-                if dup_id != finding.str_id and dup_id in finding_map:
-                    findings_in_group.append(finding_map[dup_id])
-            
-            # Check if any finding in the group is from the same agent as current finding
-            same_agent_findings = [f for f in findings_in_group if f.agent_id == finding.agent_id]
-            
-            if same_agent_findings:
-                if any(f.status == Status.BEST_VALID or f.status == Status.SIMILAR_VALID for f in same_agent_findings):
-                    return Status.ALREADY_REPORTED
-                else:
-                    return Status.SIMILAR_VALID
-            else:
-                # Different agents reported all other findings in the group
+            original = finding_map.get(original_id)
+
+            # The original is BEST_VALID and credits its agent, so a duplicate
+            # from that same agent has already been reported.
+            if original is not None and original.agent_id == finding.agent_id:
+                return Status.ALREADY_REPORTED
+
+            # Otherwise credit only the first duplicate from this agent (by a
+            # stable id order); any further ones are already reported.
+            same_agent_duplicate_ids = sorted(
+                dup_id
+                for dup_id in original_to_duplicates.get(original_id, [])
+                if dup_id in finding_map and finding_map[dup_id].agent_id == finding.agent_id
+            )
+            if same_agent_duplicate_ids and same_agent_duplicate_ids[0] == finding.str_id:
                 return Status.SIMILAR_VALID
+            return Status.ALREADY_REPORTED
         
         # Fallback (theoretically impossible to reach here) - treat as unique for safety
         logger.error("Finding status determination fell through to fallback")
