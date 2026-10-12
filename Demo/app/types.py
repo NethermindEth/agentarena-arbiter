@@ -24,6 +24,7 @@ class Task(BaseModel):
     additionalDocs: Optional[str] = None
     qaResponses: Optional[List[QAPair]] = []
     commitSha: Optional[str] = None
+    language: Optional[str] = None
 
 class TaskCache(BaseModel):
     """Model representing the task cache structure."""
@@ -35,3 +36,4 @@ class TaskCache(BaseModel):
     additionalLinks: Optional[List[str]] = []
     additionalDocs: Optional[str] = None
     qaResponses: Optional[List[QAPair]] = []
+    language: Optional[str] = None

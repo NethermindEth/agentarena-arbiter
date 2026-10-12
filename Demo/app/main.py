@@ -337,7 +337,8 @@ async def fetch_task_data(task_id: str) -> Optional[TaskCache]:
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,
             additionalDocs=task.additionalDocs,
-            qaResponses=task.qaResponses
+            qaResponses=task.qaResponses,
+            language=task.language
         )
         
         # Cache the result for TESTTASK
