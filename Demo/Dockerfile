@@ -1,5 +1,8 @@
+# Base image: Debian 13 (trixie). Bookworm (Debian 12) carries many unfixed CVEs.
+ARG PYTHON_IMAGE=python:3.13.16-slim-trixie
+
 # Build stage
-FROM python:3.13.5-slim AS builder
+FROM ${PYTHON_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -9,26 +12,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /build
 
-# Apply security patches
-RUN apt-get update && \
-    apt-get install -y --only-upgrade \
-    gpgv \
-    libc-bin \
-    libc6 \
-    libgnutls30 \
-    libpam-modules \
-    libpam-modules-bin \
-    libpam-runtime \
-    libpam0g \
-    libsqlite3-0 \
-    libssl3 \
-    openssl \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y pip
 
 # Strip unnecessary files from site-packages
 RUN find /usr/local/lib/python3.13/site-packages -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
@@ -41,7 +29,7 @@ RUN find /usr/local/lib/python3.13/site-packages -type d -name "tests" -exec rm 
     \) -delete
 
 # Runtime stage
-FROM python:3.13.5-slim
+FROM ${PYTHON_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -51,24 +39,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# Apply security patches + install runtime dependencies
+# Apply all available Debian security updates and drop pip (not needed at runtime)
 RUN apt-get update && \
-    apt-get install -y --only-upgrade \
-    gpgv \
-    libc-bin \
-    libc6 \
-    libgnutls30 \
-    libpam-modules \
-    libpam-modules-bin \
-    libpam-runtime \
-    libpam0g \
-    libsqlite3-0 \
-    libssl3 \
-    openssl \
-    perl-base && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log && \
+    python -m pip uninstall -y pip && \
+    rm -f /usr/local/bin/pip*
 
 # Create non-root user
 RUN useradd --create-home --uid 10001 appuser
