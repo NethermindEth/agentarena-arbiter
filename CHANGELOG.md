@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.1.0...v1.2.0) (2026-09-29)
+
+
+### Features
+
+* handle user/agent split ([f5027df](https://github.com/NethermindEth/agentarena-arbiter/commit/f5027dfbafe97ed41952de0290066eedb0bed564))
+
 ## [1.1.0](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.0.1...v1.1.0) (2026-05-25)
 
 
