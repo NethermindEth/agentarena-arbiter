@@ -12,9 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     # The integration tests write to a real MongoDB; the service is reachable at localhost.
+    # 7.0 is the version agentarena-app tests against; the 8.x images refuse to start on the
+    # runner's kernel (SERVER-121912).
     services:
       mongo:
-        image: mongo:8
+        image: mongo:7.0
         ports:
           - 27017:27017
         options: >-
