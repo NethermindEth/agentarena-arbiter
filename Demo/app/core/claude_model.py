@@ -1,31 +1,36 @@
 import logging
-from typing import Optional, Dict, Any, List
-from app.models.finding_db import FindingDB
-from app.config import config
+from typing import Any
+
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
-from app.types import TaskCache
-from app.core.prompt_utils import build_context_section
 
+from app.config import config
+from app.core.prompt_utils import build_context_section
+from app.models.finding_db import FindingDB
+from app.types import TaskCache
 
 logger = logging.getLogger(__name__)
 
 
 class FindingEvaluation(BaseModel):
     """Single finding evaluation result."""
+
     finding_id: str = Field(description="ID/title of the evaluated finding")
     is_valid: bool = Field(description="Whether the finding represents a valid security issue")
     severity: str = Field(description="Severity level: High, Medium, Low, or Info")
     comment: str = Field(description="Brief explanation of the evaluation (2-3 sentences maximum)")
 
+
 class EvaluationResult(BaseModel):
     """Evaluation result."""
-    results: List[FindingEvaluation] = Field(description="List of evaluation results")
 
-def get_model_config() -> Dict[str, Any]:
+    results: list[FindingEvaluation] = Field(description="List of evaluation results")
+
+
+def get_model_config() -> dict[str, Any]:
     """
     Get Claude model configuration from environment variables.
-    
+
     Returns:
         Dictionary with model configuration parameters
     """
@@ -33,17 +38,19 @@ def get_model_config() -> Dict[str, Any]:
         "model_name": config.claude_model,
         "max_tokens": config.claude_max_tokens,
         "temperature": config.claude_temperature,
-        "anthropic_api_key": config.claude_api_key
+        "anthropic_api_key": config.claude_api_key,
     }
+
 
 # Model name prefixes that do not accept a temperature override (extended thinking).
 _TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7",)
 
+
 def create_claude_model(
-    model_name: Optional[str] = None,
-    max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None,
-    api_key: Optional[str] = None
+    model_name: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    api_key: str | None = None,
 ) -> ChatAnthropic:
     """
     Create a Claude model instance with specified parameters or from environment variables.
@@ -78,7 +85,7 @@ def create_claude_model(
     if not claude_config["anthropic_api_key"]:
         raise ValueError("CLAUDE_API_KEY environment variable is not set")
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": claude_config["model_name"],
         "max_tokens": claude_config["max_tokens"],
         "anthropic_api_key": claude_config["anthropic_api_key"],
@@ -97,44 +104,44 @@ def create_claude_model(
 
     return ChatAnthropic(**kwargs)
 
-def create_structured_evaluation_model(
-    model: Optional[ChatAnthropic] = None
-) -> any:
+
+def create_structured_evaluation_model(model: ChatAnthropic | None = None) -> Any:
     """
     Create a Claude model with structured output for finding evaluation.
-    
+
     Args:
         model: Optional ChatAnthropic model (created from environment if not provided)
-        
+
     Returns:
         Configured model with structured output for batch evaluation
     """
     # Create model if not provided
     if not model:
         model = create_claude_model()
-    
+
     # Create structured output model
     return model.with_structured_output(EvaluationResult)
 
+
 async def evaluate_findings_structured(
-    model_with_structured_output: any,
-    findings_batch: List[FindingDB],
+    model_with_structured_output: Any,
+    findings_batch: list[FindingDB],
     task_cache: TaskCache,
-    related_findings: bool = False
+    related_findings: bool = False,
 ) -> EvaluationResult:
     """
     Evaluate a batch of findings using structured output with different prompts based on batch type.
-    
+
     Args:
         model_with_structured_output: Model configured with structured output
         findings_batch: List of findings to evaluate
         task_cache: Task context containing smart contract files and documentation
         related_findings: Whether the findings are related to each other
-        
+
     Returns:
         Structured evaluation result with guaranteed format
     """
-    
+
     if related_findings:
         prompt = _get_related_findings_prompt(findings_batch, task_cache)
     else:
@@ -142,12 +149,13 @@ async def evaluate_findings_structured(
 
     return await model_with_structured_output.ainvoke(prompt)
 
-def _get_related_findings_prompt(findings_batch: List[FindingDB], task_cache: TaskCache) -> str:
+
+def _get_related_findings_prompt(findings_batch: list[FindingDB], task_cache: TaskCache) -> str:
     """Generate prompt for evaluating related/duplicate findings as a group."""
-    
+
     # Build context section
     context_section = build_context_section(task_cache)
-    
+
     return f"""
 You are a smart contract security expert tasked with evaluating a batch of RELATED findings that refer to the same underlying vulnerability.
 
@@ -222,12 +230,13 @@ Return a JSON object with the following structure:
 Provide one evaluation per finding, but ensure all evaluations are consistent since they refer to the same underlying issue. Base your analysis on the actual smart contract context provided.
 """
 
-def _get_individual_findings_prompt(findings_batch: List[FindingDB], task_cache: TaskCache) -> str:
+
+def _get_individual_findings_prompt(findings_batch: list[FindingDB], task_cache: TaskCache) -> str:
     """Generate prompt for evaluating individual unrelated findings separately."""
-    
+
     # Build context section
     context_section = build_context_section(task_cache)
-    
+
     return f"""
 You are a smart contract security expert tasked with evaluating a batch of INDIVIDUAL findings that describe different vulnerabilities within the same protocol or smart contract.
 

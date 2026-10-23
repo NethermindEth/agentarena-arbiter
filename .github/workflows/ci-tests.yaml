@@ -1,0 +1,173 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - staging
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    # The integration tests write to a real MongoDB; the service is reachable at localhost.
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Settings are read at import time and the required ones have no defaults; the values
+    # are placeholders, since every outbound call is mocked except the MongoDB service.
+    env:
+      MONGODB_URL: mongodb://localhost:27017
+      CLAUDE_API_KEY: test
+      GEMINI_API_KEY: test
+      BACKEND_API_KEY: test
+      BACKEND_FINDINGS_ENDPOINT: http://backend.test/api/insert-findings
+      BACKEND_SUBMISSIONS_ENDPOINT: http://backend.test/api/submissions
+      BACKEND_TASK_REPOSITORY_ENDPOINT: http://backend.test/api/task-repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.4"
+          # The patch version of the builder image's base tag in Demo/Dockerfile; the
+          # two move together.
+          python-version: "3.14.8"
+          enable-cache: true
+          cache-dependency-glob: Demo/uv.lock
+
+      # The uv version is written in each setup-uv step here and in Demo/Dockerfile; the
+      # Python patch version in each setup-uv step and in the Dockerfile's python base
+      # tag. A bump that misses one leaves CI and the image, or two jobs, on different
+      # versions, and nothing else fails. The other Python sites take care of themselves:
+      # uv sync fails when requires-python disagrees with the interpreter, Pyright reads
+      # the version from the venv, and the Dockerfile's site-packages and stdlib paths are
+      # compared with the base tag below.
+      - name: Check the uv and Python pins agree
+        run: |
+          workflow=.github/workflows/ci-tests.yaml
+          dockerfile=Demo/Dockerfile
+          setup_steps=$(grep -cE '^ +(- )?uses: astral-sh/setup-uv@' "$workflow" || true)
+          # Fails unless every setup-uv step sets the input $1, quoted or bare,
+          # to $2, the value pinned in $3. Only lines inside a setup-uv step count: a
+          # step ends at the first line indented less than its uses: line.
+          require_setup_uv_input() {
+            values=$(awk -v key="$1" '
+              function indent(s) { match(s, /^ */); return RLENGTH }
+              /^ +(- )?uses: astral-sh\/setup-uv@/ { in_step = 1; step_indent = indent($0); next }
+              in_step && NF && $1 != "#" && indent($0) < step_indent { in_step = 0 }
+              in_step && $0 ~ "^ +" key ": " { sub(/^ +[^:]+: */, ""); print }
+            ' "$workflow" | sed -E "s/^\"([^\"]*)\".*/\1/; s/^'([^']*)'.*/\1/; s/ *#.*//")
+            if [ "$(echo "$values" | grep -c .)" -ne "$setup_steps" ] || [ "$(echo "$values" | sort -u)" != "$2" ]; then
+              echo "Expected $1 $2, pinned in $3, in each of the $setup_steps setup-uv steps; found:"
+              echo "$values"
+              exit 1
+            fi
+          }
+          pins=$(grep -hoE 'astral-sh/uv:[^ ,]+' "$dockerfile" | sort -u)
+          pinned='^astral-sh/uv:[0-9.]+@sha256:[0-9a-f]{64}$'
+          if [ "$(echo "$pins" | wc -l)" -ne 1 ] || ! echo "$pins" | grep -qE "$pinned"; then
+            echo "Expected one uv image in $dockerfile, pinned by tag and digest; found:"
+            echo "$pins"
+            exit 1
+          fi
+          tag=${pins#*uv:}
+          tag=${tag%@*}
+          require_setup_uv_input version "$tag" "$dockerfile"
+          # The python base is the only FROM python: stage; its tag carries the patch version.
+          image_python=$(grep -iE '^FROM python:' "$dockerfile" | sed -nE 's/^FROM python:([0-9]+\.[0-9]+\.[0-9]+)[-@ ].*/\1/p' | sort -u)
+          if [ "$(echo "$image_python" | grep -c .)" -ne 1 ] || [ "$(grep -ciE '^FROM python:' "$dockerfile")" -ne 1 ]; then
+            echo "Expected one 'FROM python:X.Y.Z-...' stage in $dockerfile; found:"
+            grep -iE '^FROM python:' "$dockerfile"
+            exit 1
+          fi
+          require_setup_uv_input python-version "$image_python" "$dockerfile"
+          minor=${image_python%.*}
+          # The site-packages and stdlib paths name the interpreter's minor version;
+          # comments are skipped so an older version may be mentioned in prose.
+          paths=$(grep -vE '^\s*#' "$dockerfile" | grep -oE 'python3\.[0-9]+' | sort -u)
+          if [ "$paths" != "python$minor" ]; then
+            echo "Expected every python3.X path in $dockerfile to be python$minor; found:"
+            echo "$paths"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        working-directory: Demo
+        run: uv sync --locked
+
+      # The coverage floor is enforced here rather than in pyproject.toml so that a
+      # local run of a test subset does not fail on coverage it never measured.
+      - name: Run pytest
+        working-directory: Demo
+        run: uv run --locked pytest -v --cov=app --cov-fail-under=60
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.4"
+          # Same pin as tests and the Dockerfile's python base tag.
+          python-version: "3.14.8"
+          enable-cache: true
+          cache-dependency-glob: Demo/uv.lock
+
+      - name: Install dependencies
+        working-directory: Demo
+        run: uv sync --locked
+
+      - name: Ruff
+        working-directory: Demo
+        run: uv run --locked ruff check .
+
+      - name: Ruff format
+        working-directory: Demo
+        run: uv run --locked ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.4"
+          # Same pin as tests and the Dockerfile's python base tag.
+          python-version: "3.14.8"
+          enable-cache: true
+          cache-dependency-glob: Demo/uv.lock
+
+      - name: Install dependencies
+        working-directory: Demo
+        run: uv sync --locked
+
+      - name: Pyright
+        working-directory: Demo
+        run: uv run --locked pyright

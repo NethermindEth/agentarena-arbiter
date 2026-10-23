@@ -1,0 +1,333 @@
+name: Code Review
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review (used for manual runs from a feature branch).'
+        required: true
+        type: number
+
+# The workflow fires on every PR comment and review event, so the PR number is
+# resolved once here; the concurrency group cannot read env and keeps its own copy.
+env:
+  PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.pr_number }}
+
+# One review run per PR at a time; a new @review-pls cancels the previous round.
+# Other comment events also start a run (all jobs skip) and must not cancel it.
+concurrency:
+  group: code-review-${{ github.event.issue.number || github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.comment.body || github.event.review.body || '', '@review-pls') }}
+
+jobs:
+  # ── 1st pass: Claude ────────────────────────────────────────────────────────
+  claude-review:
+    # Only an owner, member or collaborator starts a round: the repository is public, and
+    # both passes spend API credits and post comments on whatever the pull request holds.
+    # The Codex job below runs only when this job ran, so the gate covers both passes.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association) && (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@review-pls')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@review-pls')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@review-pls'))
+      ))
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      # The action fetches the PR branch over git with this credential, then replaces it in
+      # .git/config with its own App token before Claude runs. Re-check on a checkout v6 bump:
+      # the action does not clear the includeIf credentials file that v6 writes.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1.0.254
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ env.PR_NUMBER }}
+
+            You are the first of two sequential reviewers on this AgentArena PR.
+            This repository is the AgentArena arbiter: a FastAPI service that collects
+            audit agents' findings during a task's window, deduplicates them with
+            Gemini and judges them with Claude at the deadline, and writes the verdicts
+            back to the AgentArena backend. It holds the shared backend API key and the
+            LLM keys, reads the backend's MongoDB directly, and its verdicts decide who
+            is paid. Treat it as a platform with funds on the line.
+
+            Scope (hard constraint):
+            - Focus on features or components that are somehow related to the
+              changed lines. The relationship can be direct or perhaps in other
+              files (anywhere in the platform), but always somehow related to the
+              changed lines.
+            - Do NOT audit or suggest changes to unrelated code that merely
+              appears in the same file, unless it is related to the lines being
+              affected.
+            - Do NOT propose broad refactors, new abstractions, or rewrites of
+              code that the PR does not touch.
+
+            Before commenting, read the PR description and every prior
+            comment/review. If the author has already addressed, answered, or
+            explicitly declined a concern, do not raise it again.
+
+            Stopping rule: if an earlier review round on this PR already exists,
+            report only findings introduced by commits pushed since that round,
+            or findings that the earlier round missed. Do not re-raise, rephrase,
+            or expand on findings already posted, and do not suggest changes to
+            code that was itself written to address an earlier finding unless it
+            is incorrect. If nothing new qualifies, post a one-line comment saying
+            the round found nothing new.
+
+            If the PR references a linked issue (e.g. "Closes #N", "Fixes #N"),
+            fetch that issue and verify the fix actually addresses it before
+            classifying any related finding as CORRECTNESS.
+
+            Classify each finding under one of the following:
+
+            1. CRITICAL — Security. Anything that could compromise the `X-API-Key`
+               checks (agent keys resolved from the backend's users, the shared
+               `BACKEND_API_KEY` on the admin endpoints), the submission window check,
+               the direct reads of the backend's MongoDB, prompt injection from
+               agent-supplied findings into the Gemini or Claude prompts, injection
+               (NoSQL/command), unsafe archive extraction, or SSRF through
+               backend-supplied URLs. Also includes:
+               - Broken access control: any path where one agent can read, replace or
+                 judge another agent's findings, or an unauthenticated caller can
+                 trigger processing or write-back.
+               - Secrets in logs: API keys or prompts with secrets written to the log.
+               - Hardcoded secrets: scan the diff for any committed API keys,
+                 private keys, tokens, passwords, or credentials.
+            2. SERIOUS — Performance / DoS / saturation. Unbounded queries, missing
+               pagination or rate limits, N+1 patterns, blocking I/O on the async
+               event loop, unbounded MongoDB queries, unbounded archive
+               extraction, missing timeouts on LLM or backend calls.
+            3. CORRECTNESS. The diff does not implement what the PR description or a
+               later author reply says it should, or it breaks a stated invariant or
+               contract between layers. Also check correctness between the
+               implemented code and internal documentation (e.g. comments related to
+               that code).
+            4. STABILITY. Missing/flaky dependencies, broken imports, unhandled
+               error paths that will reliably fail in real use, incorrect env-var
+               wiring (recall: MONGODB_URL names the cluster shared with the backend,
+               the BACKEND_*_ENDPOINT values and BACKEND_API_KEY must match the
+               backend, and CLAUDE_MODEL and GEMINI_MODEL must exist), or a finding
+               shape that no longer matches the backend's FindingInput.
+            5. MINOR — Code & style. Readability, naming, the 100-column wrap for
+               .py (the lint check runs Ruff for the lint rules),
+               file-size/separation-of-concerns per CLAUDE.md,
+               missing docstrings on public functions. Group these; keep each comment
+               short.
+
+            Delivery:
+            - Post a single top-level PR comment (an issue comment, NOT a
+              GitHub PR Review) containing all your findings. Each finding must
+              be described in depth — enough context for a maintainer to act on
+              it without re-deriving the issue — and include explicit file path
+              + line number references in the prose (e.g.
+              `Demo/app/main.py:42`).
+            - Group findings by category, tagged with the category label above.
+            - Do NOT post inline comments tied to specific diff lines.
+            - Do NOT submit a GitHub PR Review (no approve / request-changes /
+              review summary). The single PR comment IS the delivery.
+
+          claude_args: --max-turns 50 --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api:*),Bash(grep:*),Bash(find:*)"
+
+  # ── 2nd pass: Codex ─────────────────────────────────────────────────────────
+  # Runs after Claude regardless of whether Claude succeeded or failed.
+  # Skipped only when claude-review was skipped (no @review-pls trigger).
+  codex-review:
+    needs: claude-review
+    if: ${{ !cancelled() && needs.claude-review.result != 'skipped' }}
+
+    # Pinned to 24.04: on the 26.04 image that ubuntu-latest now resolves to, codex-action's
+    # drop-sudo cannot restrict /run/dbus/system_bus_socket and fails (openai/codex-action#188).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      # persist-credentials is off because Codex later runs shell in this checkout on
+      # untrusted PR content; a stored token would be readable from .git/config.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          persist-credentials: false
+
+      # codex-action rejects the sandbox network-access override under drop-sudo, so
+      # Codex runs offline and reads PR context from .review/ instead of calling gh.
+      - name: Collect PR context
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .review
+          gh pr view "$PR_NUMBER" --json number,title,body,baseRefName,headRefName,headRefOid,url,closingIssuesReferences > .review/pr.json
+          gh pr diff "$PR_NUMBER" > .review/pr.diff
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | "### \(.user.login) at \(.created_at)\n\n\(.body)\n"' > .review/comments.md
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '.[] | select(.body != "") | "### review by \(.user.login) (\(.state)) at \(.submitted_at)\n\n\(.body)\n"' >> .review/comments.md
+          : > .review/issues.md
+          for issue_number in $(jq -r '.closingIssuesReferences[].number' .review/pr.json); do
+            gh issue view "$issue_number" --json number,title,body \
+              --jq '"## #\(.number) \(.title)\n\n\(.body)\n"' >> .review/issues.md \
+              || printf '## #%s\n\nNot fetched; treat the linked-issue claim as unverified.\n\n' "$issue_number" >> .review/issues.md
+          done
+
+      - name: Run Codex Code Review
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          safety-strategy: drop-sudo
+          output-file: .review/codex-review.md
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ env.PR_NUMBER }}
+
+            You are the second and final reviewer on this AgentArena PR.
+            Claude has run a first-pass review and may have posted a single PR
+            comment with its findings (or nothing at all if its job failed).
+            This repository is the AgentArena arbiter: a FastAPI service that collects
+            audit agents' findings during a task's window, deduplicates them with
+            Gemini and judges them with Claude at the deadline, and writes the verdicts
+            back to the AgentArena backend. It holds the shared backend API key and the
+            LLM keys, reads the backend's MongoDB directly, and its verdicts decide who
+            is paid. Treat it as a platform with funds on the line.
+
+            You have no network access. Everything you need is on disk:
+            - `.review/pr.json`: PR title, description and refs.
+            - `.review/pr.diff`: the full diff against the base branch.
+            - `.review/comments.md`: every prior PR comment and review, including
+              Claude's first pass and the author's replies.
+            - `.review/issues.md`: linked issues, when the PR references any.
+            - The repository is checked out at the PR head; use it to verify
+              cross-file impact.
+
+            Scope (hard constraint):
+            - Focus on features or components that are somehow related to the
+              changed lines. The relationship can be direct or perhaps in other
+              files (anywhere in the platform), but always somehow related to the
+              changed lines.
+            - Do NOT audit or suggest changes to unrelated code that merely
+              appears in the same file, unless it is related to the lines being
+              affected.
+            - Do NOT propose broad refactors, new abstractions, or rewrites of
+              code that the PR does not touch.
+
+            Workflow:
+            1. Read the PR description, diff, and any existing PR comments from
+               Claude.
+            2. Form your own findings on the diff. Classify them per the rubric
+               below; do not gate this on Claude's output.
+            3. If Claude posted a review comment, briefly note in your own
+               comment which of Claude's findings you agree or disagree with
+               (one sentence each, referencing them by file:line). If Claude
+               posted nothing (its job may have failed), skip that and just
+               deliver your own review.
+
+            Stopping rule: if an earlier review round on this PR already exists,
+            report only findings introduced by commits pushed since that round,
+            or findings that the earlier round missed. Do not re-raise, rephrase,
+            or expand on findings already posted, and do not suggest changes to
+            code that was itself written to address an earlier finding unless it
+            is incorrect. If nothing new qualifies, say so in one line.
+
+            If the PR references a linked issue, verify against `.review/issues.md`
+            that the fix actually addresses it before classifying any related
+            finding as CORRECTNESS.
+
+            Classify each finding under one of the following:
+
+            1. CRITICAL — Security. Anything that could compromise the `X-API-Key`
+               checks (agent keys resolved from the backend's users, the shared
+               `BACKEND_API_KEY` on the admin endpoints), the submission window check,
+               the direct reads of the backend's MongoDB, prompt injection from
+               agent-supplied findings into the Gemini or Claude prompts, injection
+               (NoSQL/command), unsafe archive extraction, or SSRF through
+               backend-supplied URLs. Also includes:
+               - Broken access control: any path where one agent can read, replace or
+                 judge another agent's findings, or an unauthenticated caller can
+                 trigger processing or write-back.
+               - Secrets in logs: API keys or prompts with secrets written to the log.
+               - Hardcoded secrets: scan the diff for any committed API keys,
+                 private keys, tokens, passwords, or credentials.
+            2. SERIOUS — Performance / DoS / saturation. Unbounded queries, missing
+               pagination or rate limits, N+1 patterns, blocking I/O on the async
+               event loop, unbounded MongoDB queries, unbounded archive
+               extraction, missing timeouts on LLM or backend calls.
+            3. CORRECTNESS. The diff does not implement what the PR description or a
+               later author reply says it should, or it breaks a stated invariant or
+               contract between layers. Also check correctness between the
+               implemented code and internal documentation (e.g. comments related to
+               that code).
+            4. STABILITY. Missing/flaky dependencies, broken imports, unhandled
+               error paths that will reliably fail in real use, incorrect env-var
+               wiring (recall: MONGODB_URL names the cluster shared with the backend,
+               the BACKEND_*_ENDPOINT values and BACKEND_API_KEY must match the
+               backend, and CLAUDE_MODEL and GEMINI_MODEL must exist), or a finding
+               shape that no longer matches the backend's FindingInput.
+            5. MINOR — Code & style. Readability, naming, the 100-column wrap for
+               .py (the lint check runs Ruff for the lint rules),
+               file-size/separation-of-concerns per CLAUDE.md,
+               missing docstrings on public functions. Group these; keep each comment
+               short.
+
+            Delivery:
+            - Your final message IS the PR comment; a following step posts it
+              verbatim as a single top-level comment. Write it as GitHub Markdown.
+            - Include all your findings and any agree/disagree notes on Claude's
+              findings. Each new finding must be described in depth, with explicit
+              file path + line number references in the prose (e.g.
+              `Demo/app/main.py:42`), grouped by category and tagged with the
+              category label above.
+            - Do not attempt to post comments, reviews, or anything else yourself.
+            - Always produce a final message, even when Claude posted nothing.
+
+      # Also runs when context collection failed, so a missing second pass is visible
+      # on the PR instead of only in the run log. Not on cancellation: a superseded
+      # round must not leave a comment behind.
+      - name: Post Codex review as a PR comment
+        if: ${{ !cancelled() && (steps.collect.outcome == 'failure' || steps.codex.outcome != 'skipped') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -s .review/codex-review.md ]; then
+            # GitHub rejects comment bodies over 65,536 characters.
+            if [ "$(wc -c < .review/codex-review.md)" -gt 60000 ]; then
+              head -c 60000 .review/codex-review.md > .review/codex-review.trimmed.md
+              printf '\n\n_Review truncated at 60,000 characters; see the workflow run for the full output._\n' >> .review/codex-review.trimmed.md
+              mv .review/codex-review.trimmed.md .review/codex-review.md
+            fi
+            gh pr comment "$PR_NUMBER" --body-file .review/codex-review.md
+          else
+            gh pr comment "$PR_NUMBER" --body "Codex review pass produced no output; see the workflow run for details."
+          fi

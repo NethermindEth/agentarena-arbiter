@@ -35,9 +35,9 @@
 ## Setup and Installation
 
 ### Prerequisites
-- Python 3.13+
+- [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
 - MongoDB
-- Claude API key
+- Claude and Gemini API keys
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
@@ -49,31 +49,48 @@
 
 #### Local Setup
 ```bash
-# Navigate to Demo directory and activate virtual environment
+# Navigate to Demo directory and install the locked dependencies into Demo/.venv
 cd Demo
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-python -m pip install -r requirements.txt
+uv sync
 
 # Start Application
-python -m app.main
+uv run python -m app.main
 ```
+
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`; after
+changing a dependency, run `uv lock` and commit both files. The test tools, Ruff
+and Pyright are in the `dev` group, which `uv sync` installs as well.
+
+## Development checks
+
+Ruff and Pyright run in CI (`.github/workflows/ci-tests.yaml`, jobs `lint` and
+`typecheck`) with the versions locked in `uv.lock`; `pyproject.toml` holds their
+settings. Run them locally the same way:
+
+```bash
+uv run ruff check .          # lint; add --fix to apply the safe fixes
+uv run ruff format .         # format at 100 columns
+uv run pyright               # type check (downloads Node on first run if absent)
+```
+
+`.pre-commit-config.yaml` at the repository root runs the same three on commit;
+its header has the one-time setup.
 
 ## Running Tests
 
 ### 🚀 Running Tests
 
 ```bash
-# Install test dependencies
-pip install -r requirements-test.txt
-
-# Run all tests
-python -m pytest
+# Run all tests (uv sync already installed the test tools)
+uv run pytest
 
 # Run with coverage report
-python -m pytest tests/ --cov=app --cov-report=term-missing
+uv run pytest --cov=app --cov-report=term-missing
 ```
+
+Settings are read at import time, so the required variables must be set, with
+placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
+them. The integration tests write to the MongoDB at `MONGODB_URL`.
 
 ### Prerequisites for Testing
 - MongoDB connection (local or Atlas)
@@ -88,7 +105,7 @@ Test individual components in isolation with mocks:
 ```python
 @pytest.mark.asyncio
 async def test_process_findings_no_duplicates(deduplicator, sample_findings):
-    with patch('app.core.deduplication.find_duplicates_structured') as mock:
+    with patch("app.core.deduplication.find_duplicates_structured") as mock:
         mock.return_value = []
         result = await deduplicator.process_findings("task", sample_findings, cache)
         assert result["summary"]["duplicates_found"] == 0
@@ -107,16 +124,16 @@ def test_api_endpoint_success(client):
 
 ```bash
 # Run specific test
-python -m pytest tests/unit/test_models.py::TestFindingDB::test_creation
+uv run pytest tests/unit/test_models.py::TestFindingDB::test_creation
 
 # Stop on first failure  
-python -m pytest -x
+uv run pytest -x
 
 # Drop to debugger on failure
-python -m pytest --pdb
+uv run pytest --pdb
 
 # Show full traceback
-python -m pytest --tb=long
+uv run pytest --tb=long
 ```
 
 #### Docker Setup
@@ -175,6 +192,7 @@ class Finding(BaseModel):
     description: str
     severity: Severity  # Enum: HIGH, MEDIUM, LOW, or INFO
     file_paths: List[str]
+
 
 class FindingInput(BaseModel):
     task_id: str
