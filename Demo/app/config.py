@@ -51,4 +51,4 @@ class Settings(BaseSettings):
 load_dotenv(override=True)
 
 # Create a global settings instance
-config = Settings()  # pyright: ignore[reportCallIssue]  pydantic-settings reads the fields from the environment
+config = Settings()  # pyright: ignore[reportCallIssue]  the fields come from the environment

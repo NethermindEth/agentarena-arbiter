@@ -71,7 +71,7 @@ jobs:
             values=$(awk -v key="$1" '
               function indent(s) { match(s, /^ */); return RLENGTH }
               /^ +(- )?uses: astral-sh\/setup-uv@/ { in_step = 1; step_indent = indent($0); next }
-              in_step && NF && $1 != "#" && indent($0) < step_indent { in_step = 0 }
+              in_step && NF && $1 != "#" && (indent($0) < step_indent || (indent($0) == step_indent && $1 == "-")) { in_step = 0 }
               in_step && $0 ~ "^ +" key ": " { sub(/^ +[^:]+: */, ""); print }
             ' "$workflow" | sed -E "s/^\"([^\"]*)\".*/\1/; s/^'([^']*)'.*/\1/; s/ *#.*//")
             if [ "$(echo "$values" | grep -c .)" -ne "$setup_steps" ] || [ "$(echo "$values" | sort -u)" != "$2" ]; then

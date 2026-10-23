@@ -19,7 +19,8 @@
 # bump goes by hand, with every pin the check in ci-tests.yaml compares, or that
 # check fails. The distroless base has no semver tag, so every PR for it is a
 # digest refresh. The uv binary arrives through COPY --from, which Dependabot does
-# not read, so it is bumped by hand as well.
+# not read, so it is bumped by hand as well, and so is the MongoDB service image the
+# tests job runs, which no Dependabot ecosystem reads from a workflow file.
 version: 2
 updates:
   - package-ecosystem: uv

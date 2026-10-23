@@ -26,7 +26,7 @@ from app.core.evaluation import FindingEvaluator
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import FindingInput
-from app.task_utils import download_repository, read_and_concatenate_files
+from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
 from app.types import TaskCache
 
 # Initialize logger
@@ -336,7 +336,7 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
             logger.info(f"Repository for task {task_id} stored at {repo_storage_path}")
         finally:
             # Always clean up temp directory
-            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+            await asyncio.to_thread(remove_tree, temp_dir)
 
         # Concatenate contract files
         concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)

@@ -54,7 +54,8 @@ RUN site=/opt/venv/lib/python3.14/site-packages && \
 RUN cd /usr/local/lib/python3.14 && \
     rm -f lib-dynload/_curses*.so lib-dynload/readline*.so lib-dynload/_dbm*.so \
           lib-dynload/_gdbm*.so lib-dynload/_sqlite3*.so lib-dynload/_uuid*.so \
-          lib-dynload/_tkinter*.so lib-dynload/_test*.so lib-dynload/_xxtestfuzz*.so \
+          lib-dynload/_tkinter*.so lib-dynload/_test*.so lib-dynload/_ctypes_test*.so \
+          lib-dynload/_xxtestfuzz*.so \
           lib-dynload/xx*.so && \
     rm -rf ensurepip idlelib tkinter turtledemo test
 

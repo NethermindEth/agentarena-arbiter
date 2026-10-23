@@ -12,6 +12,11 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
+def remove_tree(path: str) -> None:
+    """Remove a temporary tree, logging a file that resists instead of raising."""
+    shutil.rmtree(path, onexc=lambda _fn, p, exc: logger.warning(f"Could not remove {p}: {exc}"))
+
+
 def _extract_archive(content: bytes, temp_dir: str) -> str:
     """Write the downloaded ZIP into temp_dir, extract it and return the repository root."""
     zip_path = os.path.join(temp_dir, "repo.zip")
@@ -69,7 +74,7 @@ async def download_repository(repo_url: str, config: Settings) -> tuple[str | No
 
             # Clean up temp directory on failure
             if temp_dir:
-                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+                await asyncio.to_thread(remove_tree, temp_dir)
 
             # Wait before retry with exponential backoff
             wait_time = 2**attempt

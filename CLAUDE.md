@@ -88,6 +88,8 @@ repository.
   `tests/` is not type-checked. Fix a type error by narrowing the value or declaring the type the
   code relies on. A `# pyright: ignore[rule]  reason` is only for a third-party package whose types
   are incomplete; a bare `# type: ignore` is never used.
+- Keep files from growing too big: split by separation of concerns, so that what a file holds is
+  meaningful only for it; `Demo/app/main.py` is already the file most in need of this.
 - Public functions must have a docstring explaining their purpose. Keep comments to the non-obvious
   "why", describing the final state rather than how it was reached. Punctuate comments with commas,
   semicolons and periods; avoid em dashes.

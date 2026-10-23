@@ -81,19 +81,14 @@ Smart contract auditing on AgentArena involves multiple AI agents submitting a v
    cd ArbiterAgent
    ```
 
-2. **Create and Activate a Virtual Environment (Optional)**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate   # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install Dependencies**:
+2. **Install Dependencies**:
    ```bash
    cd Demo && uv sync
    ```
-   > **Note**: the service and its locked dependencies live in `Demo/`; see `Demo/README.md` for the setup, the tests and the checks.
+   > **Note**: the service and its locked dependencies live in `Demo/`, and `uv sync` creates
+   > `Demo/.venv`; see `Demo/README.md` for the setup, the tests and the checks.
 
-4. **Environment Variables** (if applicable):
+3. **Environment Variables** (if applicable):
    - `OPENAI_API_KEY`: If using OpenAI-based severity assignment.
 
 ---
@@ -203,8 +198,8 @@ You can customize ArbiterAgent’s behavior by modifying `config.py` (or an equi
   `push-jfrog-prod.yaml` builds the image without pushing, then release-please
   opens or updates the release pull request from the commit titles
   (`release-please-config.json`, `.release-please-manifest.json`). Merging it
-  tags `vX.Y.Z`, writes the version into `Demo/app/main.py`, creates the GitHub
-  release and pushes the prod image as `vX.Y.Z` and `latest`
+  (the release pull request also bumps the version in `Demo/app/main.py`) tags
+  `vX.Y.Z`, creates the GitHub release and pushes the prod image as `vX.Y.Z` and `latest`
   (`build-and-push-prod.yaml`). The cluster tracks `latest` by digest, so that
   push is the production deployment.
 * An AI review of a pull request runs on demand: a comment containing

@@ -93,9 +93,8 @@ placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
 them. The integration tests write to the MongoDB at `MONGODB_URL`.
 
 ### Prerequisites for Testing
-- MongoDB connection (local or Atlas)
-- Gemini API key (for deduplication tests)
-- Claude API key (for evaluation tests)
+- A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
+  backend calls are mocked
 
 ### 🧪 Writing Tests
 
