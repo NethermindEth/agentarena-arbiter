@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.2.0...v1.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **deps:** bump OS and Python dependencies ([005f765](https://github.com/NethermindEth/agentarena-arbiter/commit/005f76578540611e43c9650d44739277a6ba3b8b))
+* **deps:** bump OS and Python dependencies ([3fd8967](https://github.com/NethermindEth/agentarena-arbiter/commit/3fd896737a8ad422b8901a6b981e5a62e52b2701))
+
 ## [1.2.0](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.1.0...v1.2.0) (2026-09-29)
 
 
