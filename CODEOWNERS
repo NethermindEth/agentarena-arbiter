@@ -1,4 +1,4 @@
 # Code owners are requested for review automatically on every pull request. GitHub applies
 # the last pattern that matches a path, so every owner of the whole tree sits on one line.
 # The rulesets do not require a code-owner review, so this only picks reviewers.
-* @luismasuelli @wurdum @alextianyushi @adityaNth
+* @luismasuelli @wurdum @alextianyushi @adityaNth @andrewtookay
