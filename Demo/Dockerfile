@@ -40,12 +40,7 @@ RUN /usr/local/bin/python -m pip uninstall -y pip
 RUN site=/opt/venv/lib/python3.14/site-packages && \
     find "$site" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
     find "$site" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find "$site" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete && \
-    find "$site" -type f \( \
-        -name "*.dist-info/RECORD" -o \
-        -name "*.dist-info/top_level.txt" -o \
-        -name "*.dist-info/entry_points.txt" \
-    \) -delete
+    find "$site" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # Drop the stdlib extension modules whose system libraries the runtime image does not ship
 # (ncurses, readline, gdbm, Berkeley DB, SQLite, libuuid, Tk), plus CPython's test modules and

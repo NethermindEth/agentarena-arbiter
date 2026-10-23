@@ -151,7 +151,10 @@ jobs:
             - Do NOT submit a GitHub PR Review (no approve / request-changes /
               review summary). The single PR comment IS the delivery.
 
-          claude_args: --max-turns 50 --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api:*),Bash(grep:*),Bash(find:*)"
+          # Read-only gh subcommands plus the built-in file tools: a `gh api` or `find` prefix
+          # rule would also admit writes with the App token or a shell, and the pull request
+          # content Claude reads is untrusted on this public repository.
+          claude_args: --max-turns 50 --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh issue view:*),Read,Grep,Glob"
 
   # ── 2nd pass: Codex ─────────────────────────────────────────────────────────
   # Runs after Claude regardless of whether Claude succeeded or failed.
@@ -186,7 +189,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p .review
+          # The checkout is the pull request's tree: a committed .review must not survive.
+          rm -rf .review && mkdir .review
           gh pr view "$PR_NUMBER" --json number,title,body,baseRefName,headRefName,headRefOid,url,closingIssuesReferences > .review/pr.json
           gh pr diff "$PR_NUMBER" > .review/pr.diff
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
