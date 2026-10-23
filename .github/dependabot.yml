@@ -1,0 +1,70 @@
+# Dependabot opens every pull request against staging, the default branch, so
+# updates follow the normal staging -> main promotion.
+#
+# Major versions are ignored for version updates: they need deliberate migration
+# work, and bundled into the weekly group they make the whole PR unmergeable.
+# Majors are upgraded by hand when planned.
+#
+# The ignore does not hold back security updates; Dependabot skips update-types
+# ignores for them. A security fix that exists only in a new major still opens a
+# PR. The security group covers patch and minor fixes only, so such a major
+# arrives as its own PR and does not block the grouped one.
+#
+# Do not add target-branch to an entry: the entry then stops applying to
+# security updates, which always open against the default branch.
+#
+# The docker entry moves the FROM bases of Demo/Dockerfile, pinned by tag and
+# digest. Debian fixes arrive as re-pushes of the same tag, so most of these PRs
+# change only the digest. Python version updates are ignored altogether: a Python
+# bump goes by hand, with every pin the check in ci-tests.yaml compares, or that
+# check fails. The distroless base has no semver tag, so every PR for it is a
+# digest refresh. The uv binary arrives through COPY --from, which Dependabot does
+# not read, so it is bumped by hand as well, and so is the MongoDB service image the
+# tests job runs, which no Dependabot ecosystem reads from a workflow file.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /Demo
+    schedule:
+      interval: weekly
+    # Version updates cover direct dependencies only by default. uv.lock also
+    # freezes every indirect package, so without this they would move only on
+    # a security advisory.
+    allow:
+      - dependency-type: all
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # A Ruff minor release can stabilise a selected rule and fail lint, and a
+      # Pyright release can report new errors and fail typecheck; their own group
+      # keeps that from blocking every other update. Dependabot puts a dependency
+      # in the first group that matches it.
+      uv-lint-tools:
+        patterns: ["ruff", "pyright"]
+      uv-all:
+        patterns: ["*"]
+      uv-security:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: docker
+    directory: /Demo
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: python
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      github-actions-all:
+        patterns: ["*"]

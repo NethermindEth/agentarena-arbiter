@@ -6,37 +6,41 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push supersedes a pull request's run. Runs on main queue instead: a cancelled
+# main run could already have tagged the release, and the next run would then find it
+# released and skip the image push.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   id-token: write
   attestations: write
-  contents: write
   artifact-metadata: write
-  pull-requests: write
+  contents: read
 
 jobs:
+  # Builds without pushing: prod images are only pushed from a release tag, below.
   build-arbiter-prod:
-    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@v2.0.0
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@3aa8d07182110ddd5c7f3bad9d746a1db58f6f8c # v5.1.1
     with:
       repo_name: kyoto-oci-local-prod
       image_name: agentarena-arbiter
       platforms: "linux/amd64"
-      ignore_trivy: true
       context: ./Demo
       dockerfile_path: ./Demo/Dockerfile
-      docker_build_args: |
-        GITHUB_SHA=${{ github.sha }}
+      cache_from: type=gha,scope=agentarena-arbiter
+      cache_to: type=gha,scope=agentarena-arbiter,mode=max
       push: false
 
   release:
     needs: [build-arbiter-prod]
     if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    # Only this job writes to the repository; the build job above runs pull request code.
+    permissions:
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/release-please.yaml
-    with:
-      release_type: simple
 
   build-and-push-prod:
     needs: [release]

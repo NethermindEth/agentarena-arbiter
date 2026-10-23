@@ -1,37 +1,43 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
-from typing import Optional, List
+
+from pydantic import BaseModel
+
 
 class QAPair(BaseModel):
     """Model for a question-answer pair."""
+
     question: str
     answer: str
 
+
 class Task(BaseModel):
     """Response model for task creation."""
+
     taskId: str
     projectRepo: str
     title: str
     description: str
-    bounty: Optional[str] = None
+    bounty: str | None = None
     status: str
     startTime: str
     deadline: str
     selectedBranch: str
-    selectedFiles: List[str]
-    selectedDocs: Optional[List[str]] = []
-    additionalLinks: Optional[List[str]] = []
-    additionalDocs: Optional[str] = None
-    qaResponses: Optional[List[QAPair]] = []
-    commitSha: Optional[str] = None
+    selectedFiles: list[str]
+    selectedDocs: list[str] | None = []
+    additionalLinks: list[str] | None = []
+    additionalDocs: str | None = None
+    qaResponses: list[QAPair] | None = []
+    commitSha: str | None = None
+
 
 class TaskCache(BaseModel):
     """Model representing the task cache structure."""
-    taskId: Optional[str] = None
-    startTime: Optional[datetime] = None
-    deadline: Optional[datetime] = None
-    selectedFilesContent: Optional[str] = None
-    selectedDocsContent: Optional[str] = None
-    additionalLinks: Optional[List[str]] = []
-    additionalDocs: Optional[str] = None
-    qaResponses: Optional[List[QAPair]] = []
+
+    taskId: str | None = None
+    startTime: datetime | None = None
+    deadline: datetime | None = None
+    selectedFilesContent: str | None = None
+    selectedDocsContent: str | None = None
+    additionalLinks: list[str] | None = []
+    additionalDocs: str | None = None
+    qaResponses: list[QAPair] | None = []

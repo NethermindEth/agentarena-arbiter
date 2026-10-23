@@ -2,11 +2,6 @@ name: Release Please
 
 on:
   workflow_call:
-    inputs:
-      release_type:
-        description: "Release type (simple, node, python, etc.)"
-        required: true
-        type: string
     outputs:
       releases_created:
         description: "Whether a release was created"
@@ -28,10 +23,16 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      release_name: ${{ steps.release.outputs.release_name }}
+      # The action names its outputs after the release object's keys; the title is `name`.
+      release_name: ${{ steps.release.outputs.name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      # Release type, changelog sections and version-bumped files come from
+      # release-please-config.json; the current version is tracked in
+      # .release-please-manifest.json.
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: ${{ inputs.release_type }}
+          # The action releases from the repository default branch unless told
+          # otherwise; main stays the release branch whichever branch is default.
+          target-branch: main
