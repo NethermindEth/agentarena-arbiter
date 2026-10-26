@@ -1,27 +1,32 @@
 import logging
-from typing import Optional, Dict, Any, List
-from app.types import TaskCache
-from app.models.finding_db import FindingDB
-from app.config import config
+from typing import Any
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
-from app.core.prompt_utils import build_context_section
 
+from app.config import config
+from app.core.prompt_utils import build_context_section
+from app.models.finding_db import FindingDB
+from app.types import TaskCache
 
 logger = logging.getLogger(__name__)
 
 
 class DuplicateFinding(BaseModel):
     """Single duplicate finding relationship."""
+
     findingId: str = Field(description="ID of the finding that is a duplicate", min_length=1)
     duplicateOf: str = Field(description="ID of the original finding", min_length=1)
     explanation: str = Field(description="Explanation of why the finding is a duplicate")
 
+
 class DeduplicationResult(BaseModel):
     """Result of deduplication analysis."""
-    results: List[DuplicateFinding] = Field(description="List of duplicate relationships")
 
-def get_gemini_config() -> Dict[str, Any]:
+    results: list[DuplicateFinding] = Field(description="List of duplicate relationships")
+
+
+def get_gemini_config() -> dict[str, Any]:
     """
     Get Gemini model configuration from environment variables.
 
@@ -33,18 +38,20 @@ def get_gemini_config() -> Dict[str, Any]:
         "max_output_tokens": config.gemini_max_tokens,
         "temperature": config.gemini_temperature,
         "thinking_level": config.gemini_thinking_level,
-        "google_api_key": config.gemini_api_key
+        "google_api_key": config.gemini_api_key,
     }
+
 
 # Model name prefixes that accept thinking_level (and ignore temperature).
 _THINKING_MODEL_PREFIXES = ("gemini-3.5-flash",)
 
+
 def create_gemini_model(
-    model_name: Optional[str] = None,
-    max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None,
-    thinking_level: Optional[str] = None,
-    api_key: Optional[str] = None
+    model_name: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    thinking_level: str | None = None,
+    api_key: str | None = None,
 ) -> ChatGoogleGenerativeAI:
     """
     Create a Gemini model instance with specified parameters or from environment variables.
@@ -85,7 +92,7 @@ def create_gemini_model(
     if not gemini_config["google_api_key"]:
         raise ValueError("GEMINI_API_KEY environment variable is not set")
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": gemini_config["model"],
         "max_output_tokens": gemini_config["max_output_tokens"],
         "api_key": gemini_config["google_api_key"],
@@ -114,15 +121,14 @@ def create_gemini_model(
 
     return ChatGoogleGenerativeAI(**kwargs)
 
-def create_structured_deduplication_model(
-    model: Optional[ChatGoogleGenerativeAI] = None
-) -> any:
+
+def create_structured_deduplication_model(model: ChatGoogleGenerativeAI | None = None) -> Any:
     """
     Create a Gemini model with structured output for deduplication.
-    
+
     Args:
         model: Optional ChatGoogleGenerativeAI model (created from environment if not provided)
-        
+
     Returns:
         Configured model with structured output for deduplication
     """
@@ -131,27 +137,26 @@ def create_structured_deduplication_model(
 
     return model.with_structured_output(DeduplicationResult, include_raw=True)
 
+
 async def find_duplicates_structured(
-    model_with_structured_output: any,
-    findings: List[FindingDB],
-    task_cache: TaskCache
+    model_with_structured_output: Any, findings: list[FindingDB], task_cache: TaskCache
 ) -> DeduplicationResult:
     """
     Find duplicate findings using structured output to ensure JSON format.
     Uses a comprehensive prompt that combines detailed analysis with structured output.
-    
+
     Args:
         model_with_structured_output: Model configured with structured output
         findings: List of findings to analyze for duplicates
         task_context: Task context containing smart contract files and documentation
-        
+
     Returns:
         Structured deduplication result with guaranteed JSON format
     """
-    
+
     # Build context section
     context_section = build_context_section(task_cache)
-    
+
     prompt = f"""
 You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
@@ -221,7 +226,7 @@ Return a JSON object with the following structure:
 {[finding.dump() for finding in findings]}
 
 Analyze systematically: group similar findings, examine each vulnerability against the smart contract context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
-"""
+"""  # noqa: S608  an LLM prompt, not a SQL query
 
     response = await model_with_structured_output.ainvoke(prompt)
 

@@ -1,6 +1,7 @@
-from typing import List
-from pydantic import BaseModel
 from enum import Enum
+
+from pydantic import BaseModel
+
 
 class Severity(str, Enum):
     HIGH = "High"
@@ -8,14 +9,18 @@ class Severity(str, Enum):
     LOW = "Low"
     INFO = "Info"
 
+
 class Finding(BaseModel):
     """Model representing a single finding"""
+
     title: str
     description: str
     severity: Severity
-    file_paths: List[str]
+    file_paths: list[str]
+
 
 class FindingInput(BaseModel):
     """Model representing an input security finding submission"""
+
     task_id: str
-    findings: List[Finding]
+    findings: list[Finding]

@@ -1,0 +1,85 @@
+[project]
+name = "agentarena-arbiter"
+# Static on purpose: uv.lock records this version, so a release tool that bumps
+# it without running `uv lock` breaks every `uv sync --locked`.
+version = "0.0.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "apscheduler==3.11.3",
+    "fastapi==0.161.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.1",
+    "python-dotenv==1.2.4",
+    "motor==3.7.1",
+    "httpx==0.28.1",
+    "watchfiles==1.3.0",
+    "langchain-anthropic==1.7.6",
+    "langchain-google-genai==4.4.2",
+    "langchain-core==1.7.0",
+]
+
+[dependency-groups]
+# Development tools; the image installs with --no-dev and never sees them.
+dev = [
+    "pyright==1.1.414",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "pytest-mock==3.17.0",
+    "ruff==0.17.1",
+]
+
+[tool.uv]
+# Not a distributable package: `uv sync` installs the dependencies only.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short --strict-markers -ra"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (slower, may need external services)",
+    "slow: Slow tests (may take several seconds)",
+    "external: Tests requiring external services (API keys, databases)",
+]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::PendingDeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "DTZ", "T20", "S", "ARG"]
+ignore = [
+    # Strings, URLs and comments cannot be wrapped mechanically, so line length is not linted.
+    "E501",
+    # The models' `class X(str, Enum)` stay: StrEnum changes what str() and f-strings print.
+    "UP042",
+]
+
+[tool.ruff.lint.isort]
+# The default gives every aliased name a `from` statement of its own.
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI resolves `Depends(...)` per request; the default is a marker, not shared state.
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest asserts with `assert`, fixtures arrive as arguments named for injection, the
+# credentials tests create are fixture data, tests print diagnostics that pytest shows on
+# failure, and they touch temporary files directly on a loop nothing else runs on.
+"tests/**" = ["S101", "S105", "S106", "ARG", "T201", "ASYNC230", "ASYNC240"]
+
+[tool.pyright]
+include = ["."]
+# Tests are not type-checked: their fixtures are injected by name and untyped.
+# An explicit list replaces Pyright's default excludes and its detection of virtualenvs by
+# pyvenv.cfg. The defaults are restated ("**/.*" covers .venv), and a second virtualenv is
+# excluded only under its usual names, venv and env.
+exclude = ["tests", "**/.*", "**/node_modules", "**/__pycache__", "venv", "env"]
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"

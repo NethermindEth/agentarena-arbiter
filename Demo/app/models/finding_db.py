@@ -1,9 +1,12 @@
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
+
 from bson import ObjectId
+from pydantic import ConfigDict, Field
+
 from app.models.finding_input import Finding, Severity
+
 
 class Status(str, Enum):
     PENDING = "pending"
@@ -13,33 +16,35 @@ class Status(str, Enum):
     BEST_VALID = "best_valid"
     DISPUTED = "disputed"
 
+
 class FindingDB(Finding):
     """
     Model representing a processed security finding stored in the database.
     Extends the Finding model with additional system-managed fields.
     """
+
     model_config = ConfigDict(
         arbitrary_types_allowed=True,  # Allow ObjectId type
-        populate_by_name=True,         # Allow both 'id' and '_id' field names
+        populate_by_name=True,  # Allow both 'id' and '_id' field names
     )
-    
+
     # MongoDB document ID
-    id: Optional[ObjectId] = Field(default=None, alias="_id")
-    
+    id: ObjectId | None = Field(default=None, alias="_id")
+
     # Additional required fields
     agent_id: str
-    
+
     # System-added fields
     status: Status = Status.PENDING  # Default status
-    duplicateOf: Optional[str] = None  # ID of the original finding
-    deduplication_comment: Optional[str] = None  # Comment from deduplication
-    evaluated_severity: Optional[Severity] = None  # Severity after evaluation
-    evaluation_comment: Optional[str] = None  # Comment from evaluation
-    
+    duplicateOf: str | None = None  # ID of the original finding
+    deduplication_comment: str | None = None  # Comment from deduplication
+    evaluated_severity: Severity | None = None  # Severity after evaluation
+    evaluation_comment: str | None = None  # Comment from evaluation
+
     # Timestamps
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
     @property
     def str_id(self) -> str:
         """
@@ -47,11 +52,11 @@ class FindingDB(Finding):
         This avoids the need for explicit str(f.id) conversions throughout the codebase.
         """
         return str(self.id)
-    
-    def dump(self) -> Dict[str, Any]:
+
+    def dump(self) -> dict[str, Any]:
         """
         Return a subset of fields for API responses.
-        
+
         Returns:
             Dictionary containing only title, description, severity, file_paths, and duplicateOf
         """
@@ -63,13 +68,13 @@ class FindingDB(Finding):
                 "description": self.description,
                 "severity": self.severity,
                 "file_paths": self.file_paths,
-                "duplicateOf": self.duplicateOf
+                "duplicateOf": self.duplicateOf,
             }
-        
+
         return {
             "id": str(self.id),
             "title": self.title,
             "description": self.description,
             "severity": self.severity,
-            "file_paths": self.file_paths
+            "file_paths": self.file_paths,
         }
