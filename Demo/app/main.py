@@ -207,7 +207,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Security Findings API",
     description="API for managing security findings and deduplication",
-    version="1.2.1",  # x-release-please-version
+    version="1.3.0",  # x-release-please-version
     lifespan=lifespan,
 )
 

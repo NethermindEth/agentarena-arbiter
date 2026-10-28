@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.0](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.2.1...v1.3.0) (2026-10-28)
+
+
+* cut release 1.3.0 ([087615c](https://github.com/NethermindEth/agentarena-arbiter/commit/087615c8169fe9c3b3c372c8d8f02eac1a44b422))
+
 ## [1.2.1](https://github.com/NethermindEth/agentarena-arbiter/compare/v1.2.0...v1.2.1) (2026-10-23)
 
 
