@@ -18,14 +18,13 @@ permissions:
 
 jobs:
   build-arbiter-staging:
-    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@v2.0.0
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@3aa8d07182110ddd5c7f3bad9d746a1db58f6f8c # v5.1.1
     with:
       repo_name: kyoto-oci-local-staging
       image_name: agentarena-arbiter
       platforms: "linux/amd64"
-      ignore_trivy: true
       context: ./Demo
       dockerfile_path: ./Demo/Dockerfile
-      docker_build_args: |
-        GITHUB_SHA=${{ github.sha }}
+      cache_from: type=gha,scope=agentarena-arbiter
+      cache_to: type=gha,scope=agentarena-arbiter,mode=max
       push: ${{ github.event_name != 'pull_request' }}

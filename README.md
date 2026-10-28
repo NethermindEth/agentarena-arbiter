@@ -81,19 +81,14 @@ Smart contract auditing on AgentArena involves multiple AI agents submitting a v
    cd ArbiterAgent
    ```
 
-2. **Create and Activate a Virtual Environment (Optional)**:
+2. **Install Dependencies**:
    ```bash
-   python -m venv venv
-   source venv/bin/activate   # On Windows: venv\Scripts\activate
+   cd Demo && uv sync
    ```
+   > **Note**: the service and its locked dependencies live in `Demo/`, and `uv sync` creates
+   > `Demo/.venv`; see `Demo/README.md` for the setup, the tests and the checks.
 
-3. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   > **Note**: The `requirements.txt` might include libraries such as `Flask`, `requests`, or any AI/ML frameworks you plan to use.
-
-4. **Environment Variables** (if applicable):
+3. **Environment Variables** (if applicable):
    - `OPENAI_API_KEY`: If using OpenAI-based severity assignment.
 
 ---
@@ -179,6 +174,41 @@ You can customize ArbiterAgent’s behavior by modifying `config.py` (or an equi
    - A single AI agent or a small set of specialized agents submit a thorough report.  
    - ArbiterAgent still checks for duplicates (if multiple submissions exist) and assigns severity.  
    - A final JSON report is returned to the project owner.
+
+---
+
+## CI, branches and releases
+
+`staging` is the default and working branch; `main` is the release branch.
+
+* Every pull request to `staging` runs the `tests`, `lint` and `typecheck` jobs
+  (`.github/workflows/ci-tests.yaml`) and builds the image without pushing
+  (`push-jfrog-staging.yaml`), so a Dockerfile break fails the PR. A push to
+  `staging` builds, scans and pushes
+  `nethermind.jfrog.io/kyoto-oci-local-staging/agentarena-arbiter:latest`
+  through the shared `docker-build-push-jfrog` workflow. The JFrog Xray scan
+  gates every push: a Critical vulnerability or a malicious package fails the
+  job before the push. A waiver is an Xray ignore rule scoped to
+  `xray-scan-agentarena-arbiter`, owned by the platform team.
+* `staging` merges by squash with the pull request title as the commit title, so
+  titles are [Conventional Commits](https://www.conventionalcommits.org/):
+  `feat:`, `fix:`, `perf:` and `refactor:` reach the changelog, `chore:`, `ci:`,
+  `docs:`, `style:` and `test:` do not.
+* Promotion is a merge-commit pull request from `staging` to `main`. On `main`,
+  `push-jfrog-prod.yaml` builds the image without pushing, then release-please
+  opens or updates the release pull request from the commit titles
+  (`release-please-config.json`, `.release-please-manifest.json`). Merging it
+  (the release pull request also bumps the version in `Demo/app/main.py`) tags
+  `vX.Y.Z`, creates the GitHub release and pushes the prod image as `vX.Y.Z` and `latest`
+  (`build-and-push-prod.yaml`). The cluster tracks `latest` by digest, so that
+  push is the production deployment.
+* An AI review of a pull request runs on demand: a comment containing
+  `@review-pls` starts `code-review.yaml`, two advisory passes that each post one
+  comment. It needs the `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` repository secrets.
+* Dependabot (`.github/dependabot.yml`) opens weekly grouped pull requests
+  against `staging` for the locked packages, the image bases and the pinned
+  actions. The uv binary and Python are bumped by hand; the pin check in
+  `ci-tests.yaml` fails when the Python pins disagree.
 
 ---
 
