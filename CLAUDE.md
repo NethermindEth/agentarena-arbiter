@@ -28,7 +28,7 @@ pre-commit install       # once per clone, from the repository root; runs the sa
 ```
 
 Settings are read when `app.config` is imported and the required ones have no defaults, so the
-tests need `MONGODB_URL`, the four `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
+tests need `MONGODB_URL`, the five `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
 `CLAUDE_API_KEY` and `GEMINI_API_KEY` set, with placeholders for everything but MongoDB; see the
 `tests` job in `.github/workflows/ci-tests.yaml`. The integration tests write to that MongoDB.
 
@@ -42,7 +42,9 @@ tests need `MONGODB_URL`, the four `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY
 - **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
   batch for validity and severity.
 - **`app/database/mongodb_handler.py`**: Motor access to the arbiter's `security_findings`
-  database and the backend's `agent_arena` database (agents and tasks).
+  database and the backend's `agent_arena` database (agents only).
+- **`app/backend_tasks.py`**: reads task metadata from the backend's `/api/arbiter/approved-tasks`
+  and `/api/arbiter/tasks/{task_id}`; tasks are never read from MongoDB.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
   directions.

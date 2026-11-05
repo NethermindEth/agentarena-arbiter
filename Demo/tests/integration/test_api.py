@@ -33,7 +33,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_fetch_task.return_value = sample_task
         client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
         client.mock_db.create_finding = AsyncMock()
 
@@ -69,7 +69,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_fetch_task.return_value = sample_task
         client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
         client.mock_db.create_finding = AsyncMock()
 
@@ -133,7 +133,7 @@ class TestProcessFindingsEndpoint:
         findings_data = FindingInput(task_id="test-task-123", findings=findings)
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_fetch_task.return_value = sample_task
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -158,7 +158,7 @@ class TestProcessFindingsEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         # Mock task not found
-        client.mock_db.get_task = AsyncMock(return_value=None)
+        client.mock_fetch_task.return_value = None
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -228,7 +228,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=future_task)
+        client.mock_fetch_task.return_value = future_task
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -273,7 +273,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=past_task)
+        client.mock_fetch_task.return_value = past_task
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -303,7 +303,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_fetch_task.return_value = sample_task
         client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
         client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
 
@@ -349,7 +349,7 @@ class TestProcessFindingsEndpoint:
         )
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
-        client.mock_db.get_task = AsyncMock(return_value=sample_task)
+        client.mock_fetch_task.return_value = sample_task
         client.mock_db.delete_agent_findings = AsyncMock(return_value=2)
         client.mock_db.create_finding = AsyncMock()
 

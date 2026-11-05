@@ -20,7 +20,7 @@ from apscheduler.triggers.date import DateTrigger
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.backend_tasks import fetch_approved_tasks
+from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
@@ -293,10 +293,9 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
     """
     task = None
     try:
-        # Fetch task from database
-        task = await mongodb.get_task(task_id)
+        task = await fetch_task(task_id, config)
         if not task:
-            logger.error(f"Task {task_id} not found in database")
+            logger.error(f"Task {task_id} not found in backend")
             return None
 
         selected_files = task.selectedFiles or []
@@ -754,7 +753,7 @@ async def process_findings(
         # 3. Check if we're within the submission timeframe
         task = None
         try:
-            task = await mongodb.get_task(input_data.task_id)
+            task = await fetch_task(input_data.task_id, config)
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {input_data.task_id} not found")
 
@@ -1031,17 +1030,16 @@ async def schedule_task(task_id: str, x_api_key: str = Header(..., alias="X-API-
         if not task_id:
             raise HTTPException(status_code=400, detail="Missing required field: task_id")
 
-        # Fetch task from database
         try:
-            task = await mongodb.get_task(task_id)
+            task = await fetch_task(task_id, config)
         except Exception as e:
             logger.error(f"Error fetching task {task_id}: {str(e)}")
             raise HTTPException(
-                status_code=500, detail=f"Error retrieving task {task_id} from database"
+                status_code=500, detail=f"Error retrieving task {task_id} from backend"
             ) from e
 
         if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found in database")
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found in backend")
 
         # Parse timestamps
         try:

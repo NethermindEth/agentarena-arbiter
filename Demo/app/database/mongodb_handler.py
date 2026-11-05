@@ -13,7 +13,6 @@ from bson import ObjectId
 from app.config import config
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Finding, FindingInput
-from app.types import Task
 
 
 class MongoDBHandler:
@@ -327,24 +326,6 @@ class MongoDBHandler:
             )
 
         return str(agent.get("_id"))
-
-    async def get_task(self, task_id: str) -> Task:
-        """
-        Get a specific task by taskId from agent_arena database.
-
-        Args:
-            task_id: Task identifier
-
-        Returns:
-            Task object
-        """
-        tasks_collection = self.agent_arena_db["tasks"]
-        doc = await tasks_collection.find_one({"taskId": task_id})
-
-        if not doc:
-            raise ValueError(f"Task {task_id} not found")
-
-        return Task.model_validate(doc)
 
 
 # Global MongoDB handler instance

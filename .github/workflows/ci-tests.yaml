@@ -39,6 +39,7 @@ jobs:
       BACKEND_SUBMISSIONS_ENDPOINT: http://backend.test/api/submissions
       BACKEND_TASK_REPOSITORY_ENDPOINT: http://backend.test/api/task-repository
       BACKEND_APPROVED_TASKS_ENDPOINT: http://backend.test/api/arbiter/approved-tasks
+      BACKEND_TASKS_ENDPOINT: http://backend.test/api/arbiter/tasks
 
     steps:
       - name: Checkout repository

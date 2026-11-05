@@ -166,11 +166,15 @@ def client(mock_mongodb):
     from app.main import app
 
     # Mock the database and other dependencies before creating the client
-    with patch("app.main.mongodb", mock_mongodb):
+    with (
+        patch("app.main.mongodb", mock_mongodb),
+        patch("app.main.fetch_task", new_callable=AsyncMock) as mock_fetch_task,
+    ):
         # Create client without triggering lifespan events that need real DB
         client = TestClient(app, base_url="http://testserver")
 
-        # Attach the mock_mongodb to the client so tests can access it if needed
+        # Attach the mocks to the client so tests can configure them
         client.mock_db = mock_mongodb
+        client.mock_fetch_task = mock_fetch_task
 
         yield client

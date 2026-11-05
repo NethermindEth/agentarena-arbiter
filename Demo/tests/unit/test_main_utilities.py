@@ -257,3 +257,59 @@ class TestFetchApprovedTasks:
 
         with pytest.raises(ValidationError):
             await fetch_approved_tasks(config)
+
+
+@pytest.mark.asyncio
+class TestFetchTask:
+    """Unit tests for the backend single-task client."""
+
+    @staticmethod
+    def _setup(mock_client_class, status_code, body):
+        config = Mock()
+        config.backend_tasks_endpoint = "http://test.com/api/arbiter/tasks"
+        config.backend_api_key = "test-key"
+        mock_response = Mock()
+        mock_response.status_code = status_code
+        mock_response.json.return_value = body
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        return config, mock_client, mock_response
+
+    @patch("httpx.AsyncClient")
+    async def test_fetch_task_success(self, mock_client_class):
+        """The task id is appended to the endpoint and the body is parsed as a task."""
+        from app.backend_tasks import fetch_task
+        from tests.conftest import create_sample_task
+
+        task = create_sample_task(task_id="task-1")
+        config, mock_client, mock_response = self._setup(mock_client_class, 200, task.model_dump())
+
+        result = await fetch_task("task-1", config)
+
+        mock_client.get.assert_called_once_with(
+            "http://test.com/api/arbiter/tasks/task-1", headers={"X-API-Key": "test-key"}
+        )
+        mock_response.raise_for_status.assert_called_once()
+        assert result == task
+
+    @patch("httpx.AsyncClient")
+    async def test_fetch_task_not_found(self, mock_client_class):
+        """A 404 from the backend means the task does not exist."""
+        from app.backend_tasks import fetch_task
+
+        config, _, mock_response = self._setup(mock_client_class, 404, {"detail": "not found"})
+
+        assert await fetch_task("missing", config) is None
+        mock_response.raise_for_status.assert_not_called()
+
+    @patch("httpx.AsyncClient")
+    async def test_fetch_task_id_is_escaped(self, mock_client_class):
+        """A task id cannot change the request path."""
+        from app.backend_tasks import fetch_task
+
+        config, mock_client, _ = self._setup(mock_client_class, 404, None)
+
+        await fetch_task("../x", config)
+
+        assert mock_client.get.call_args.args[0] == "http://test.com/api/arbiter/tasks/..%2Fx"

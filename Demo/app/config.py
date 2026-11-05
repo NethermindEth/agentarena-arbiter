@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     backend_approved_tasks_endpoint: str = Field(
         ..., description="Backend approved tasks endpoint URL (/api/arbiter/approved-tasks)"
     )
+    backend_tasks_endpoint: str = Field(
+        ...,
+        description="Backend task endpoint base URL (/api/arbiter/tasks); the task id is appended",
+    )
     max_findings_per_submission: int = Field(20, description="Maximum findings per submission")
     data_dir: str = "task_data"  # Hardcoded value - helps with gitignore
 
