@@ -4,7 +4,7 @@ Comprehensive testing including success scenarios, error handling, and edge case
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from app.models.finding_input import Finding, FindingInput
 
@@ -16,8 +16,7 @@ class TestProcessFindingsEndpoint:
     def test_process_findings_success(self, mock_post_sub, sample_task, client):
         """Test successful findings submission."""
         # Setup mocks
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
-        client.mock_db.create_finding = AsyncMock()
+        client.mock_delete_agent_findings.return_value = 0
         mock_post_sub.return_value = AsyncMock()
 
         findings_data = FindingInput(
@@ -34,8 +33,7 @@ class TestProcessFindingsEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         client.mock_fetch_task.return_value = sample_task
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
-        client.mock_db.create_finding = AsyncMock()
+        client.mock_delete_agent_findings.return_value = 0
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -52,7 +50,6 @@ class TestProcessFindingsEndpoint:
     def test_process_findings_multiple_submissions(self, mock_post_sub, sample_task, client):
         """Test that multiple submissions overwrite previous ones."""
         # Setup mocks
-        client.mock_db.create_finding = AsyncMock()
         mock_post_sub.return_value = AsyncMock()
 
         # First submission
@@ -70,8 +67,7 @@ class TestProcessFindingsEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         client.mock_fetch_task.return_value = sample_task
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
-        client.mock_db.create_finding = AsyncMock()
+        client.mock_delete_agent_findings.return_value = 0
 
         response1 = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data1.model_dump()
@@ -82,9 +78,7 @@ class TestProcessFindingsEndpoint:
         assert result1["total_findings"] == 1
 
         # Second submission (should overwrite the first)
-        client.mock_db.delete_agent_findings = AsyncMock(
-            return_value=1
-        )  # Shows previous findings were deleted
+        client.mock_delete_agent_findings.return_value = 1  # Shows previous findings were deleted
         findings_data2 = FindingInput(
             task_id="test-task-123",
             findings=[
@@ -97,9 +91,7 @@ class TestProcessFindingsEndpoint:
             ],
         )
 
-        client.mock_db.delete_agent_findings = AsyncMock(
-            return_value=1
-        )  # Shows previous findings were deleted
+        client.mock_delete_agent_findings.return_value = 1  # Shows previous findings were deleted
 
         response2 = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data2.model_dump()
@@ -110,7 +102,7 @@ class TestProcessFindingsEndpoint:
         assert result2["total_findings"] == 1
 
         # Verify delete_agent_findings was called to overwrite previous submission
-        client.mock_db.delete_agent_findings.assert_called_with("test-task-123", "test-agent")
+        client.mock_delete_agent_findings.assert_called_with("test-task-123", "test-agent", ANY)
 
     @patch("app.main.config")
     def test_process_findings_max_findings_limit(self, mock_config, sample_task, client):
@@ -286,8 +278,8 @@ class TestProcessFindingsEndpoint:
     def test_process_findings_database_error(self, mock_post_sub, sample_task, client):
         """Test process_findings when database operations fail."""
         # Setup mocks
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
-        client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
+        client.mock_delete_agent_findings.return_value = 0
+        client.mock_create_finding.side_effect = Exception("Database error")
         mock_post_sub.return_value = AsyncMock()
 
         findings_data = FindingInput(
@@ -304,8 +296,8 @@ class TestProcessFindingsEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         client.mock_fetch_task.return_value = sample_task
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=0)
-        client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
+        client.mock_delete_agent_findings.return_value = 0
+        client.mock_create_finding.side_effect = Exception("Database error")
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -336,10 +328,7 @@ class TestProcessFindingsEndpoint:
     def test_process_findings_empty_submission(self, mock_post_sub, sample_task, client):
         """Test that empty submission clears previous findings."""
         # Setup mocks
-        client.mock_db.delete_agent_findings = AsyncMock(
-            return_value=2
-        )  # Shows previous findings were deleted
-        client.mock_db.create_finding = AsyncMock()
+        client.mock_delete_agent_findings.return_value = 2  # Shows previous findings were deleted
         mock_post_sub.return_value = AsyncMock()
 
         # Submit empty findings list
@@ -350,8 +339,7 @@ class TestProcessFindingsEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         client.mock_fetch_task.return_value = sample_task
-        client.mock_db.delete_agent_findings = AsyncMock(return_value=2)
-        client.mock_db.create_finding = AsyncMock()
+        client.mock_delete_agent_findings.return_value = 2
 
         response = client.post(
             "/process_findings", headers={"X-API-Key": "test-key"}, json=findings_data.model_dump()
@@ -366,10 +354,10 @@ class TestProcessFindingsEndpoint:
         assert result["total_findings"] == 0
 
         # Verify delete_agent_findings was called to clear previous findings
-        client.mock_db.delete_agent_findings.assert_called_with("test-task-123", "test-agent")
+        client.mock_delete_agent_findings.assert_called_with("test-task-123", "test-agent", ANY)
 
         # Verify no new findings were created (since list was empty)
-        client.mock_db.create_finding.assert_not_called()
+        client.mock_create_finding.assert_not_called()
 
 
 class TestBackgroundProcessingEndpoint:
@@ -411,7 +399,7 @@ class TestBackgroundProcessingEndpoint:
         assert result["queued"] is True  # Key difference - should indicate background processing
 
         # Verify finding was stored
-        client.mock_db.create_finding.assert_called()
+        client.mock_create_finding.assert_called()
 
     def test_background_processing_invalid_task_id(self, client):
         """Test that background processing endpoint rejects invalid task IDs."""
@@ -514,7 +502,7 @@ class TestBackgroundProcessingEndpoint:
 
         client.mock_db.get_agent_id = AsyncMock(return_value="test-agent")
         # Setup mongodb mock to raise exception
-        client.mock_db.create_finding = AsyncMock(side_effect=Exception("Database error"))
+        client.mock_create_finding.side_effect = Exception("Database error")
 
         response = client.post(
             "/test/process_findings",

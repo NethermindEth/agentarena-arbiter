@@ -6,13 +6,14 @@ Uses Gemini 2.5 Pro to identify duplicates across all findings in a single promp
 import logging
 from typing import Any
 
+from app.backend_findings import update_finding
+from app.config import config
 from app.core.gemini_model import (
     DeduplicationResult,
     DuplicateFinding,
     create_structured_deduplication_model,
     find_duplicates_structured,
 )
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.types import TaskCache
 
@@ -25,15 +26,8 @@ class FindingDeduplication:
     Processes all findings in a single prompt to identify duplicates.
     """
 
-    def __init__(self, mongodb_client=None):
-        """
-        Initialize the finding deduplication handler.
-
-        Args:
-            mongodb_client: MongoDB client instance (uses global instance if None)
-        """
-        self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
-
+    def __init__(self):
+        """Initialize the finding deduplication handler."""
         # Initialize structured deduplication model
         self.deduplication_model = create_structured_deduplication_model()
 
@@ -306,7 +300,7 @@ class FindingDeduplication:
                         )
 
                 # Save to database
-                success = await self.mongodb.update_finding(task_id, finding.str_id, finding)
+                success = await update_finding(task_id, finding.str_id, finding, config)
 
                 if success:
                     updated_count += 1

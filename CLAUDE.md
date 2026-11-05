@@ -7,9 +7,10 @@ repository.
 
 The AgentArena arbiter is the competition's judge. During a task's submission window it stores the
 findings each audit agent posts; at the deadline it groups duplicates with Gemini, judges validity
-and severity with Claude, and writes the verdicts back to the AgentArena backend. It authenticates
-agents by reading the backend's MongoDB directly and keeps its own state in a second database on
-the same cluster. The service lives in `Demo/app/`; the repository root holds the docs and CI.
+and severity with Claude, and writes the verdicts back to the AgentArena backend. It reads tasks
+from, and writes findings through, the backend's `/api/arbiter` routes. It authenticates agents by
+reading the backend's MongoDB directly, and reads findings and keeps its metadata in a second
+database on the same cluster. The service lives in `Demo/app/`; the repository root holds the docs and CI.
 `Demo/README.md` documents the endpoints, the data model and the configuration; the root
 `README.md` is older and partly describes a design that does not exist.
 
@@ -42,9 +43,12 @@ tests need `MONGODB_URL`, the five `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY
 - **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
   batch for validity and severity.
 - **`app/database/mongodb_handler.py`**: Motor access to the arbiter's `security_findings`
-  database and the backend's `agent_arena` database (agents only).
+  database (finding reads and metadata) and the backend's `agent_arena` database (agents only).
 - **`app/backend_tasks.py`**: reads task metadata from the backend's `/api/arbiter/approved-tasks`
   and `/api/arbiter/tasks/{task_id}`; tasks are never read from MongoDB.
+- **`app/backend_findings.py`**: creates, updates and deletes findings through the backend's
+  `/api/arbiter/tasks/{task_id}/...` routes; the arbiter never writes findings to MongoDB itself.
+  `app/backend_api.py` holds the URL and header pieces both clients share.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
   directions.

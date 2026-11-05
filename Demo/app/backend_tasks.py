@@ -1,10 +1,9 @@
 """Task metadata read from the AgentArena backend's arbiter API."""
 
-from urllib.parse import quote
-
 import httpx
 from pydantic import TypeAdapter
 
+from app.backend_api import TIMEOUT_SECONDS, auth_headers, task_url
 from app.config import Settings
 from app.types import Task
 
@@ -25,10 +24,9 @@ async def fetch_approved_tasks(config: Settings) -> list[Task]:
         httpx.HTTPError: when the request fails or the backend answers with an error status
         pydantic.ValidationError: when the response body is not a list of tasks
     """
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         response = await client.get(
-            config.backend_approved_tasks_endpoint,
-            headers={"X-API-Key": config.backend_api_key},
+            config.backend_approved_tasks_endpoint, headers=auth_headers(config)
         )
         response.raise_for_status()
     return _task_list.validate_python(response.json())
@@ -49,11 +47,8 @@ async def fetch_task(task_id: str, config: Settings) -> Task | None:
         httpx.HTTPError: when the request fails or the backend answers with another error status
         pydantic.ValidationError: when the response body is not a task
     """
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(
-            f"{config.backend_tasks_endpoint}/{quote(task_id, safe='')}",
-            headers={"X-API-Key": config.backend_api_key},
-        )
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        response = await client.get(task_url(config, task_id), headers=auth_headers(config))
     if response.status_code == 404:
         return None
     response.raise_for_status()

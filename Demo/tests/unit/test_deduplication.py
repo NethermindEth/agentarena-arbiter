@@ -8,16 +8,21 @@ import pytest
 
 from app.core.deduplication import FindingDeduplication
 from app.core.gemini_model import DeduplicationResult, DuplicateFinding
-from tests.conftest import mock_mongodb
 
 
 class TestFindingDeduplication:
     """Test FindingDeduplication class."""
 
+    @pytest.fixture(autouse=True)
+    def mock_update_finding(self):
+        """Patch the backend finding update the deduplication writes through."""
+        with patch("app.core.deduplication.update_finding", new_callable=AsyncMock) as mock:
+            yield mock
+
     @pytest.fixture
     def deduplicator(self):
         """Create FindingDeduplication instance."""
-        return FindingDeduplication(mongodb_client=mock_mongodb)
+        return FindingDeduplication()
 
     def test_initialization(self, deduplicator):
         """Test deduplicator initializes correctly."""
@@ -40,12 +45,11 @@ class TestFindingDeduplication:
 
     @pytest.mark.asyncio
     async def test_process_findings_no_duplicates(
-        self, deduplicator, sample_findings, sample_task_cache
+        self, mock_update_finding, deduplicator, sample_findings, sample_task_cache
     ):
         """Test processing findings with no duplicates found."""
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = DeduplicationResult(results=[])
-            mock_mongodb.update_finding = AsyncMock()
 
             # Use only the first finding to avoid duplicates
             single_finding = [sample_findings[0]]
@@ -59,11 +63,11 @@ class TestFindingDeduplication:
             assert len(result["deduplication"]["duplicate_relationships"]) == 0
 
             # The update_finding method should be called when setting the finding as unique
-            mock_mongodb.update_finding.assert_called_once()
+            mock_update_finding.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_process_findings_with_duplicates(
-        self, deduplicator, sample_findings, sample_task_cache
+        self, mock_update_finding, deduplicator, sample_findings, sample_task_cache
     ):
         """Test processing findings with duplicates detected."""
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
@@ -78,7 +82,6 @@ class TestFindingDeduplication:
                 ]
             )
             mock_find_duplicates.return_value = mock_duplicates
-            mock_mongodb.update_finding = AsyncMock()
 
             result = await deduplicator.process_findings(
                 "test-task", sample_findings, sample_task_cache
@@ -92,4 +95,4 @@ class TestFindingDeduplication:
             assert dup_rel.findingId == sample_findings[1].str_id
             assert dup_rel.duplicateOf == sample_findings[0].str_id
 
-            mock_mongodb.update_finding.assert_called()
+            mock_update_finding.assert_called()

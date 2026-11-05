@@ -1,10 +1,11 @@
 """
 MongoDB database handler for security findings.
-Handles storage and retrieval of findings using native MongoDB Motor operations.
+Reads findings and keeps metadata with native MongoDB Motor operations; findings are written
+through the backend (app/backend_findings.py).
 """
 
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import motor.motor_asyncio
@@ -12,7 +13,6 @@ from bson import ObjectId
 
 from app.config import config
 from app.models.finding_db import FindingDB, Status
-from app.models.finding_input import Finding, FindingInput
 
 
 class MongoDBHandler:
@@ -61,7 +61,7 @@ class MongoDBHandler:
 
     @property
     def agent_arena_db(self) -> motor.motor_asyncio.AsyncIOMotorDatabase:
-        """The backend's database, read for agents and tasks; connect() must have run."""
+        """The backend's database, read for agents; connect() must have run."""
         if self._agent_arena_db is None:
             raise RuntimeError("MongoDB is not connected; call connect() first")
         return self._agent_arena_db
@@ -77,147 +77,6 @@ class MongoDBHandler:
             Findings collection name for the task
         """
         return f"findings_{task_id}"
-
-    async def create_finding(
-        self, task_id: str, agent_id: str, finding: Finding, status: Status = Status.PENDING
-    ) -> FindingDB:
-        """
-        Create a new finding in the database.
-
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier
-            finding: The finding to create
-            status: Status of the finding (defaults to PENDING)
-
-        Returns:
-            FindingDB object of the created finding
-        """
-        # Create FindingDB from Finding
-        finding_db = FindingDB(
-            **finding.model_dump(exclude_unset=True),
-            agent_id=agent_id,
-            status=status,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-
-        collection_name = self.get_findings_collection_name(task_id)
-        collection = self.findings_db[collection_name]
-
-        # Convert to dict and insert
-        doc_dict = finding_db.model_dump(by_alias=True, exclude_unset=True)
-        if doc_dict.get("_id") is None:
-            doc_dict.pop("_id", None)
-
-        result = await collection.insert_one(doc_dict)
-
-        # Set the ID from the insert result
-        finding_db.id = result.inserted_id
-
-        # Return the finding with proper ID set
-        return finding_db
-
-    async def create_findings_batch(self, agent_id: str, input_data: FindingInput) -> list[str]:
-        """
-        Create multiple findings in batch from a FindingInput.
-
-        Args:
-            agent_id: Agent identifier
-            input_data: FindingInput containing task_id and a list of findings
-
-        Returns:
-            List of created finding titles
-        """
-        if not input_data.findings:
-            return []
-
-        # Extract task_id
-        task_id = input_data.task_id
-        current_time = datetime.now(UTC)
-
-        # Create FindingDB objects
-        finding_dbs = []
-        for finding in input_data.findings:
-            finding_db = FindingDB(
-                **finding.model_dump(exclude_unset=True),
-                agent_id=agent_id,
-                created_at=current_time,
-                updated_at=current_time,
-            )
-            finding_dbs.append(finding_db)
-
-        collection_name = self.get_findings_collection_name(task_id)
-        collection = self.findings_db[collection_name]
-
-        # Convert to dicts and insert
-        docs = []
-        for finding_db in finding_dbs:
-            doc_dict = finding_db.model_dump(by_alias=True, exclude_unset=True)
-            if doc_dict.get("_id") is None:
-                doc_dict.pop("_id", None)
-            docs.append(doc_dict)
-
-        if docs:
-            await collection.insert_many(docs)
-
-        # Return the titles
-        return [finding.title for finding in input_data.findings]
-
-    async def update_finding(
-        self, task_id: str, id: str, update_fields: dict[str, Any] | FindingDB
-    ) -> bool:
-        """
-        Update specific fields of an existing finding.
-
-        Args:
-            task_id: Task identifier
-            id: Finding ID as string
-            update_fields: Dictionary of fields to update, or a FindingDB whose set fields are written
-
-        Returns:
-            True if update was successful, False otherwise
-        """
-        collection_name = self.get_findings_collection_name(task_id)
-        collection = self.findings_db[collection_name]
-
-        if isinstance(update_fields, FindingDB):
-            update_fields = update_fields.model_dump(by_alias=True, exclude_unset=True)
-
-        # Ensure updated_at is set
-        if "updated_at" not in update_fields:
-            update_fields["updated_at"] = datetime.now(UTC)
-
-        # Convert string id to ObjectId
-        try:
-            object_id = ObjectId(id)
-        except Exception:
-            return False
-
-        # Update in database
-        result = await collection.update_one({"_id": object_id}, {"$set": update_fields})
-
-        return result.modified_count > 0
-
-    async def delete_agent_findings(self, task_id: str, agent_id: str) -> int:
-        """
-        Delete all findings for a specific agent and task.
-        Used when an agent makes a new submission to override the previous one.
-
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier
-
-        Returns:
-            Number of findings deleted
-        """
-        collection_name = self.get_findings_collection_name(task_id)
-        collection = self.findings_db[collection_name]
-
-        # Delete all findings for this agent and task
-        result = await collection.delete_many({"agent_id": agent_id})
-
-        return result.deleted_count
 
     async def get_metadata(self, key: str) -> dict[str, Any] | None:
         """

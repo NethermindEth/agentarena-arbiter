@@ -2,6 +2,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from app.backend_findings import update_finding
+from app.config import config
 from app.core.claude_model import (
     EvaluationResult,
     FindingEvaluation,
@@ -9,7 +11,6 @@ from app.core.claude_model import (
     evaluate_findings_structured,
 )
 from app.core.gemini_model import DuplicateFinding
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Severity
 from app.types import TaskCache
@@ -24,15 +25,13 @@ class FindingEvaluator:
     Supports batch evaluation for efficiency.
     """
 
-    def __init__(self, mongodb_client=None, batch_size: int = 10):
+    def __init__(self, batch_size: int = 10):
         """
         Initialize the finding evaluator.
 
         Args:
-            mongodb_client: MongoDB client instance (uses global instance if None)
             batch_size: Maximum number of findings to evaluate in a single batch
         """
-        self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
         self.evaluation_model = self._setup_structured_evaluation_model()
         self.batch_size = batch_size
 
@@ -201,8 +200,8 @@ class FindingEvaluator:
                 if not eval_result.is_valid:
                     update_fields["status"] = Status.DISPUTED
 
-                success = await self.mongodb.update_finding(
-                    task_id, eval_result.finding_id, update_fields
+                success = await update_finding(
+                    task_id, eval_result.finding_id, update_fields, config
                 )
 
                 if success:

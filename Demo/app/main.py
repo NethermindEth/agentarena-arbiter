@@ -20,6 +20,7 @@ from apscheduler.triggers.date import DateTrigger
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.backend_findings import create_finding, delete_agent_findings
 from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
@@ -801,7 +802,7 @@ async def process_findings(
 
         async with lock:
             # 4. Delete any existing findings for this agent to allow only one submission
-            deleted_count = await mongodb.delete_agent_findings(input_data.task_id, agent_id)
+            deleted_count = await delete_agent_findings(input_data.task_id, agent_id, config)
             if deleted_count > 0:
                 logger.info(
                     f"Deleted {deleted_count} existing findings for task_id: {input_data.task_id}, agent_id: {agent_id} (overriding previous submission)"
@@ -809,10 +810,11 @@ async def process_findings(
 
             # 5. Store findings as pending processing
             for finding in input_data.findings:
-                await mongodb.create_finding(
+                await create_finding(
                     task_id=input_data.task_id,
                     agent_id=agent_id,
                     finding=finding,
+                    config=config,
                     status=Status.PENDING,
                 )
 
@@ -876,10 +878,11 @@ async def test_process_findings(
         async with lock:
             # 3. Store findings as pending
             for finding in input_data.findings:
-                await mongodb.create_finding(
+                await create_finding(
                     task_id=input_data.task_id,
                     agent_id=agent_id,
                     finding=finding,
+                    config=config,
                     status=Status.PENDING,
                 )
 

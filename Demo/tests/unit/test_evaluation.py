@@ -10,16 +10,21 @@ from app.core.claude_model import FindingEvaluation
 from app.core.evaluation import FindingEvaluator
 from app.core.gemini_model import DuplicateFinding
 from app.models.finding_db import Severity
-from tests.conftest import mock_mongodb
 
 
 class TestFindingEvaluator:
     """Test FindingEvaluator class."""
 
+    @pytest.fixture(autouse=True)
+    def mock_update_finding(self):
+        """Patch the backend finding update the evaluation writes through."""
+        with patch("app.core.evaluation.update_finding", new_callable=AsyncMock) as mock:
+            yield mock
+
     @pytest.fixture
     def evaluator(self):
         """Create FindingEvaluator instance."""
-        return FindingEvaluator(batch_size=5, mongodb_client=mock_mongodb)
+        return FindingEvaluator(batch_size=5)
 
     def test_initialization(self, evaluator):
         """Test evaluator initializes with correct batch size."""
@@ -80,7 +85,7 @@ class TestFindingEvaluator:
 
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_success(
-        self, evaluator, sample_findings, sample_task_cache
+        self, mock_update_finding, evaluator, sample_findings, sample_task_cache
     ):
         """Test successful evaluation of findings."""
         with patch.object(evaluator, "evaluate_findings_batch") as mock_evaluate_batch:
@@ -93,7 +98,6 @@ class TestFindingEvaluator:
                     comment="Valid security issue",
                 )
             ]
-            mock_mongodb.update_finding = AsyncMock()
 
             result = await evaluator.evaluate_all_findings(
                 "test-task",
@@ -107,4 +111,4 @@ class TestFindingEvaluator:
             assert result["application_results"]["failed_count"] == 0
 
             # Verify database update was called
-            mock_mongodb.update_finding.assert_called()
+            mock_update_finding.assert_called()

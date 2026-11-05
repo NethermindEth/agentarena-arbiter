@@ -46,117 +46,56 @@ async def db_handler():
         await handler.close()
 
 
+async def _insert_finding(
+    handler: MongoDBHandler, task_id: str, agent_id: str, title: str, status: Status
+) -> None:
+    """Seed a finding as the backend stores it; the arbiter only writes through the backend."""
+    now = datetime.now(UTC)
+    await handler.findings_db[handler.get_findings_collection_name(task_id)].insert_one(
+        {
+            "title": title,
+            "description": f"{title} description",
+            "severity": "High",
+            "file_paths": ["contracts/Test.sol"],
+            "agent_id": agent_id,
+            "status": status.value,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+
 @pytest.mark.asyncio
 class TestMongoDBIntegration:
     """Test MongoDB operations with a real database connection."""
 
-    async def test_create_and_get_finding(self, db_handler: MongoDBHandler):
-        """Test creating and retrieving a finding."""
-        from app.models.finding_input import Finding, Severity as InputSeverity
-
-        test_finding = Finding(
-            title="Test Security Issue",
-            description="This is a test security finding",
-            severity=InputSeverity.HIGH,
-            file_paths=["contracts/Test.sol"],
-        )
-
+    async def test_get_findings(self, db_handler: MongoDBHandler):
+        """Findings stored in a task's collection are read back as FindingDB."""
         task_id = "test-task-db"
-        agent_id = "test-agent-db"
+        await _insert_finding(db_handler, task_id, "test-agent-db", "Test Issue", Status.PENDING)
 
-        # Clean any existing data
-        await db_handler.delete_agent_findings(task_id, agent_id)
-
-        # Create finding
-        created_finding = await db_handler.create_finding(
-            task_id=task_id, agent_id=agent_id, finding=test_finding, status=Status.PENDING
-        )
-
-        assert created_finding is not None
-        assert created_finding.title == test_finding.title
-        assert created_finding.agent_id == agent_id
-        assert created_finding.status == Status.PENDING
-
-        # Retrieve findings
         retrieved_findings = await db_handler.get_findings(task_id=task_id)
 
         assert len(retrieved_findings) == 1
-        assert retrieved_findings[0].title == test_finding.title
-        assert retrieved_findings[0].agent_id == agent_id
+        assert retrieved_findings[0].title == "Test Issue"
+        assert retrieved_findings[0].agent_id == "test-agent-db"
+        assert retrieved_findings[0].status == Status.PENDING
+        assert retrieved_findings[0].id is not None
 
-    async def test_update_finding_status(self, db_handler: MongoDBHandler):
-        """Test updating finding status."""
-        from app.models.finding_input import Finding, Severity as InputSeverity
-
-        test_finding = Finding(
-            title="Test Update Finding",
-            description="This finding will be updated",
-            severity=InputSeverity.MEDIUM,
-            file_paths=["contracts/Update.sol"],
-        )
-
-        task_id = "test-update-task"
-        agent_id = "test-update-agent"
-
-        # Clean any existing data
-        await db_handler.delete_agent_findings(task_id, agent_id)
-
-        # Create finding
-        created_finding = await db_handler.create_finding(
-            task_id=task_id, agent_id=agent_id, finding=test_finding, status=Status.PENDING
-        )
-
-        # Update status
-        await db_handler.update_finding(
-            task_id, created_finding.str_id, {"status": Status.UNIQUE_VALID}
-        )
-
-        # Retrieve and verify update
-        updated_findings = await db_handler.get_findings(task_id=task_id)
-
-        assert len(updated_findings) == 1
-        assert updated_findings[0].status == Status.UNIQUE_VALID
-
-    async def test_get_findings_by_status(self, db_handler: MongoDBHandler):
-        """Test filtering findings by status."""
-        from app.models.finding_input import Finding, Severity as InputSeverity
-
+    async def test_get_findings_by_status_and_agent(self, db_handler: MongoDBHandler):
+        """The status and agent filters narrow the findings read."""
         task_id = "test-status-filter"
-        agent_id = "test-status-agent"
+        await _insert_finding(db_handler, task_id, "agent-a", "Pending Finding", Status.PENDING)
+        await _insert_finding(db_handler, task_id, "agent-a", "Valid Finding", Status.UNIQUE_VALID)
+        await _insert_finding(db_handler, task_id, "agent-b", "Other Agent", Status.PENDING)
 
-        # Clean any existing data
-        await db_handler.delete_agent_findings(task_id, agent_id)
+        pending = await db_handler.get_findings(task_id=task_id, status=Status.PENDING)
+        valid = await db_handler.get_findings(task_id=task_id, status=Status.UNIQUE_VALID)
+        agent_a = await db_handler.get_findings(task_id=task_id, agent_id="agent-a")
 
-        # Create findings with different statuses
-        finding1 = Finding(
-            title="Pending Finding",
-            description="This will stay pending",
-            severity=InputSeverity.LOW,
-            file_paths=["test1.sol"],
-        )
-
-        finding2 = Finding(
-            title="Valid Finding",
-            description="This will become valid",
-            severity=InputSeverity.HIGH,
-            file_paths=["test2.sol"],
-        )
-
-        # Create both findings
-        await db_handler.create_finding(task_id, agent_id, finding1, Status.PENDING)
-        created2 = await db_handler.create_finding(task_id, agent_id, finding2, Status.PENDING)
-
-        # Update one to be valid
-        await db_handler.update_finding(task_id, created2.str_id, {"status": Status.UNIQUE_VALID})
-
-        # Test filtering
-        pending_findings = await db_handler.get_findings(task_id=task_id, status=Status.PENDING)
-        valid_findings = await db_handler.get_findings(task_id=task_id, status=Status.UNIQUE_VALID)
-
-        assert len(pending_findings) == 1
-        assert len(valid_findings) == 1
-        assert pending_findings[0].title == "Pending Finding"
-        assert valid_findings[0].title == "Valid Finding"
+        assert {f.title for f in pending} == {"Pending Finding", "Other Agent"}
+        assert [f.title for f in valid] == ["Valid Finding"]
+        assert {f.title for f in agent_a} == {"Pending Finding", "Valid Finding"}
 
     async def test_metadata_operations(self, db_handler: MongoDBHandler):
         """Test metadata storage and retrieval."""
@@ -176,100 +115,3 @@ class TestMongoDBIntegration:
         # Test non-existent key
         non_existent = await db_handler.get_metadata("non_existent_key")
         assert non_existent is None
-
-    async def test_create_findings_batch_empty(self, db_handler: MongoDBHandler):
-        """Test creating a batch with empty findings list."""
-        from app.models.finding_input import FindingInput
-
-        # Empty findings batch
-        empty_input = FindingInput(task_id="test-empty", findings=[])
-
-        result = await db_handler.create_findings_batch("test-agent", empty_input)
-
-        assert result == []
-
-    async def test_create_findings_batch_success(self, db_handler: MongoDBHandler):
-        """Test creating a batch of findings successfully."""
-        from app.models.finding_input import Finding, FindingInput, Severity as InputSeverity
-
-        findings = [
-            Finding(
-                title="Batch Finding 1",
-                description="First finding in batch",
-                severity=InputSeverity.HIGH,
-                file_paths=["test1.sol"],
-            ),
-            Finding(
-                title="Batch Finding 2",
-                description="Second finding in batch",
-                severity=InputSeverity.MEDIUM,
-                file_paths=["test2.sol"],
-            ),
-        ]
-
-        batch_input = FindingInput(task_id="test-batch", findings=findings)
-
-        # Clean any existing data
-        await db_handler.delete_agent_findings("test-batch", "batch-agent")
-
-        result = await db_handler.create_findings_batch("batch-agent", batch_input)
-
-        # Should return titles of created findings
-        assert len(result) == 2
-        assert "Batch Finding 1" in result
-        assert "Batch Finding 2" in result
-
-        # Verify findings were actually created
-        created_findings = await db_handler.get_findings("test-batch")
-        assert len(created_findings) == 2
-
-    async def test_update_finding_with_finding_object(self, db_handler: MongoDBHandler):
-        """Test updating finding with FindingDB object instead of dict."""
-        from app.models.finding_db import FindingDB, Status
-        from app.models.finding_input import Finding, Severity as InputSeverity
-
-        # Create a test finding
-        test_finding = Finding(
-            title="Update Test Finding",
-            description="Finding to be updated",
-            severity=InputSeverity.LOW,
-            file_paths=["update.sol"],
-        )
-
-        task_id = "test-update-object"
-        agent_id = "test-update-agent"
-
-        # Clean and create
-        await db_handler.delete_agent_findings(task_id, agent_id)
-        created = await db_handler.create_finding(task_id, agent_id, test_finding)
-
-        # Create FindingDB object for update
-        update_finding = FindingDB(
-            title="Updated Finding Title",
-            description="Updated description",
-            severity=InputSeverity.HIGH,
-            file_paths=["updated.sol"],
-            agent_id=agent_id,
-            status=Status.UNIQUE_VALID,
-        )
-
-        # Update with FindingDB object (not dict)
-        success = await db_handler.update_finding(task_id, created.str_id, update_finding)
-
-        assert success is True
-
-        # Verify update
-        updated_findings = await db_handler.get_findings(task_id)
-        assert len(updated_findings) == 1
-        assert updated_findings[0].title == "Updated Finding Title"
-        assert updated_findings[0].status == Status.UNIQUE_VALID
-
-    async def test_update_finding_invalid_id(self, db_handler: MongoDBHandler):
-        """Test updating finding with invalid ObjectId."""
-
-        # Try to update with invalid ID
-        success = await db_handler.update_finding(
-            "test-task", "invalid-object-id", {"title": "Should not work"}
-        )
-
-        assert success is False
