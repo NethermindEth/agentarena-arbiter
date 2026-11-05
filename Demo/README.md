@@ -230,6 +230,7 @@ The application requires the following environment variables:
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
 - `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
+- `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
 
 ## API Endpoints
 

@@ -28,7 +28,7 @@ pre-commit install       # once per clone, from the repository root; runs the sa
 ```
 
 Settings are read when `app.config` is imported and the required ones have no defaults, so the
-tests need `MONGODB_URL`, the three `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
+tests need `MONGODB_URL`, the four `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
 `CLAUDE_API_KEY` and `GEMINI_API_KEY` set, with placeholders for everything but MongoDB; see the
 `tests` job in `.github/workflows/ci-tests.yaml`. The integration tests write to that MongoDB.
 

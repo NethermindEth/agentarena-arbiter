@@ -20,6 +20,7 @@ from apscheduler.triggers.date import DateTrigger
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.backend_tasks import fetch_approved_tasks
 from app.config import config
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
@@ -226,16 +227,16 @@ app.add_middleware(
 
 
 async def schedule_approved_tasks():
-    """Fetch approved tasks metadata from database and schedule processing jobs."""
-    logger.info("Fetching approved tasks from database")
+    """Fetch approved tasks metadata from the backend and schedule processing jobs."""
+    logger.info("Fetching approved tasks from backend")
     try:
-        tasks = await mongodb.get_approved_tasks()
+        tasks = await fetch_approved_tasks(config)
     except Exception as e:
-        logger.error(f"Error fetching approved tasks from database: {str(e)}")
+        logger.error(f"Error fetching approved tasks from backend: {str(e)}")
         return
 
     if not tasks:
-        logger.info("No approved tasks found in database; skipping task scheduling")
+        logger.info("No approved tasks returned by backend; skipping task scheduling")
         return
 
     scheduled_count = 0

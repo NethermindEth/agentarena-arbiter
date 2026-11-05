@@ -172,41 +172,88 @@ class TestScheduleApprovedTasks:
     """Unit tests for scheduling functionality."""
 
     @patch("app.main.schedule_task_processing")
-    @patch("app.main.mongodb")
-    async def test_schedule_approved_tasks_no_database_tasks(self, mock_mongodb, mock_schedule):
-        """Test scheduling when no approved tasks are in database."""
+    @patch("app.main.fetch_approved_tasks", new_callable=AsyncMock)
+    async def test_schedule_approved_tasks_no_backend_tasks(self, mock_fetch, mock_schedule):
+        """Test scheduling when the backend returns no approved tasks."""
         from app import main as app_main
 
-        mock_mongodb.get_approved_tasks = AsyncMock(return_value=[])
-        mock_mongodb.schedule_task_processing = AsyncMock()
+        mock_fetch.return_value = []
 
         await app_main.schedule_approved_tasks()
 
-        mock_mongodb.get_approved_tasks.assert_called_once()
+        mock_fetch.assert_called_once()
         mock_schedule.assert_not_called()
 
-    @patch("app.main.mongodb")
-    async def test_schedule_approved_tasks_database_error(self, mock_mongodb):
-        """Test scheduling when database error occurs."""
+    @patch("app.main.fetch_approved_tasks", new_callable=AsyncMock)
+    async def test_schedule_approved_tasks_backend_error(self, mock_fetch):
+        """Test scheduling when the backend request fails."""
         from app import main as app_main
 
-        mock_mongodb.get_approved_tasks = AsyncMock(side_effect=Exception("Database error"))
+        mock_fetch.side_effect = Exception("Backend error")
 
         # Should not raise exception
         await app_main.schedule_approved_tasks()
 
     @patch("app.main.schedule_task_processing")
-    @patch("app.main.mongodb")
-    async def test_testtask_not_scheduled(self, mock_mongodb, mock_schedule):
+    @patch("app.main.fetch_approved_tasks", new_callable=AsyncMock)
+    async def test_testtask_not_scheduled(self, mock_fetch, mock_schedule):
         """Test that TESTTASK doesn't trigger job scheduling."""
         from app import main as app_main
         from tests.conftest import create_sample_task
 
-        tasks = [create_sample_task(task_id="TESTTASK")]
-
-        mock_mongodb.get_approved_tasks = AsyncMock(return_value=tasks)
+        mock_fetch.return_value = [create_sample_task(task_id="TESTTASK")]
 
         await app_main.schedule_approved_tasks()
 
         # Should not schedule TESTTASK
         mock_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestFetchApprovedTasks:
+    """Unit tests for the backend approved-tasks client."""
+
+    @patch("httpx.AsyncClient")
+    async def test_fetch_approved_tasks_success(self, mock_client_class):
+        """The endpoint is called with the API key and the body is parsed as tasks."""
+        from app.backend_tasks import fetch_approved_tasks
+        from tests.conftest import create_sample_task
+
+        task = create_sample_task(task_id="task-1")
+        config = Mock()
+        config.backend_approved_tasks_endpoint = "http://test.com/api/arbiter/approved-tasks"
+        config.backend_api_key = "test-key"
+
+        mock_response = Mock()
+        mock_response.json.return_value = [task.model_dump()]
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        result = await fetch_approved_tasks(config)
+
+        mock_client.get.assert_called_once_with(
+            "http://test.com/api/arbiter/approved-tasks", headers={"X-API-Key": "test-key"}
+        )
+        mock_response.raise_for_status.assert_called_once()
+        assert result == [task]
+
+    @patch("httpx.AsyncClient")
+    async def test_fetch_approved_tasks_invalid_body(self, mock_client_class):
+        """A body that is not a list of tasks raises instead of scheduling garbage."""
+        from pydantic import ValidationError
+
+        from app.backend_tasks import fetch_approved_tasks
+
+        config = Mock()
+        config.backend_approved_tasks_endpoint = "http://test.com/api/arbiter/approved-tasks"
+        config.backend_api_key = "test-key"
+
+        mock_response = Mock()
+        mock_response.json.return_value = [{"taskId": "missing-fields"}]
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with pytest.raises(ValidationError):
+            await fetch_approved_tasks(config)

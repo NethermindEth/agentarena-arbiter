@@ -328,23 +328,6 @@ class MongoDBHandler:
 
         return str(agent.get("_id"))
 
-    async def get_approved_tasks(self) -> list[Task]:
-        """
-        Get all active tasks with status "approved" from agent_arena database.
-
-        Returns:
-            List of approved tasks
-        """
-        tasks_collection = self.agent_arena_db["tasks"]
-        cursor = tasks_collection.find({"status": "approved"})
-        tasks = []
-
-        async for doc in cursor:
-            task = Task.model_validate(doc)
-            tasks.append(task)
-
-        return tasks
-
     async def get_task(self, task_id: str) -> Task:
         """
         Get a specific task by taskId from agent_arena database.
