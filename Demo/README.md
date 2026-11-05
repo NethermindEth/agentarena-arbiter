@@ -1,9 +1,8 @@
 # Workflow
 ## Submission Process
 
-- When a new finding is submitted, the system adds these additional fields:
-    - **status** (initialized as `Status.PENDING`)
-    - **evaluation_comment** (initially empty)
+- Agents submit findings to the AgentArena backend, not to the arbiter. The backend stores each one
+  as `Status.PENDING` in the collections the arbiter reads at the task's deadline.
 
 ## Self-Deduplication Process
 
@@ -91,7 +90,7 @@ uv run pytest --cov=app --cov-report=term-missing
 Settings are read at import time, so the required variables must be set, with
 placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
 them. The integration tests write to the MongoDB at `MONGODB_URL`, seeding findings directly
-since the arbiter itself only writes them through the backend.
+since the backend, not the arbiter, stores submissions.
 
 ### Prerequisites for Testing
 - A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
@@ -115,8 +114,8 @@ async def test_process_findings_no_duplicates(deduplicator, sample_findings):
 Test components working together:
 
 ```python
-def test_api_endpoint_success(client):
-    response = client.post("/process_findings", headers={"X-API-Key": "test"}, json=data)
+def test_get_task_findings_success(client):
+    response = client.get("/tasks/task-1/findings", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
 ```
 
@@ -160,24 +159,6 @@ docker-compose down
 
 ## API Usage
 
-### Submit Findings
-```bash
-curl -X POST http://localhost:8004/process_findings \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
-  -d '{
-    "task_id": "test-task-1",
-    "findings": [
-      {
-        "title": "Integer Overflow",
-        "description": "Function X is vulnerable to integer overflow",
-        "severity": "HIGH",
-        "file_paths": ["contracts/Contract.sol", "contracts/Token.sol"]
-      }
-    ]
-  }'
-```
-
 ### Retrieve Findings
 ```bash
 curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
@@ -185,18 +166,13 @@ curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
 
 ## Data Models
 
-### Finding Input Format
+### Finding
 ```python
 class Finding(BaseModel):
     title: str
     description: str
     severity: Severity  # Enum: HIGH, MEDIUM, LOW, or INFO
     file_paths: List[str]
-
-
-class FindingInput(BaseModel):
-    task_id: str
-    findings: List[Finding]
 ```
 
 ### Finding in Database
@@ -232,9 +208,8 @@ The application requires the following environment variables:
 - `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
 - `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
-- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}` and writes findings under it: `POST /{task_id}/findings`, `POST /{task_id}/findings/batch`, `PATCH /{task_id}/findings/{finding_id}` and `DELETE /{task_id}/agents/{agent_id}/findings`. Findings are read back from MongoDB.
+- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}` and writes its verdicts with `PATCH /{task_id}/findings/{finding_id}`. Findings are read from MongoDB.
 
 ## API Endpoints
 
-- `POST /process_findings`: Submit batch of findings for processing, deduplication, and evaluation
 - `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task

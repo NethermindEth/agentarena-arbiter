@@ -9,7 +9,6 @@ from datetime import datetime
 from typing import Any
 
 import motor.motor_asyncio
-from bson import ObjectId
 
 from app.config import config
 from app.models.finding_db import FindingDB, Status
@@ -30,7 +29,6 @@ class MongoDBHandler:
         """
         self.client: motor.motor_asyncio.AsyncIOMotorClient | None = None
         self._findings_db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
-        self._agent_arena_db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
 
         # Automatically select MongoDB URL based on environment
         is_docker = os.path.exists("/.dockerenv")  # Docker environment detection
@@ -38,14 +36,12 @@ class MongoDBHandler:
 
         self.connection_string = connection_string or config.mongodb_url or default_mongo_url
         self.findings_db_name = "security_findings"
-        self.agent_arena_db_name = "agent_arena"
         self.metadata_collection = "metadata"
 
     async def connect(self):
-        """Connect to MongoDB databases."""
+        """Connect to the MongoDB database."""
         self.client = motor.motor_asyncio.AsyncIOMotorClient(self.connection_string)
         self._findings_db = self.client[self.findings_db_name]
-        self._agent_arena_db = self.client[self.agent_arena_db_name]
 
     async def close(self):
         """Close MongoDB connection."""
@@ -58,13 +54,6 @@ class MongoDBHandler:
         if self._findings_db is None:
             raise RuntimeError("MongoDB is not connected; call connect() first")
         return self._findings_db
-
-    @property
-    def agent_arena_db(self) -> motor.motor_asyncio.AsyncIOMotorDatabase:
-        """The backend's database, read for agents; connect() must have run."""
-        if self._agent_arena_db is None:
-            raise RuntimeError("MongoDB is not connected; call connect() first")
-        return self._agent_arena_db
 
     def get_findings_collection_name(self, task_id: str) -> str:
         """
@@ -151,40 +140,6 @@ class MongoDBHandler:
             findings.append(FindingDB(**doc))
 
         return findings
-
-    async def get_agent_id(self, api_key: str) -> str:
-        """
-        Get agent ID from the agent_arena database.
-
-        Args:
-            api_key: Agent API key
-
-        Returns:
-            Agent ID if agent is found and valid
-        """
-
-        agents_collection = self.agent_arena_db["agents"]
-        agent = await agents_collection.find_one({"api_key": api_key, "status": "active"})
-
-        if not agent:
-            raise ValueError(f"Agent with API key {api_key} not found")
-
-        user_id = agent.get("owner_user_id")
-        if not user_id:
-            # Why? Because there might be standalone agents, with no users.
-            # These are system agents. And it's OK.
-            return str(agent.get("_id"))
-
-        users_collection = self.agent_arena_db["users"]
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise ValueError(f"Owner user not found for the agent with API key {api_key}")
-        if user.get("role") not in ["AgentBuilder", "Admin"] or user.get("status") != "active":
-            raise ValueError(
-                f"Invalid role or status for owner of the agent with API key {api_key}"
-            )
-
-        return str(agent.get("_id"))
 
 
 # Global MongoDB handler instance

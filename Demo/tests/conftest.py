@@ -166,10 +166,6 @@ def client(mock_mongodb):
     with (
         patch("app.main.mongodb", mock_mongodb),
         patch("app.main.fetch_task", new_callable=AsyncMock) as mock_fetch_task,
-        patch("app.main.create_finding", new_callable=AsyncMock) as mock_create_finding,
-        patch(
-            "app.main.delete_agent_findings", new_callable=AsyncMock, return_value=0
-        ) as mock_delete_agent_findings,
     ):
         # Create client without triggering lifespan events that need real DB
         client = TestClient(app, base_url="http://testserver")
@@ -177,8 +173,6 @@ def client(mock_mongodb):
         # Attach the mocks to the client so tests can configure them
         client.mock_db = mock_mongodb
         client.mock_fetch_task = mock_fetch_task
-        client.mock_create_finding = mock_create_finding
-        client.mock_delete_agent_findings = mock_delete_agent_findings
 
         yield client
 

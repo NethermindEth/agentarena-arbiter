@@ -9,14 +9,9 @@ import httpx
 import pytest
 from bson import ObjectId
 
-from app.backend_findings import (
-    create_finding,
-    create_findings_batch,
-    delete_agent_findings,
-    update_finding,
-)
+from app.backend_findings import update_finding
 from app.models.finding_db import FindingDB, Status
-from app.models.finding_input import Finding, FindingInput, Severity
+from app.models.finding_input import Finding, Severity
 
 BASE = "http://test.com/api/arbiter/tasks"
 HEADERS = {"X-API-Key": "test-key"}
@@ -55,77 +50,6 @@ def respond(status_code: int, body=None) -> Mock:
 FINDING = Finding(
     title="Reentrancy", description="withdraw", severity=Severity.HIGH, file_paths=["a.sol"]
 )
-
-
-@pytest.mark.asyncio
-class TestCreateFinding:
-    async def test_posts_finding_and_parses_stored(self, config, http):
-        """The finding goes out with agent and status; the stored one comes back with its id."""
-        finding_id = ObjectId()
-        now = datetime.now(UTC).isoformat()
-        http.post.return_value = respond(
-            201,
-            {
-                **FINDING.model_dump(mode="json"),
-                "_id": str(finding_id),
-                "agent_id": "agent-1",
-                "status": "pending",
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
-
-        stored = await create_finding("task/1", "agent-1", FINDING, config)
-
-        http.post.assert_called_once_with(
-            f"{BASE}/task%2F1/findings",
-            json={
-                "title": "Reentrancy",
-                "description": "withdraw",
-                "severity": "High",
-                "file_paths": ["a.sol"],
-                "agent_id": "agent-1",
-                "status": "pending",
-            },
-            headers=HEADERS,
-        )
-        assert isinstance(stored, FindingDB)
-        assert stored.id == finding_id
-        assert stored.status == Status.PENDING
-
-    async def test_unknown_task_raises(self, config, http):
-        """A 404 for the task is an error: the finding was not stored."""
-        http.post.return_value = respond(404, {"detail": "Task not found"})
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await create_finding("missing", "agent-1", FINDING, config)
-
-
-@pytest.mark.asyncio
-class TestCreateFindingsBatch:
-    async def test_posts_batch_and_returns_titles(self, config, http):
-        """All findings go in one request; the backend's titles are returned."""
-        http.post.return_value = respond(201, ["Reentrancy"])
-
-        titles = await create_findings_batch(
-            "agent-1", FindingInput(task_id="task-1", findings=[FINDING]), config
-        )
-
-        http.post.assert_called_once_with(
-            f"{BASE}/task-1/findings/batch",
-            json={"agent_id": "agent-1", "findings": [FINDING.model_dump(mode="json")]},
-            headers=HEADERS,
-        )
-        assert titles == ["Reentrancy"]
-
-    async def test_empty_batch_makes_no_request(self, config, http):
-        """An empty submission has nothing to store."""
-        titles = await create_findings_batch(
-            "agent-1", FindingInput(task_id="task-1", findings=[]), config
-        )
-
-        assert titles == []
-        http.post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -186,17 +110,3 @@ class TestUpdateFinding:
 
         with pytest.raises(httpx.HTTPStatusError):
             await update_finding("task-1", "abc", {"bogus": 1}, config)
-
-
-@pytest.mark.asyncio
-class TestDeleteAgentFindings:
-    async def test_returns_deleted_count(self, config, http):
-        """The agent id is escaped into the path and the backend's count is returned."""
-        http.delete.return_value = respond(200, {"deleted": 3})
-
-        deleted = await delete_agent_findings("task-1", "agent/1", config)
-
-        http.delete.assert_called_once_with(
-            f"{BASE}/task-1/agents/agent%2F1/findings", headers=HEADERS
-        )
-        assert deleted == 3

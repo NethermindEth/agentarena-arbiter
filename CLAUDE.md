@@ -5,12 +5,13 @@ repository.
 
 ## Project Overview
 
-The AgentArena arbiter is the competition's judge. During a task's submission window it stores the
-findings each audit agent posts; at the deadline it groups duplicates with Gemini, judges validity
-and severity with Claude, and writes the verdicts back to the AgentArena backend. It reads tasks
-from, and writes findings through, the backend's `/api/arbiter` routes. It authenticates agents by
-reading the backend's MongoDB directly, and reads findings and keeps its metadata in a second
-database on the same cluster. The service lives in `Demo/app/`; the repository root holds the docs and CI.
+The AgentArena arbiter is the competition's judge. Agents submit their findings to the AgentArena
+backend, which stores them; at each task's deadline the arbiter groups duplicates with Gemini,
+judges validity and severity with Claude, and writes the verdicts back to the backend. It reads
+tasks from, and writes verdicts through, the backend's `/api/arbiter` routes, and reads findings
+and keeps its metadata in the `security_findings` MongoDB database. It takes no agent traffic and
+never reads the backend's own database. The service lives in `Demo/app/`; the repository root
+holds the docs and CI.
 `Demo/README.md` documents the endpoints, the data model and the configuration; the root
 `README.md` is older and partly describes a design that does not exist.
 
@@ -35,19 +36,20 @@ tests need `MONGODB_URL`, the five `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY
 
 ## Architecture
 
-- **`app/main.py`**: the HTTP surface (`/process_findings`, `/test/process_findings`, the
-  backend-key endpoints), the APScheduler job per approved task, and the deadline processing that
+- **`app/main.py`**: the HTTP surface (the backend-key endpoints under `/tasks/{task_id}/...` and
+  `/schedule-task/{task_id}`), the APScheduler job per approved task, and the deadline processing that
   downloads the repository, runs both LLM stages and posts the verdicts.
 - **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
   groups findings that describe the same bug.
 - **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
   batch for validity and severity.
-- **`app/database/mongodb_handler.py`**: Motor access to the arbiter's `security_findings`
-  database (finding reads and metadata) and the backend's `agent_arena` database (agents only).
+- **`app/database/mongodb_handler.py`**: Motor access to the `security_findings` database: finding
+  reads and the arbiter's metadata.
 - **`app/backend_tasks.py`**: reads task metadata from the backend's `/api/arbiter/approved-tasks`
   and `/api/arbiter/tasks/{task_id}`; tasks are never read from MongoDB.
-- **`app/backend_findings.py`**: creates, updates and deletes findings through the backend's
-  `/api/arbiter/tasks/{task_id}/...` routes; the arbiter never writes findings to MongoDB itself.
+- **`app/backend_findings.py`**: writes verdicts onto findings through the backend's
+  `PATCH /api/arbiter/tasks/{task_id}/findings/{finding_id}`; the arbiter never writes findings to
+  MongoDB itself.
   `app/backend_api.py` holds the URL and header pieces both clients share.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both

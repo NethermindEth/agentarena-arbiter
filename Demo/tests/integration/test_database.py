@@ -19,13 +19,11 @@ async def db_handler():
     # Create test database names
     handler = MongoDBHandler()
     handler.findings_db_name = "test_security_findings"
-    handler.agent_arena_db_name = "test_agent_arena"
 
     await handler.connect()
 
     # Clean up any existing test data at start
     await handler.findings_db.drop_collection("test_security_findings")
-    await handler.agent_arena_db.drop_collection("test_agent_arena")
 
     yield handler
 
