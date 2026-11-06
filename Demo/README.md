@@ -35,13 +35,12 @@
 
 ### Prerequisites
 - [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
-- MongoDB
 - Claude and Gemini API keys
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
 2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
-3. Configure MongoDB connection string (defaults to localhost if not specified)
+3. Set the `BACKEND_*` values to the AgentArena backend the arbiter judges for
 4. Set desired similarity threshold (default: 0.8)
 
 ### Installation
@@ -87,14 +86,9 @@ uv run pytest
 uv run pytest --cov=app --cov-report=term-missing
 ```
 
-Settings are read at import time, so the required variables must be set, with
-placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
-them. The integration tests write to the MongoDB at `MONGODB_URL`, which holds only the arbiter's
-metadata.
-
-### Prerequisites for Testing
-- A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
-  backend calls are mocked
+Settings are read at import time, so the required variables must be set;
+placeholders do, since the LLM and backend calls are mocked.
+`.github/workflows/ci-tests.yaml` lists them.
 
 ### 🧪 Writing Tests
 
@@ -150,8 +144,6 @@ docker-compose logs -f
 
 The API will be available at http://localhost:8004.
 
-**Note:** When running with Docker, you need to configure the MongoDB connection string in your `.env` file. This allows you to use either a local MongoDB instance or a MongoDB Atlas cluster.
-
 ### Stopping Docker Services
 ```bash
 docker-compose down
@@ -191,7 +183,6 @@ class FindingDB(Finding):
 ## Configuration
 The application requires the following environment variables:
 
-- `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
 - `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
@@ -207,7 +198,7 @@ The application requires the following environment variables:
 - `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
 - `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
-- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}`, reads its findings at `GET /{task_id}/findings` (query filters `agent_id`, `status`, `since_timestamp`), and writes its verdicts with `PATCH /{task_id}/findings/{finding_id}`.
+- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}`, reads its findings at `GET /{task_id}/findings` (query filters `agent_id`, `status`, `since_timestamp`), and writes its verdicts with `PATCH /{task_id}/findings/{finding_id}`. It keeps its processed-task marker in the task's metadata, read with `GET /{task_id}/metadata` and replaced with `PUT /{task_id}/metadata`; the arbiter has no database of its own.
 
 ## API Endpoints
 
