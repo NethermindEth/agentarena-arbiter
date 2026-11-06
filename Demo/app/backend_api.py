@@ -1,10 +1,34 @@
 """Request pieces shared by every call to the AgentArena backend's arbiter API."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from urllib.parse import quote
+
+import httpx
 
 from app.config import Settings
 
 TIMEOUT_SECONDS = 20.0
+
+
+def new_client() -> httpx.AsyncClient:
+    """
+    Return a client for the backend, to share across the calls of one task's processing.
+
+    Judging a task writes once per finding in each pass; one client keeps those writes on pooled
+    connections instead of opening a connection per call. The caller closes it.
+    """
+    return httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+
+
+@asynccontextmanager
+async def client_or_new(client: httpx.AsyncClient | None) -> AsyncIterator[httpx.AsyncClient]:
+    """Yield the given client, or a new one closed on exit when the caller has none."""
+    if client is not None:
+        yield client
+        return
+    async with new_client() as created:
+        yield created
 
 
 def auth_headers(config: Settings) -> dict[str, str]:

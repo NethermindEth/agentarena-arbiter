@@ -104,7 +104,7 @@ class TestProcessTaskScheduled:
         # Mock async database methods properly
         mock_mongodb.get_metadata = AsyncMock(return_value=None)
         mock_mongodb.set_metadata = AsyncMock(return_value=True)
-        mock_process_task.return_value = None
+        mock_process_task.return_value = True
 
         await process_task_scheduled(task_id)
 
@@ -120,6 +120,22 @@ class TestProcessTaskScheduled:
         assert set_call[0][0] == "task_test-scheduled-task"
         assert "processed_at" in set_call[0][1]
         assert set_call[0][1]["scheduled_processing"] is True
+
+    @patch("app.main.process_task", new_callable=AsyncMock, return_value=False)
+    @patch("app.main.mongodb")
+    async def test_process_task_scheduled_failure_is_not_marked(
+        self, mock_mongodb, mock_process_task
+    ):
+        """A failed run leaves the task unmarked, so it can be retried."""
+        from app.main import process_task_scheduled
+
+        mock_mongodb.get_metadata = AsyncMock(return_value=None)
+        mock_mongodb.set_metadata = AsyncMock()
+
+        await process_task_scheduled("test-failed-task")
+
+        mock_process_task.assert_called_once_with("test-failed-task")
+        mock_mongodb.set_metadata.assert_not_called()
 
     @patch("app.main.process_task")
     @patch("app.main.mongodb")

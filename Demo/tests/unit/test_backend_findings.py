@@ -165,12 +165,36 @@ class TestFetchFindings:
             "since_timestamp": "2026-01-02T03:04:05+00:00",
         }
 
-    async def test_unknown_task_raises(self, config, http):
-        """A 404 is an error rather than an empty task, so a misrouted call cannot look idle."""
+    async def test_unknown_task_returns_none(self, config, http):
+        """A 404 is None rather than an empty list, so a misrouted call cannot look idle."""
         http.get.return_value = respond(404, {"detail": "Task not found"})
 
+        assert await fetch_findings("missing", config) is None
+
+    async def test_other_errors_raise(self, config, http):
+        """A server error is not an unknown task."""
+        http.get.return_value = respond(503, {"detail": "unavailable"})
+
         with pytest.raises(httpx.HTTPStatusError):
-            await fetch_findings("missing", config)
+            await fetch_findings("task-1", config)
+
+
+@pytest.mark.asyncio
+class TestSharedClient:
+    async def test_given_client_is_used_and_left_open(self, config):
+        """A caller's client sends the requests, and no client of its own is created."""
+        client = AsyncMock()
+        client.get.return_value = respond(200, [])
+        client.patch.return_value = respond(204)
+
+        with patch("httpx.AsyncClient") as client_class:
+            await fetch_findings("task-1", config, client=client)
+            await update_finding("task-1", "abc", {"status": "pending"}, config, client=client)
+
+        client_class.assert_not_called()
+        client.get.assert_called_once()
+        client.patch.assert_called_once()
+        client.aclose.assert_not_called()
 
 
 def test_timestamp_offset_survives_query_encoding():

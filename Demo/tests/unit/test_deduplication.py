@@ -96,3 +96,38 @@ class TestFindingDeduplication:
             assert dup_rel.duplicateOf == sample_findings[0].str_id
 
             mock_update_finding.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_write_does_not_stop_the_rest(
+        self, mock_update_finding, deduplicator, sample_findings, sample_task_cache
+    ):
+        """A write that raises is skipped, and every later finding is still written."""
+        assert len(sample_findings) > 1
+        mock_update_finding.side_effect = [Exception("backend timeout")] + [True] * (
+            len(sample_findings) - 1
+        )
+        with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
+            mock_find_duplicates.return_value = DeduplicationResult(results=[])
+
+            result = await deduplicator.process_findings(
+                "test-task", sample_findings, sample_task_cache
+            )
+
+        assert mock_update_finding.call_count == len(sample_findings)
+        assert result["summary"]["successfully_updated"] == len(sample_findings) - 1
+        assert "error" not in result["status_application"]
+
+    @pytest.mark.asyncio
+    async def test_given_client_is_passed_to_every_write(
+        self, mock_update_finding, deduplicator, sample_findings, sample_task_cache
+    ):
+        """The run's shared client reaches each status write."""
+        client = object()
+        with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
+            mock_find_duplicates.return_value = DeduplicationResult(results=[])
+
+            await deduplicator.process_findings(
+                "test-task", sample_findings, sample_task_cache, client=client
+            )
+
+        assert all(c.kwargs["client"] is client for c in mock_update_finding.call_args_list)

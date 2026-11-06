@@ -1,5 +1,5 @@
 """
-MongoDB database handler for the arbiter's metadata (task processing and sync markers).
+MongoDB database handler for the arbiter's metadata (the processed-task markers).
 Findings are read and written through the backend (app/backend_findings.py).
 """
 

@@ -58,6 +58,18 @@ class TestTaskFindingsEndpoint:
 
         assert response.status_code == 500
         assert "Error retrieving findings" in response.text
+        # The error text, which can name the backend's URL, stays in the log.
+        assert "Database connection failed" not in response.text
+
+    @patch("app.main.config")
+    def test_get_task_findings_unknown_task(self, mock_config, client):
+        """A task the backend does not know is a 404, not a server error."""
+        mock_config.backend_api_key = "test-key"
+        client.mock_fetch_findings.return_value = None
+
+        response = client.get("/tasks/missing/findings", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 404
 
 
 class TestTriggerTaskProcessingEndpoint:
@@ -111,6 +123,55 @@ class TestTriggerTaskProcessingEndpoint:
         assert result["task_id"] == "test-task"
         assert result["total_findings"] == 0
 
+    @patch("app.main.mongodb")
+    @patch("app.main.config")
+    def test_trigger_task_processing_unknown_task(self, mock_config, mock_mongodb, client):
+        """A task the backend does not know is a 404 and is not marked processed."""
+        mock_config.backend_api_key = "test-key"
+        mock_mongodb.get_metadata = AsyncMock(return_value=None)
+        mock_mongodb.set_metadata = AsyncMock()
+        client.mock_fetch_findings.return_value = None
+
+        response = client.post("/tasks/missing/process", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 404
+        mock_mongodb.set_metadata.assert_not_called()
+
+    @patch("app.main.process_task", new_callable=AsyncMock, return_value=False)
+    @patch("app.main.mongodb")
+    @patch("app.main.config")
+    def test_trigger_task_processing_failure_is_not_marked(
+        self, mock_config, mock_mongodb, _mock_process, client, sample_findings
+    ):
+        """A failed run answers 502 and leaves the task unmarked, so it can be retried."""
+        mock_config.backend_api_key = "test-key"
+        mock_mongodb.get_metadata = AsyncMock(return_value=None)
+        mock_mongodb.set_metadata = AsyncMock()
+        client.mock_fetch_findings.return_value = sample_findings
+
+        response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 502
+        mock_mongodb.set_metadata.assert_not_called()
+
+    @patch("app.main.process_task", new_callable=AsyncMock, return_value=True)
+    @patch("app.main.mongodb")
+    @patch("app.main.config")
+    def test_trigger_task_processing_success_is_marked(
+        self, mock_config, mock_mongodb, _mock_process, client, sample_findings
+    ):
+        """A completed run marks the task processed."""
+        mock_config.backend_api_key = "test-key"
+        mock_mongodb.get_metadata = AsyncMock(return_value=None)
+        mock_mongodb.set_metadata = AsyncMock()
+        client.mock_fetch_findings.return_value = sample_findings
+
+        response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "processed"
+        mock_mongodb.set_metadata.assert_called_once()
+
 
 class TestPostTaskFindingsEndpoint:
     """Test the /tasks/{task_id}/post endpoint."""
@@ -150,3 +211,14 @@ class TestPostTaskFindingsEndpoint:
         assert result["status"] == "no_findings"
         assert result["task_id"] == "test-task"
         assert result["total_findings"] == 0
+
+    @patch("app.main.config")
+    def test_post_task_findings_unknown_task(self, mock_config, client):
+        """A task the backend does not know is a 404."""
+        mock_config.backend_api_key = "test-key"
+        mock_config.backend_findings_endpoint = "http://test.com/findings"
+        client.mock_fetch_findings.return_value = None
+
+        response = client.post("/tasks/missing/post", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 404

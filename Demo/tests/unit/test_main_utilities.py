@@ -60,6 +60,34 @@ class TestScheduleApprovedTasks:
 
 
 @pytest.mark.asyncio
+class TestProcessTaskOutcome:
+    """process_task reports whether the run completed; see test_task_processing for the marker."""
+
+    @patch("app.main.fetch_findings", new_callable=AsyncMock)
+    async def test_backend_error_is_a_failure(self, mock_fetch):
+        """A failing backend read ends the run as failed instead of raising."""
+        from app import main as app_main
+
+        mock_fetch.side_effect = Exception("backend timeout")
+
+        assert await app_main.process_task("task-1") is False
+
+    @patch("app.main.fetch_findings", new_callable=AsyncMock, return_value=None)
+    async def test_unknown_task_is_a_failure(self, _mock_fetch):
+        """A task the backend does not know is not reported as processed."""
+        from app import main as app_main
+
+        assert await app_main.process_task("missing") is False
+
+    @patch("app.main.fetch_findings", new_callable=AsyncMock, return_value=[])
+    async def test_nothing_pending_is_a_success(self, _mock_fetch):
+        """A task with no pending findings has nothing left to do."""
+        from app import main as app_main
+
+        assert await app_main.process_task("task-1") is True
+
+
+@pytest.mark.asyncio
 class TestFetchApprovedTasks:
     """Unit tests for the backend approved-tasks client."""
 

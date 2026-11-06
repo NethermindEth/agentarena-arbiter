@@ -12,7 +12,7 @@ import httpx
 from bson import ObjectId
 from pydantic_core import to_jsonable_python
 
-from app.backend_api import TIMEOUT_SECONDS, auth_headers, path_segment, task_url
+from app.backend_api import auth_headers, client_or_new, path_segment, task_url
 from app.config import Settings
 from app.models.finding_db import FindingDB, Status
 
@@ -23,7 +23,8 @@ async def fetch_findings(
     agent_id: str | None = None,
     status: Status | None = None,
     since_timestamp: datetime | None = None,
-) -> list[FindingDB]:
+    client: httpx.AsyncClient | None = None,
+) -> list[FindingDB] | None:
     """
     Fetch a task's findings through `GET /api/arbiter/tasks/{task_id}/findings`.
 
@@ -34,13 +35,15 @@ async def fetch_findings(
         status: Only findings with this status (optional)
         since_timestamp: Only findings created strictly after this instant (optional); the
             backend reads one without an offset as UTC
+        client: Client to send the request with (optional); a new one is used when left out
 
     Returns:
-        The findings matching every filter given
+        The findings matching every filter given, or None when the backend does not know the
+        task (404), which is distinct from a known task with no findings
 
     Raises:
-        httpx.HTTPError: when the request fails or the backend answers with an error status,
-            404 included for an unknown task
+        httpx.HTTPError: when the request fails or the backend answers with another error status
+        bson.errors.InvalidId: when a finding's `_id` is not an ObjectId
     """
     params: dict[str, str] = {}
     if agent_id:
@@ -49,11 +52,13 @@ async def fetch_findings(
         params["status"] = status.value
     if since_timestamp:
         params["since_timestamp"] = since_timestamp.isoformat()
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.get(
+    async with client_or_new(client) as http:
+        response = await http.get(
             f"{task_url(config, task_id)}/findings", params=params, headers=auth_headers(config)
         )
-        response.raise_for_status()
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
     return [_finding_from_json(item) for item in response.json()]
 
 
@@ -64,7 +69,11 @@ def _finding_from_json(item: dict[str, Any]) -> FindingDB:
 
 
 async def update_finding(
-    task_id: str, finding_id: str, update_fields: dict[str, Any] | FindingDB, config: Settings
+    task_id: str,
+    finding_id: str,
+    update_fields: dict[str, Any] | FindingDB,
+    config: Settings,
+    client: httpx.AsyncClient | None = None,
 ) -> bool:
     """
     Update fields of a stored finding through
@@ -77,6 +86,7 @@ async def update_finding(
         finding_id: Finding ID as string
         update_fields: Fields to write, or a FindingDB whose set fields are written
         config: Application configuration, giving the endpoint and the shared API key
+        client: Client to send the request with (optional); a new one is used when left out
 
     Returns:
         True if the finding exists and was updated, False when the backend answers 404 for the
@@ -91,8 +101,8 @@ async def update_finding(
         body = update_fields.model_dump(mode="json", exclude_unset=True, exclude={"id"})
     else:
         body = to_jsonable_python(update_fields)
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.patch(
+    async with client_or_new(client) as http:
+        response = await http.patch(
             f"{task_url(config, task_id)}/findings/{path_segment(finding_id)}",
             json=body,
             headers=auth_headers(config),

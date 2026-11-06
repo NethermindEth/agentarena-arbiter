@@ -2,6 +2,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+
 from app.backend_findings import update_finding
 from app.config import config
 from app.core.claude_model import (
@@ -167,7 +169,10 @@ class FindingEvaluator:
         return evaluation_results
 
     async def apply_evaluation_results(
-        self, task_id: str, evaluation_results: list[FindingEvaluation]
+        self,
+        task_id: str,
+        evaluation_results: list[FindingEvaluation],
+        client: httpx.AsyncClient | None = None,
     ) -> dict[str, Any]:
         """
         Apply evaluation results to findings in the database.
@@ -175,6 +180,7 @@ class FindingEvaluator:
         Args:
             task_id: Task identifier
             evaluation_results: List of evaluation results to apply
+            client: Backend client to write the verdicts with (optional)
 
         Returns:
             Summary of applied changes
@@ -201,7 +207,7 @@ class FindingEvaluator:
                     update_fields["status"] = Status.DISPUTED
 
                 success = await update_finding(
-                    task_id, eval_result.finding_id, update_fields, config
+                    task_id, eval_result.finding_id, update_fields, config, client=client
                 )
 
                 if success:
@@ -242,6 +248,7 @@ class FindingEvaluator:
         findings: list[FindingDB],
         duplicate_relationships: list[DuplicateFinding],
         task_cache: TaskCache,
+        client: httpx.AsyncClient | None = None,
     ) -> dict[str, Any]:
         """
         Evaluate all findings in batches, keeping duplicates together.
@@ -251,6 +258,7 @@ class FindingEvaluator:
             findings: List of findings to evaluate
             duplicate_relationships: Duplicate relationships for grouping
             task_cache: Task context containing smart contract files and documentation
+            client: Backend client to write the verdicts with (optional)
 
         Returns:
             Summary of evaluation results
@@ -302,7 +310,9 @@ class FindingEvaluator:
             all_evaluation_results.extend(batch_results)
 
         # Apply all evaluation results
-        apply_results = await self.apply_evaluation_results(task_id, all_evaluation_results)
+        apply_results = await self.apply_evaluation_results(
+            task_id, all_evaluation_results, client=client
+        )
 
         results = {
             "total_findings": len(findings),
