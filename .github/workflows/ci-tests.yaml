@@ -14,29 +14,13 @@ jobs:
   tests:
     runs-on: ubuntu-latest
 
-    # The integration tests write to a real MongoDB; the service is reachable at localhost.
-    # 7.0 is the version agentarena-app tests against; the 8.x images refuse to start on the
-    # runner's kernel (SERVER-121912).
-    services:
-      mongo:
-        image: mongo:7.0
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     # Settings are read at import time and the required ones have no defaults; the values
-    # are placeholders, since every outbound call is mocked except the MongoDB service.
+    # are placeholders, since every outbound call is mocked.
     env:
-      MONGODB_URL: mongodb://localhost:27017
       CLAUDE_API_KEY: test
       GEMINI_API_KEY: test
       BACKEND_API_KEY: test
       BACKEND_FINDINGS_ENDPOINT: http://backend.test/api/insert-findings
-      BACKEND_SUBMISSIONS_ENDPOINT: http://backend.test/api/submissions
       BACKEND_TASK_REPOSITORY_ENDPOINT: http://backend.test/api/task-repository
       BACKEND_APPROVED_TASKS_ENDPOINT: http://backend.test/api/arbiter/approved-tasks
       BACKEND_TASKS_ENDPOINT: http://backend.test/api/arbiter/tasks
