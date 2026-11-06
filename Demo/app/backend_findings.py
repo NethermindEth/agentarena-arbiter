@@ -1,18 +1,66 @@
 """
-Finding writes through the AgentArena backend's arbiter API.
+Finding reads and verdict writes through the AgentArena backend's arbiter API.
 
-The backend stores agents' submissions itself, in the collections `MongoDBHandler.get_findings`
-reads; the arbiter writes back only its verdicts, through `update_finding`.
+The backend stores agents' submissions itself; the arbiter reads them with `fetch_findings` and
+writes back only its verdicts, through `update_finding`.
 """
 
+from datetime import datetime
 from typing import Any
 
 import httpx
+from bson import ObjectId
 from pydantic_core import to_jsonable_python
 
 from app.backend_api import TIMEOUT_SECONDS, auth_headers, path_segment, task_url
 from app.config import Settings
-from app.models.finding_db import FindingDB
+from app.models.finding_db import FindingDB, Status
+
+
+async def fetch_findings(
+    task_id: str,
+    config: Settings,
+    agent_id: str | None = None,
+    status: Status | None = None,
+    since_timestamp: datetime | None = None,
+) -> list[FindingDB]:
+    """
+    Fetch a task's findings through `GET /api/arbiter/tasks/{task_id}/findings`.
+
+    Args:
+        task_id: Task identifier
+        config: Application configuration, giving the endpoint and the shared API key
+        agent_id: Only this agent's findings (optional)
+        status: Only findings with this status (optional)
+        since_timestamp: Only findings created strictly after this instant (optional); the
+            backend reads one without an offset as UTC
+
+    Returns:
+        The findings matching every filter given
+
+    Raises:
+        httpx.HTTPError: when the request fails or the backend answers with an error status,
+            404 included for an unknown task
+    """
+    params: dict[str, str] = {}
+    if agent_id:
+        params["agent_id"] = agent_id
+    if status:
+        params["status"] = status.value
+    if since_timestamp:
+        params["since_timestamp"] = since_timestamp.isoformat()
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        response = await client.get(
+            f"{task_url(config, task_id)}/findings", params=params, headers=auth_headers(config)
+        )
+        response.raise_for_status()
+    return [_finding_from_json(item) for item in response.json()]
+
+
+def _finding_from_json(item: dict[str, Any]) -> FindingDB:
+    """Build a FindingDB from the backend's JSON, whose `_id` is the ObjectId as a string."""
+    raw_id = item.pop("_id", None) or item.pop("id")
+    return FindingDB.model_validate({**item, "_id": ObjectId(raw_id)})
 
 
 async def update_finding(

@@ -19,6 +19,7 @@ from apscheduler.triggers.date import DateTrigger
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.backend_findings import fetch_findings
 from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
@@ -413,7 +414,7 @@ async def process_task(task_id: str):
         logger.info(f"Processing task findings for task_id: {task_id}")
 
         # Get all pending task findings for this task
-        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
+        pending_findings = await fetch_findings(task_id, config, status=Status.PENDING)
 
         if not pending_findings:
             logger.info(f"No pending task findings found for task_id: {task_id}")
@@ -442,7 +443,7 @@ async def process_task(task_id: str):
         )
 
         # Step 2: Re-fetch pending findings after deduplication to get updated statuses
-        deduplicated_findings = await mongodb.get_findings(task_id=task_id)
+        deduplicated_findings = await fetch_findings(task_id, config)
         logger.info(
             f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}"
         )
@@ -464,7 +465,7 @@ async def process_task(task_id: str):
         # Step 4: Post results to backend endpoint
         try:
             # Get all findings for this task from all agents
-            all_task_findings = await mongodb.get_findings(task_id=task_id)
+            all_task_findings = await fetch_findings(task_id, config)
 
             if not all_task_findings:
                 logger.info(f"No findings to sync with backend endpoint for task_id: {task_id}")
@@ -548,7 +549,7 @@ async def get_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-
         if x_api_key != config.backend_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        findings = await mongodb.get_findings(task_id)
+        findings = await fetch_findings(task_id, config)
         return [finding.model_dump() for finding in findings]
     except HTTPException:
         raise
@@ -591,7 +592,7 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
             }
 
         # Check if there are any pending findings
-        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
+        pending_findings = await fetch_findings(task_id, config, status=Status.PENDING)
 
         if not pending_findings:
             return {
@@ -719,7 +720,7 @@ async def post_task_findings(task_id: str, x_api_key: str = Header(..., alias="X
             raise HTTPException(status_code=503, detail="Backend findings endpoint not configured")
 
         # Get all findings for this task
-        all_findings = await mongodb.get_findings(task_id=task_id)
+        all_findings = await fetch_findings(task_id, config)
 
         if not all_findings:
             return {

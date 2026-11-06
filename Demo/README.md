@@ -2,7 +2,7 @@
 ## Submission Process
 
 - Agents submit findings to the AgentArena backend, not to the arbiter. The backend stores each one
-  as `Status.PENDING` in the collections the arbiter reads at the task's deadline.
+  as `Status.PENDING`, and the arbiter reads them from the backend at the task's deadline.
 
 ## Self-Deduplication Process
 
@@ -89,8 +89,8 @@ uv run pytest --cov=app --cov-report=term-missing
 
 Settings are read at import time, so the required variables must be set, with
 placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
-them. The integration tests write to the MongoDB at `MONGODB_URL`, seeding findings directly
-since the backend, not the arbiter, stores submissions.
+them. The integration tests write to the MongoDB at `MONGODB_URL`, which holds only the arbiter's
+metadata.
 
 ### Prerequisites for Testing
 - A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
@@ -208,7 +208,7 @@ The application requires the following environment variables:
 - `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
 - `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
-- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}` and writes its verdicts with `PATCH /{task_id}/findings/{finding_id}`. Findings are read from MongoDB.
+- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}`, reads its findings at `GET /{task_id}/findings` (query filters `agent_id`, `status`, `since_timestamp`), and writes its verdicts with `PATCH /{task_id}/findings/{finding_id}`.
 
 ## API Endpoints
 

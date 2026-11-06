@@ -13,7 +13,7 @@ class TestTaskFindingsEndpoint:
     def test_get_task_findings_success(self, mock_config, client, sample_findings):
         """Test successful retrieval of task findings."""
         mock_config.backend_api_key = "test-key"
-        client.mock_db.get_findings = AsyncMock(return_value=sample_findings)
+        client.mock_fetch_findings.return_value = sample_findings
 
         response = client.get("/tasks/test-task-123/findings", headers={"X-API-Key": "test-key"})
 
@@ -29,7 +29,7 @@ class TestTaskFindingsEndpoint:
     def test_get_task_findings_empty(self, mock_config, client):
         """Test retrieval of task findings when none exist."""
         mock_config.backend_api_key = "test-key"
-        client.mock_db.get_findings = AsyncMock(return_value=[])
+        client.mock_fetch_findings.return_value = []
 
         response = client.get("/tasks/test-task-123/findings", headers={"X-API-Key": "test-key"})
 
@@ -52,7 +52,7 @@ class TestTaskFindingsEndpoint:
     def test_get_task_findings_database_error(self, mock_config, client):
         """Test getting task findings when database error occurs."""
         mock_config.backend_api_key = "test-key"
-        client.mock_db.get_findings = AsyncMock(side_effect=Exception("Database connection failed"))
+        client.mock_fetch_findings.side_effect = Exception("Database connection failed")
 
         response = client.get("/tasks/test-task/findings", headers={"X-API-Key": "test-key"})
 
@@ -101,7 +101,7 @@ class TestTriggerTaskProcessingEndpoint:
         """Test triggering processing when no pending findings exist."""
         mock_config.backend_api_key = "test-key"
         mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.get_findings = AsyncMock(return_value=[])
+        client.mock_fetch_findings.return_value = []
 
         response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
 
@@ -141,7 +141,7 @@ class TestPostTaskFindingsEndpoint:
         """Test posting findings when no findings exist for task."""
         mock_config.backend_api_key = "test-key"
         mock_config.backend_findings_endpoint = "http://test.com/findings"
-        client.mock_db.get_findings = AsyncMock(return_value=[])
+        client.mock_fetch_findings.return_value = []
 
         response = client.post("/tasks/test-task/post", headers={"X-API-Key": "test-key"})
 

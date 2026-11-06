@@ -1,17 +1,14 @@
 """
-MongoDB database handler for security findings.
-Reads findings and keeps metadata with native MongoDB Motor operations; findings are written
-through the backend (app/backend_findings.py).
+MongoDB database handler for the arbiter's metadata (task processing and sync markers).
+Findings are read and written through the backend (app/backend_findings.py).
 """
 
 import os
-from datetime import datetime
 from typing import Any
 
 import motor.motor_asyncio
 
 from app.config import config
-from app.models.finding_db import FindingDB, Status
 
 
 class MongoDBHandler:
@@ -55,18 +52,6 @@ class MongoDBHandler:
             raise RuntimeError("MongoDB is not connected; call connect() first")
         return self._findings_db
 
-    def get_findings_collection_name(self, task_id: str) -> str:
-        """
-        Get findings collection name for a task.
-
-        Args:
-            task_id: Task identifier
-
-        Returns:
-            Findings collection name for the task
-        """
-        return f"findings_{task_id}"
-
     async def get_metadata(self, key: str) -> dict[str, Any] | None:
         """
         Get metadata from the metadata collection.
@@ -102,44 +87,6 @@ class MongoDBHandler:
         )
 
         return result.acknowledged
-
-    async def get_findings(
-        self,
-        task_id: str,
-        agent_id: str | None = None,
-        status: Status | None = None,
-        since_timestamp: datetime | None = None,
-    ) -> list[FindingDB]:
-        """
-        Get all findings for a task with optional agent, status, and since_timestamp filters.
-
-        Args:
-            task_id: Task identifier
-            agent_id: Agent identifier (optional)
-            status: Status of the findings (optional)
-            since_timestamp: Only include findings created after this timestamp (optional)
-        Returns:
-            List of all findings matching the filters
-        """
-        collection_name = self.get_findings_collection_name(task_id)
-        collection = self.findings_db[collection_name]
-
-        # Query database for task findings
-        query = {}
-        if agent_id:
-            query["agent_id"] = agent_id
-        if status:
-            query["status"] = status
-        if since_timestamp:
-            query["created_at"] = {"$gt": since_timestamp}
-
-        cursor = collection.find(query)
-        findings = []
-
-        async for doc in cursor:
-            findings.append(FindingDB(**doc))
-
-        return findings
 
 
 # Global MongoDB handler instance

@@ -9,7 +9,7 @@ import httpx
 import pytest
 from bson import ObjectId
 
-from app.backend_findings import update_finding
+from app.backend_findings import fetch_findings, update_finding
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Finding, Severity
 
@@ -110,3 +110,71 @@ class TestUpdateFinding:
 
         with pytest.raises(httpx.HTTPStatusError):
             await update_finding("task-1", "abc", {"bogus": 1}, config)
+
+
+def stored_json(finding_id: ObjectId, **overrides) -> dict:
+    """A finding as the backend's findings listing returns it."""
+    now = "2026-01-02T00:00:00Z"
+    return {
+        **FINDING.model_dump(mode="json"),
+        "_id": str(finding_id),
+        "agent_id": "agent-1",
+        "status": "pending",
+        "duplicateOf": None,
+        "deduplication_comment": None,
+        "evaluated_severity": None,
+        "evaluation_comment": None,
+        "created_at": now,
+        "updated_at": now,
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+class TestFetchFindings:
+    async def test_no_filters_sends_no_params(self, config, http):
+        """Without filters the whole task is listed, and ids come back as ObjectIds."""
+        finding_id = ObjectId()
+        http.get.return_value = respond(200, [stored_json(finding_id)])
+
+        findings = await fetch_findings("task/1", config)
+
+        http.get.assert_called_once_with(f"{BASE}/task%2F1/findings", params={}, headers=HEADERS)
+        assert len(findings) == 1
+        assert isinstance(findings[0], FindingDB)
+        assert findings[0].id == finding_id
+        assert findings[0].str_id == str(finding_id)
+        assert findings[0].status == Status.PENDING
+
+    async def test_filters_are_sent_as_query_params(self, config, http):
+        """Status goes as its value and the timestamp as ISO 8601, offset included."""
+        http.get.return_value = respond(200, [])
+        since = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+        await fetch_findings(
+            "task-1",
+            config,
+            agent_id="agent-1",
+            status=Status.UNIQUE_VALID,
+            since_timestamp=since,
+        )
+
+        assert http.get.call_args.kwargs["params"] == {
+            "agent_id": "agent-1",
+            "status": "unique_valid",
+            "since_timestamp": "2026-01-02T03:04:05+00:00",
+        }
+
+    async def test_unknown_task_raises(self, config, http):
+        """A 404 is an error rather than an empty task, so a misrouted call cannot look idle."""
+        http.get.return_value = respond(404, {"detail": "Task not found"})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await fetch_findings("missing", config)
+
+
+def test_timestamp_offset_survives_query_encoding():
+    """httpx percent-encodes the offset's '+', which a raw query string would read as a space."""
+    request = httpx.Request("GET", BASE, params={"since_timestamp": "2026-01-02T03:04:05+00:00"})
+
+    assert "since_timestamp=2026-01-02T03%3A04%3A05%2B00%3A00" in str(request.url)

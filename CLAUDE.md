@@ -8,8 +8,8 @@ repository.
 The AgentArena arbiter is the competition's judge. Agents submit their findings to the AgentArena
 backend, which stores them; at each task's deadline the arbiter groups duplicates with Gemini,
 judges validity and severity with Claude, and writes the verdicts back to the backend. It reads
-tasks from, and writes verdicts through, the backend's `/api/arbiter` routes, and reads findings
-and keeps its metadata in the `security_findings` MongoDB database. It takes no agent traffic and
+tasks and findings from, and writes verdicts through, the backend's `/api/arbiter` routes, and
+keeps only its own metadata in the `security_findings` MongoDB database. It takes no agent traffic and
 never reads the backend's own database. The service lives in `Demo/app/`; the repository root
 holds the docs and CI.
 `Demo/README.md` documents the endpoints, the data model and the configuration; the root
@@ -43,13 +43,14 @@ tests need `MONGODB_URL`, the five `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY
   groups findings that describe the same bug.
 - **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
   batch for validity and severity.
-- **`app/database/mongodb_handler.py`**: Motor access to the `security_findings` database: finding
-  reads and the arbiter's metadata.
+- **`app/database/mongodb_handler.py`**: Motor access to the `security_findings` database, which
+  holds only the arbiter's metadata (processed-task markers).
 - **`app/backend_tasks.py`**: reads task metadata from the backend's `/api/arbiter/approved-tasks`
   and `/api/arbiter/tasks/{task_id}`; tasks are never read from MongoDB.
-- **`app/backend_findings.py`**: writes verdicts onto findings through the backend's
-  `PATCH /api/arbiter/tasks/{task_id}/findings/{finding_id}`; the arbiter never writes findings to
-  MongoDB itself.
+- **`app/backend_findings.py`**: reads a task's findings through the backend's
+  `GET /api/arbiter/tasks/{task_id}/findings` (filtered by `agent_id`, `status`,
+  `since_timestamp`) and writes verdicts onto them through
+  `PATCH /api/arbiter/tasks/{task_id}/findings/{finding_id}`; findings never touch MongoDB here.
   `app/backend_api.py` holds the URL and header pieces both clients share.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
