@@ -8,8 +8,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    mongodb_url: str = Field(..., description="MongoDB connection URL")
-
     # Claude configuration for evaluation
     claude_api_key: str = Field(..., description="Claude API key")
     claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")

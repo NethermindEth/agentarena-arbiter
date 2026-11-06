@@ -91,14 +91,14 @@ class TestTriggerTaskProcessingEndpoint:
 
         assert response.status_code == 422  # Missing required header
 
-    @patch("app.main.mongodb")
     @patch("app.main.config")
-    def test_trigger_task_processing_already_processed(self, mock_config, mock_mongodb, client):
+    def test_trigger_task_processing_already_processed(self, mock_config, client):
         """Test triggering processing for already processed task."""
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_metadata = AsyncMock(
-            return_value={"processed_at": "2025-01-01T00:00:00Z", "scheduled_processing": True}
-        )
+        client.mock_fetch_marker.return_value = {
+            "processed_at": "2025-01-01T00:00:00+00:00",
+            "scheduled_processing": True,
+        }
 
         response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
 
@@ -106,13 +106,14 @@ class TestTriggerTaskProcessingEndpoint:
         result = response.json()
         assert result["status"] == "already_processed"
         assert result["task_id"] == "test-task"
+        assert result["processed_at"] == "2025-01-01T00:00:00+00:00"
+        assert result["scheduled_processing"] is True
+        client.mock_fetch_findings.assert_not_called()
 
-    @patch("app.main.mongodb")
     @patch("app.main.config")
-    def test_trigger_task_processing_no_pending_findings(self, mock_config, mock_mongodb, client):
+    def test_trigger_task_processing_no_pending_findings(self, mock_config, client):
         """Test triggering processing when no pending findings exist."""
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
         client.mock_fetch_findings.return_value = []
 
         response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
@@ -123,54 +124,62 @@ class TestTriggerTaskProcessingEndpoint:
         assert result["task_id"] == "test-task"
         assert result["total_findings"] == 0
 
-    @patch("app.main.mongodb")
     @patch("app.main.config")
-    def test_trigger_task_processing_unknown_task(self, mock_config, mock_mongodb, client):
-        """A task the backend does not know is a 404 and is not marked processed."""
+    def test_trigger_task_processing_unknown_task(self, mock_config, client):
+        """A task the backend does not know, by its metadata, is a 404."""
+        from app.backend_api import TaskNotFoundError
+
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.set_metadata = AsyncMock()
+        client.mock_fetch_marker.side_effect = TaskNotFoundError("missing")
+
+        response = client.post("/tasks/missing/process", headers={"X-API-Key": "test-key"})
+
+        assert response.status_code == 404
+        client.mock_mark_processed.assert_not_called()
+
+    @patch("app.main.config")
+    def test_trigger_task_processing_unknown_task_by_findings(self, mock_config, client):
+        """A task the backend does not know, by its findings, is a 404 and is not marked."""
+        mock_config.backend_api_key = "test-key"
         client.mock_fetch_findings.return_value = None
 
         response = client.post("/tasks/missing/process", headers={"X-API-Key": "test-key"})
 
         assert response.status_code == 404
-        mock_mongodb.set_metadata.assert_not_called()
+        client.mock_mark_processed.assert_not_called()
 
     @patch("app.main.process_task", new_callable=AsyncMock, return_value=False)
-    @patch("app.main.mongodb")
     @patch("app.main.config")
     def test_trigger_task_processing_failure_is_not_marked(
-        self, mock_config, mock_mongodb, _mock_process, client, sample_findings
+        self, mock_config, _mock_process, client, sample_findings
     ):
         """A failed run answers 502 and leaves the task unmarked, so it can be retried."""
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.set_metadata = AsyncMock()
         client.mock_fetch_findings.return_value = sample_findings
 
         response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
 
         assert response.status_code == 502
-        mock_mongodb.set_metadata.assert_not_called()
+        client.mock_mark_processed.assert_not_called()
 
     @patch("app.main.process_task", new_callable=AsyncMock, return_value=True)
-    @patch("app.main.mongodb")
     @patch("app.main.config")
     def test_trigger_task_processing_success_is_marked(
-        self, mock_config, mock_mongodb, _mock_process, client, sample_findings
+        self, mock_config, _mock_process, client, sample_findings
     ):
-        """A completed run marks the task processed."""
+        """A completed run marks the task processed, as a manual run."""
         mock_config.backend_api_key = "test-key"
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.set_metadata = AsyncMock()
         client.mock_fetch_findings.return_value = sample_findings
 
         response = client.post("/tasks/test-task/process", headers={"X-API-Key": "test-key"})
 
         assert response.status_code == 200
-        assert response.json()["status"] == "processed"
-        mock_mongodb.set_metadata.assert_called_once()
+        result = response.json()
+        assert result["status"] == "processed"
+        assert result["processed_at"] == "2026-01-02T00:00:00+00:00"
+        client.mock_mark_processed.assert_called_once_with(
+            "test-task", mock_config, scheduled=False
+        )
 
 
 class TestPostTaskFindingsEndpoint:

@@ -11,6 +11,10 @@ from app.config import Settings
 TIMEOUT_SECONDS = 20.0
 
 
+class TaskNotFoundError(LookupError):
+    """The backend answered 404 for a task id it does not know."""
+
+
 def new_client() -> httpx.AsyncClient:
     """
     Return a client for the backend, to share across the calls of one task's processing.

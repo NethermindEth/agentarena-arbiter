@@ -93,88 +93,83 @@ class TestScheduleTaskProcessing:
 class TestProcessTaskScheduled:
     """Test the process_task_scheduled function."""
 
-    @patch("app.main.process_task")
-    @patch("app.main.mongodb")
-    async def test_process_task_scheduled_success(self, mock_mongodb, mock_process_task):
-        """Test successful scheduled task processing."""
-        from app.main import process_task_scheduled
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None)
+    @patch("app.main.process_task", new_callable=AsyncMock, return_value=True)
+    async def test_process_task_scheduled_success(
+        self, mock_process_task, mock_fetch_marker, mock_mark
+    ):
+        """A completed run is marked processed, as a scheduled run."""
+        from app.main import config, process_task_scheduled
 
-        task_id = "test-scheduled-task"
+        await process_task_scheduled("test-scheduled-task")
 
-        # Mock async database methods properly
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.set_metadata = AsyncMock(return_value=True)
-        mock_process_task.return_value = True
+        mock_fetch_marker.assert_called_once_with("test-scheduled-task", config)
+        mock_process_task.assert_called_once_with("test-scheduled-task")
+        mock_mark.assert_called_once_with("test-scheduled-task", config, scheduled=True)
 
-        await process_task_scheduled(task_id)
-
-        # Should check for processed metadata
-        mock_mongodb.get_metadata.assert_called_once_with("task_test-scheduled-task")
-
-        # Should process the task
-        mock_process_task.assert_called_once_with(task_id)
-
-        # Should mark as processed
-        mock_mongodb.set_metadata.assert_called_once()
-        set_call = mock_mongodb.set_metadata.call_args
-        assert set_call[0][0] == "task_test-scheduled-task"
-        assert "processed_at" in set_call[0][1]
-        assert set_call[0][1]["scheduled_processing"] is True
-
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None)
     @patch("app.main.process_task", new_callable=AsyncMock, return_value=False)
-    @patch("app.main.mongodb")
     async def test_process_task_scheduled_failure_is_not_marked(
-        self, mock_mongodb, mock_process_task
+        self, mock_process_task, _mock_fetch_marker, mock_mark
     ):
         """A failed run leaves the task unmarked, so it can be retried."""
         from app.main import process_task_scheduled
 
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
-        mock_mongodb.set_metadata = AsyncMock()
-
         await process_task_scheduled("test-failed-task")
 
         mock_process_task.assert_called_once_with("test-failed-task")
-        mock_mongodb.set_metadata.assert_not_called()
+        mock_mark.assert_not_called()
 
-    @patch("app.main.process_task")
-    @patch("app.main.mongodb")
-    async def test_process_task_scheduled_already_processed(self, mock_mongodb, mock_process_task):
-        """Test scheduled processing when task already processed."""
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch(
+        "app.main.fetch_processed_marker",
+        new_callable=AsyncMock,
+        return_value={"processed_at": "2025-01-01T00:00:00+00:00", "scheduled_processing": True},
+    )
+    @patch("app.main.process_task", new_callable=AsyncMock)
+    async def test_process_task_scheduled_already_processed(
+        self, mock_process_task, _mock_fetch_marker, mock_mark
+    ):
+        """A task already marked is skipped."""
         from app.main import process_task_scheduled
 
-        task_id = "test-already-processed"
+        await process_task_scheduled("test-already-processed")
 
-        # Mock existing processed metadata
-        mock_mongodb.get_metadata = AsyncMock(
-            return_value={"processed_at": "2025-01-01T00:00:00Z", "scheduled_processing": True}
-        )
-
-        await process_task_scheduled(task_id)
-
-        # Should check metadata and return early
-        mock_mongodb.get_metadata.assert_called_once_with("task_test-already-processed")
-
-        # Should not process the task
         mock_process_task.assert_not_called()
-        mock_mongodb.set_metadata.assert_not_called()
+        mock_mark.assert_not_called()
 
-    @patch("app.main.process_task")
-    @patch("app.main.mongodb")
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock)
+    @patch("app.main.process_task", new_callable=AsyncMock)
+    async def test_process_task_scheduled_unknown_task(
+        self, mock_process_task, mock_fetch_marker, mock_mark
+    ):
+        """A task the backend no longer knows is logged and neither processed nor marked."""
+        from app.backend_api import TaskNotFoundError
+        from app.main import process_task_scheduled
+
+        mock_fetch_marker.side_effect = TaskNotFoundError("gone")
+
+        await process_task_scheduled("gone")
+
+        mock_process_task.assert_not_called()
+        mock_mark.assert_not_called()
+
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None)
+    @patch("app.main.process_task", new_callable=AsyncMock)
     @patch("app.main.logger")
     async def test_process_task_scheduled_exception_handling(
-        self, mock_logger, mock_mongodb, mock_process_task
+        self, mock_logger, mock_process_task, _mock_fetch_marker, mock_mark
     ):
-        """Test exception handling in scheduled processing."""
+        """An exception in the run is logged and leaves the task unmarked."""
         from app.main import process_task_scheduled
 
-        task_id = "test-error-processing"
-
-        # Mock async database methods and set process_task to raise exception
-        mock_mongodb.get_metadata = AsyncMock(return_value=None)
         mock_process_task.side_effect = Exception("Processing error")
 
-        await process_task_scheduled(task_id)
+        await process_task_scheduled("test-error-processing")
 
-        # Should log error
         mock_logger.error.assert_called_once()
+        mock_mark.assert_not_called()

@@ -19,13 +19,13 @@ from apscheduler.triggers.date import DateTrigger
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.backend_api import new_client
+from app.backend_api import TaskNotFoundError, new_client
 from app.backend_findings import fetch_findings
+from app.backend_metadata import fetch_processed_marker, mark_task_processed
 from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
 from app.types import TaskCache
@@ -106,7 +106,8 @@ async def schedule_task_processing(task_id: str, start_time: datetime, deadline:
 async def process_task_scheduled(task_id: str):
     """
     Wrapper function for scheduled task processing.
-    Includes additional checks and metadata management.
+    Skips a task already marked processed in the backend's task metadata, and marks one whose run
+    completes.
 
     Args:
         task_id: Task identifier
@@ -114,13 +115,10 @@ async def process_task_scheduled(task_id: str):
     try:
         logger.info(f"Scheduled task processing triggered for task {task_id}")
 
-        # Check if this task has already been processed
-        processed_key = f"task_{task_id}"
-        processed_metadata = await mongodb.get_metadata(processed_key)
-
-        if processed_metadata:
+        marker = await fetch_processed_marker(task_id, config)
+        if marker:
             logger.info(
-                f"Task {task_id} was already processed at {processed_metadata.get('processed_at')}. Skipping."
+                f"Task {task_id} was already processed at {marker.get('processed_at')}. Skipping."
             )
             return
 
@@ -129,10 +127,7 @@ async def process_task_scheduled(task_id: str):
             logger.error(f"Scheduled processing of task {task_id} failed; not marking it processed")
             return
 
-        current_time = datetime.now(UTC)
-        await mongodb.set_metadata(
-            processed_key, {"processed_at": current_time, "scheduled_processing": True}
-        )
+        await mark_task_processed(task_id, config, scheduled=True)
 
         logger.info(f"Marked task {task_id} as processed via scheduled job")
 
@@ -145,9 +140,6 @@ async def lifespan(_app: FastAPI):
     """Manage application lifespan events."""
     # Startup
     try:
-        await mongodb.connect()
-        logger.info("✅ Connected to MongoDB")
-
         # Start the scheduler
         scheduler.start()
         logger.info("✅ Started APScheduler for task processing jobs")
@@ -192,10 +184,6 @@ async def lifespan(_app: FastAPI):
             logger.info("✅ Shut down APScheduler")
         except Exception as e:
             logger.error(f"Error shutting down scheduler: {str(e)}")
-
-        # Close MongoDB connection
-        await mongodb.close()
-        logger.info("✅ Disconnected from MongoDB")
 
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
@@ -596,20 +584,19 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
         if x_api_key != config.backend_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Check if this task has already been processed
-        processed_key = f"task_{task_id}"
-        processed_metadata = await mongodb.get_metadata(processed_key)
+        try:
+            marker = await fetch_processed_marker(task_id, config)
+        except TaskNotFoundError as e:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found") from e
 
-        if processed_metadata:
-            logger.info(
-                f"Task {task_id} was already processed at {processed_metadata.get('processed_at')}"
-            )
+        if marker:
+            logger.info(f"Task {task_id} was already processed at {marker.get('processed_at')}")
             return {
                 "task_id": task_id,
                 "status": "already_processed",
-                "message": f"Task was already processed at {processed_metadata.get('processed_at')}",
-                "processed_at": processed_metadata.get("processed_at"),
-                "scheduled_processing": processed_metadata.get("scheduled_processing", False),
+                "message": f"Task was already processed at {marker.get('processed_at')}",
+                "processed_at": marker.get("processed_at"),
+                "scheduled_processing": marker.get("scheduled_processing", False),
             }
 
         # Check if there are any pending findings
@@ -636,10 +623,7 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
                 status_code=502, detail=f"Processing task {task_id} failed; see the arbiter's log"
             )
 
-        current_time = datetime.now(UTC)
-        await mongodb.set_metadata(
-            processed_key, {"processed_at": current_time, "scheduled_processing": False}
-        )
+        current_time = await mark_task_processed(task_id, config, scheduled=False)
 
         logger.info(f"Manual task processing completed for task: {task_id}")
 

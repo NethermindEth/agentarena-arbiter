@@ -132,17 +132,6 @@ def sample_findings() -> list[Mock]:
 
 
 @pytest.fixture
-def mock_mongodb():
-    """Mock MongoDB handler."""
-    mock = AsyncMock()
-    mock.connect = AsyncMock()
-    mock.close = AsyncMock()
-    mock.get_metadata = AsyncMock(return_value=None)
-    mock.set_metadata = AsyncMock()
-    return mock
-
-
-@pytest.fixture
 def mock_httpx_client():
     """Mock httpx AsyncClient for HTTP requests."""
     mock = AsyncMock()
@@ -154,28 +143,35 @@ def mock_httpx_client():
 
 
 @pytest.fixture
-def client(mock_mongodb):
-    """Create FastAPI test client with mocked dependencies."""
+def client():
+    """Create FastAPI test client with the backend calls mocked."""
     # Import here to avoid circular imports and initialization issues
     from fastapi.testclient import TestClient
 
     from app.main import app
 
-    # Mock the database and other dependencies before creating the client
     with (
-        patch("app.main.mongodb", mock_mongodb),
         patch("app.main.fetch_task", new_callable=AsyncMock) as mock_fetch_task,
         patch(
             "app.main.fetch_findings", new_callable=AsyncMock, return_value=[]
         ) as mock_fetch_findings,
+        patch(
+            "app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None
+        ) as mock_fetch_marker,
+        patch(
+            "app.main.mark_task_processed",
+            new_callable=AsyncMock,
+            return_value=datetime(2026, 1, 2, tzinfo=UTC),
+        ) as mock_mark_processed,
     ):
-        # Create client without triggering lifespan events that need real DB
+        # Created without its lifespan, so no scheduler starts
         client = TestClient(app, base_url="http://testserver")
 
         # Attach the mocks to the client so tests can configure them
-        client.mock_db = mock_mongodb
         client.mock_fetch_task = mock_fetch_task
         client.mock_fetch_findings = mock_fetch_findings
+        client.mock_fetch_marker = mock_fetch_marker
+        client.mock_mark_processed = mock_mark_processed
 
         yield client
 
