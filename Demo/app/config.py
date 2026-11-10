@@ -6,7 +6,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # An empty variable, as `KEY=` or a compose `${KEY}` with KEY unset, counts as unset, so the
+    # field keeps its default instead of failing validation on "".
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", env_ignore_empty=True
+    )
 
     # Claude configuration for evaluation
     claude_api_key: str = Field(..., description="Claude API key")
