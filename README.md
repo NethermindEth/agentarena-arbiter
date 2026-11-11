@@ -202,9 +202,12 @@ You can customize ArbiterAgent’s behavior by modifying `config.py` (or an equi
   `vX.Y.Z`, creates the GitHub release and pushes the prod image as `vX.Y.Z` and `latest`
   (`build-and-push-prod.yaml`). The cluster tracks `latest` by digest, so that
   push is the production deployment.
-* An AI review of a pull request runs on demand: a comment containing
-  `@review-pls` starts `code-review.yaml`, two advisory passes that each post one
-  comment. It needs the `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` repository secrets.
+* An AI review of a pull request runs on demand, from a comment by a member or
+  collaborator: `/review` starts `code-review.yaml`, where Qodo PR-Agent and
+  Claude Code each post one advisory comment; `/improve`, `/describe` and
+  `/ask "..."` run PR-Agent alone and `@review-pls` runs Claude alone. Both call
+  the org LiteLLM gateway over Tailscale with a key from Infisical, read with the
+  `INFISICAL_IDENTITY_ID` and `INFISICAL_PROJECT_ID` repository secrets.
 * Dependabot (`.github/dependabot.yml`) opens weekly grouped pull requests
   against `staging` for the locked packages, the image bases and the pinned
   actions. The uv binary and Python are bumped by hand; the pin check in

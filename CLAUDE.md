@@ -71,9 +71,13 @@ repository.
   the PR title as the commit title, so PR titles are Conventional Commits; `main` takes merge
   commits only (the `staging` to `main` promotion and the release PR). Dependabot opens version and
   security PRs against `staging`; see `.github/dependabot.yml`.
-- AI code review runs when a PR comment contains `@review-pls`
-  (`.github/workflows/code-review.yaml`); it is advisory and needs the `ANTHROPIC_API_KEY` and
-  `OPENAI_API_KEY` secrets.
+- AI code review (`.github/workflows/code-review.yaml`, advisory) runs on a member's PR comment:
+  `/review` runs both Qodo PR-Agent (shared `ai-review-command` workflow from
+  `NethermindEth/github-workflows`) and Claude Code; `/improve`, `/describe` and `/ask "..."` run
+  PR-Agent alone, `@review-pls` Claude alone. Both reach the org LiteLLM gateway over Tailscale
+  with a key from Infisical (`INFISICAL_IDENTITY_ID`, `INFISICAL_PROJECT_ID` secrets). Comment
+  runs use staging's copy of the workflow, and the Tailscale identities accept only those runs,
+  so a change to the workflow is tried with `/review` after it merges.
 - `Demo/pyproject.toml` keeps `version = "0.0.0"` on purpose: uv.lock records it, and a release
   tool bumping it without `uv lock` would break every `uv sync --locked`.
 
@@ -94,6 +98,7 @@ repository.
   "why", describing the final state rather than how it was reached. Punctuate comments with commas,
   semicolons and periods; avoid em dashes.
 - Every `uses:` in a workflow is pinned to a full commit SHA with the version as a trailing comment;
-  Dependabot's `github-actions-all` group keeps the SHAs current. Checkouts set
-  `persist-credentials: false`.
+  Dependabot's `github-actions-all` group keeps the SHAs current. The exception is
+  `ai-review-command.yaml` in `code-review.yaml`, called at `@main`: its Tailscale identity accepts
+  that workflow from `main` only. Checkouts set `persist-credentials: false`.
 - When needed, update the README files accordingly.
