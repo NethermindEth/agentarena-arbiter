@@ -49,10 +49,11 @@ in `.github/workflows/ci-tests.yaml`.
   `/api/arbiter/tasks/{task_id}/metadata`, which holds the processed-task marker; a task is
   marked only when its run completes.
 - **`app/backend_findings.py`**: reads a task's findings through the backend's
-  `GET /api/arbiter/tasks/{task_id}/findings` (filtered by `agent_id`, `status`,
-  `since_timestamp`) and writes verdicts onto them through
-  `PATCH /api/arbiter/tasks/{task_id}/findings/{finding_id}`. `app/backend_api.py` holds the
-  URL, header and client pieces the backend clients share.
+  `GET /api/arbiter/tasks/{task_id}/findings` (filtered by `agent_id`, `since_timestamp`) and
+  posts the judged findings in one request to `BACKEND_FINDINGS_ENDPOINT`. Both LLM stages set
+  verdicts on the in-memory findings only; that post is the run's only write, so a failed run
+  leaves the backend unchanged. `app/backend_api.py` holds the URL, header and client pieces the
+  backend clients share.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
   directions.

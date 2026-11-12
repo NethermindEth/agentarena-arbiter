@@ -174,14 +174,3 @@ def client():
         client.mock_mark_processed = mock_mark_processed
 
         yield client
-
-
-@pytest.fixture
-def mock_update_finding():
-    """Patch the backend finding update in both judging stages with one mock."""
-    mock = AsyncMock()
-    with (
-        patch("app.core.deduplication.update_finding", mock),
-        patch("app.core.evaluation.update_finding", mock),
-    ):
-        yield mock

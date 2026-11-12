@@ -111,8 +111,8 @@ class TestTriggerTaskProcessingEndpoint:
         client.mock_fetch_findings.assert_not_called()
 
     @patch("app.main.config")
-    def test_trigger_task_processing_no_pending_findings(self, mock_config, client):
-        """Test triggering processing when no pending findings exist."""
+    def test_trigger_task_processing_no_findings(self, mock_config, client):
+        """Test triggering processing when the task has no findings."""
         mock_config.backend_api_key = "test-key"
         client.mock_fetch_findings.return_value = []
 
@@ -120,7 +120,7 @@ class TestTriggerTaskProcessingEndpoint:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["status"] == "no_pending_findings"
+        assert result["status"] == "no_findings"
         assert result["task_id"] == "test-task"
         assert result["total_findings"] == 0
 
@@ -180,54 +180,3 @@ class TestTriggerTaskProcessingEndpoint:
         client.mock_mark_processed.assert_called_once_with(
             "test-task", mock_config, scheduled=False
         )
-
-
-class TestPostTaskFindingsEndpoint:
-    """Test the /tasks/{task_id}/post endpoint."""
-
-    @patch("app.main.config")
-    def test_post_task_findings_invalid_api_key(self, mock_config, client):
-        """Test posting findings with invalid API key."""
-        mock_config.backend_api_key = "correct-key"
-
-        response = client.post("/tasks/test-task/post", headers={"X-API-Key": "wrong-key"})
-
-        assert response.status_code == 401
-        assert "Invalid API key" in response.text
-
-    @patch("app.main.config")
-    def test_post_task_findings_no_backend_endpoint(self, mock_config, client):
-        """Test posting findings when backend endpoint not configured."""
-        mock_config.backend_api_key = "test-key"
-        mock_config.backend_findings_endpoint = None
-
-        response = client.post("/tasks/test-task/post", headers={"X-API-Key": "test-key"})
-
-        assert response.status_code == 503
-        assert "Backend findings endpoint not configured" in response.text
-
-    @patch("app.main.config")
-    def test_post_task_findings_no_findings(self, mock_config, client):
-        """Test posting findings when no findings exist for task."""
-        mock_config.backend_api_key = "test-key"
-        mock_config.backend_findings_endpoint = "http://test.com/findings"
-        client.mock_fetch_findings.return_value = []
-
-        response = client.post("/tasks/test-task/post", headers={"X-API-Key": "test-key"})
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["status"] == "no_findings"
-        assert result["task_id"] == "test-task"
-        assert result["total_findings"] == 0
-
-    @patch("app.main.config")
-    def test_post_task_findings_unknown_task(self, mock_config, client):
-        """A task the backend does not know is a 404."""
-        mock_config.backend_api_key = "test-key"
-        mock_config.backend_findings_endpoint = "http://test.com/findings"
-        client.mock_fetch_findings.return_value = None
-
-        response = client.post("/tasks/missing/post", headers={"X-API-Key": "test-key"})
-
-        assert response.status_code == 404

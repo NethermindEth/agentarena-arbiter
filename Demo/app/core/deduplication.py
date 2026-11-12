@@ -6,10 +6,6 @@ Uses Gemini 2.5 Pro to identify duplicates across all findings in a single promp
 import logging
 from typing import Any
 
-import httpx
-
-from app.backend_findings import update_finding
-from app.config import config
 from app.core.gemini_model import (
     DeduplicationResult,
     DuplicateFinding,
@@ -211,25 +207,21 @@ class FindingDeduplication:
         logger.error("Finding status determination fell through to fallback")
         return Status.UNIQUE_VALID
 
-    async def apply_finding_statuses(
-        self,
-        task_id: str,
-        findings: list[FindingDB],
-        dedup_results: dict[str, Any],
-        client: httpx.AsyncClient | None = None,
+    def apply_finding_statuses(
+        self, findings: list[FindingDB], dedup_results: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Apply appropriate statuses to all findings based on deduplication results.
+        Set each finding's status, duplicate link and comment from the deduplication results.
+
+        The findings are changed in memory only; the run writes them to the backend once, after
+        evaluation.
 
         Args:
-            task_id: Task identifier
             findings: All findings being processed
             dedup_results: Results from deduplication analysis
-            client: Backend client to write the statuses with (optional)
 
         Returns:
-            Summary of applied status changes; a finding whose write fails is logged and left
-            out of the counts, and the remaining findings are still written
+            Summary of the statuses set
         """
         try:
             status_counts = {
@@ -307,21 +299,9 @@ class FindingDeduplication:
                             f"Already reported in finding '{original_id}': {explanation}"
                         )
 
-                # One failed write (a timeout, a 5xx, a 429) must not leave the rest pending.
-                try:
-                    success = await update_finding(
-                        task_id, finding.str_id, finding, config, client=client
-                    )
-                except Exception as e:
-                    logger.error(f"Error updating status for '{finding.title}': {str(e)}")
-                    continue
-
-                if success:
-                    updated_count += 1
-                    status_counts[new_status] += 1
-                    logger.info(f"Updated '{finding.title}' status: {old_status} → {new_status}")
-                else:
-                    logger.warning(f"Failed to update status for '{finding.title}'")
+                updated_count += 1
+                status_counts[new_status] += 1
+                logger.info(f"Set '{finding.title}' status: {old_status} → {new_status}")
 
             return {
                 "total_processed": len(findings),
@@ -347,7 +327,6 @@ class FindingDeduplication:
         task_id: str,
         findings: list[FindingDB],
         task_cache: TaskCache,
-        client: httpx.AsyncClient | None = None,
     ) -> dict[str, Any]:
         """
         Main entry point for processing findings through deduplication with comprehensive status management.
@@ -356,7 +335,6 @@ class FindingDeduplication:
             task_id: Task identifier
             findings: List of findings to process
             task_cache: Task context containing smart contract files and documentation
-            client: Backend client to write the statuses with (optional)
 
         Returns:
             Complete processing results with detailed status information
@@ -367,9 +345,7 @@ class FindingDeduplication:
         dedup_results = await self.deduplicate_findings(findings, task_cache)
 
         # Step 2: Apply comprehensive status management
-        status_results = await self.apply_finding_statuses(
-            task_id, findings, dedup_results, client=client
-        )
+        status_results = self.apply_finding_statuses(findings, dedup_results)
 
         # Combine results
         combined_results = {

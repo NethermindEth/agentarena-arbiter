@@ -2,24 +2,18 @@
 Unit tests for evaluation logic.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from app.core.claude_model import FindingEvaluation
 from app.core.evaluation import FindingEvaluator
 from app.core.gemini_model import DuplicateFinding
-from app.models.finding_db import Severity
+from app.models.finding_db import Severity, Status
 
 
 class TestFindingEvaluator:
     """Test FindingEvaluator class."""
-
-    @pytest.fixture(autouse=True)
-    def mock_update_finding(self):
-        """Patch the backend finding update the evaluation writes through."""
-        with patch("app.core.evaluation.update_finding", new_callable=AsyncMock) as mock:
-            yield mock
 
     @pytest.fixture
     def evaluator(self):
@@ -75,7 +69,7 @@ class TestFindingEvaluator:
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_empty_list(self, evaluator, sample_task_cache):
         """Test evaluating empty findings list."""
-        result = await evaluator.evaluate_all_findings("test-task", [], [], sample_task_cache)
+        result = await evaluator.evaluate_all_findings([], [], sample_task_cache)
 
         assert result is not None
         assert "application_results" in result
@@ -85,7 +79,7 @@ class TestFindingEvaluator:
 
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_success(
-        self, mock_update_finding, evaluator, sample_findings, sample_task_cache
+        self, evaluator, sample_findings, sample_task_cache
     ):
         """Test successful evaluation of findings."""
         with patch.object(evaluator, "evaluate_findings_batch") as mock_evaluate_batch:
@@ -100,7 +94,6 @@ class TestFindingEvaluator:
             ]
 
             result = await evaluator.evaluate_all_findings(
-                "test-task",
                 sample_findings[:1],  # Just test with one finding
                 [],
                 sample_task_cache,
@@ -110,5 +103,47 @@ class TestFindingEvaluator:
             assert result["application_results"]["disputed_count"] == 0
             assert result["application_results"]["failed_count"] == 0
 
-            # Verify database update was called
-            mock_update_finding.assert_called()
+            # The verdict is set on the finding itself
+            assert sample_findings[0].evaluated_severity == Severity.HIGH
+            assert sample_findings[0].evaluation_comment == "Valid security issue"
+
+    def test_apply_evaluation_results_disputes_invalid_findings(self, evaluator, sample_findings):
+        """An invalid verdict disputes the finding and keeps its comment and severity."""
+        finding = sample_findings[0]
+        finding.status = Status.UNIQUE_VALID
+
+        result = evaluator.apply_evaluation_results(
+            [finding],
+            [
+                FindingEvaluation(
+                    finding_id=finding.str_id,
+                    is_valid=False,
+                    severity=Severity.LOW,
+                    comment="Not exploitable",
+                )
+            ],
+        )
+
+        assert result["disputed_count"] == 1
+        assert finding.status == Status.DISPUTED
+        assert finding.evaluated_severity == Severity.LOW
+        assert finding.evaluation_comment == "Not exploitable"
+
+    def test_apply_evaluation_results_unknown_finding_is_failed(self, evaluator, sample_findings):
+        """A verdict for a finding that was not evaluated changes nothing and counts as failed."""
+        sample_findings[0].evaluation_comment = None
+
+        result = evaluator.apply_evaluation_results(
+            sample_findings[:1],
+            [
+                FindingEvaluation(
+                    finding_id="000000000000000000000000",
+                    is_valid=False,
+                    severity=Severity.LOW,
+                    comment="?",
+                )
+            ],
+        )
+
+        assert result["failed_count"] == 1
+        assert sample_findings[0].evaluation_comment is None

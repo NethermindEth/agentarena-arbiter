@@ -9,7 +9,7 @@ import httpx
 import pytest
 from bson import ObjectId
 
-from app.backend_findings import fetch_findings, update_finding
+from app.backend_findings import fetch_findings, post_results
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Finding, Severity
 
@@ -52,66 +52,6 @@ FINDING = Finding(
 )
 
 
-@pytest.mark.asyncio
-class TestUpdateFinding:
-    async def test_dict_fields_are_sent_as_json(self, config, http):
-        """Enums and datetimes in a field dict are serialized for the PATCH body."""
-        http.patch.return_value = respond(204)
-        when = datetime(2026, 1, 2, tzinfo=UTC)
-
-        ok = await update_finding(
-            "task-1",
-            "abc",
-            {"status": Status.DISPUTED, "evaluated_severity": Severity.LOW, "updated_at": when},
-            config,
-        )
-
-        assert ok is True
-        http.patch.assert_called_once_with(
-            f"{BASE}/task-1/findings/abc",
-            json={
-                "status": "disputed",
-                "evaluated_severity": "Low",
-                "updated_at": "2026-01-02T00:00:00Z",
-            },
-            headers=HEADERS,
-        )
-
-    async def test_finding_object_sends_set_fields_without_id(self, config, http):
-        """A FindingDB sends the fields it has set, but never its id, which the URL carries."""
-        http.patch.return_value = respond(204)
-        finding = FindingDB.model_validate(
-            {
-                "_id": ObjectId(),
-                **FINDING.model_dump(),
-                "agent_id": "agent-1",
-                "status": Status.PENDING,
-            }
-        )
-        finding.status = Status.UNIQUE_VALID
-
-        await update_finding("task-1", finding.str_id, finding, config)
-
-        body = http.patch.call_args.kwargs["json"]
-        assert "_id" not in body
-        assert "id" not in body
-        assert body["status"] == "unique_valid"
-        assert body["agent_id"] == "agent-1"
-
-    async def test_not_found_returns_false(self, config, http):
-        """A 404 for the task or finding reports a failed update rather than raising."""
-        http.patch.return_value = respond(404, {"detail": "Finding not found"})
-
-        assert await update_finding("task-1", "abc", {"status": "pending"}, config) is False
-
-    async def test_other_errors_raise(self, config, http):
-        """A refused body is a bug, not a missing finding."""
-        http.patch.return_value = respond(422, {"detail": "extra field"})
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await update_finding("task-1", "abc", {"bogus": 1}, config)
-
-
 def stored_json(finding_id: ObjectId, **overrides) -> dict:
     """A finding as the backend's findings listing returns it."""
     now = "2026-01-02T00:00:00Z"
@@ -147,7 +87,7 @@ class TestFetchFindings:
         assert findings[0].status == Status.PENDING
 
     async def test_filters_are_sent_as_query_params(self, config, http):
-        """Status goes as its value and the timestamp as ISO 8601, offset included."""
+        """The agent goes as is and the timestamp as ISO 8601, offset included."""
         http.get.return_value = respond(200, [])
         since = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
@@ -155,13 +95,11 @@ class TestFetchFindings:
             "task-1",
             config,
             agent_id="agent-1",
-            status=Status.UNIQUE_VALID,
             since_timestamp=since,
         )
 
         assert http.get.call_args.kwargs["params"] == {
             "agent_id": "agent-1",
-            "status": "unique_valid",
             "since_timestamp": "2026-01-02T03:04:05+00:00",
         }
 
@@ -180,20 +118,71 @@ class TestFetchFindings:
 
 
 @pytest.mark.asyncio
+class TestPostResults:
+    @staticmethod
+    def judged() -> FindingDB:
+        finding_id = ObjectId()
+        finding = FindingDB.model_validate({**stored_json(finding_id), "_id": finding_id})
+        finding.status = Status.SIMILAR_VALID
+        finding.duplicateOf = "other"
+        finding.deduplication_comment = "Same bug"
+        finding.evaluated_severity = Severity.LOW
+        finding.evaluation_comment = "Valid"
+        return finding
+
+    async def test_every_finding_goes_in_one_post(self, config, http):
+        """The whole task is one request carrying each finding's verdict as JSON."""
+        config.backend_findings_endpoint = "http://test.com/api/insert-findings"
+        http.post.return_value = respond(200)
+        findings = [self.judged(), self.judged()]
+
+        await post_results("task-1", findings, config)
+
+        http.post.assert_called_once()
+        assert http.post.call_args.args[0] == "http://test.com/api/insert-findings"
+        assert http.post.call_args.kwargs["headers"] == HEADERS
+        body = http.post.call_args.kwargs["json"]
+        assert body["task_id"] == "task-1"
+        assert [f["id"] for f in body["findings"]] == [f.str_id for f in findings]
+        assert body["findings"][0] | {"created_at": None} == {
+            "id": findings[0].str_id,
+            "agent_id": "agent-1",
+            "title": "Reentrancy",
+            "description": "withdraw",
+            "severity": "High",
+            "status": "similar_valid",
+            "file_paths": ["a.sol"],
+            "duplicate_of": "other",
+            "deduplication_comment": "Same bug",
+            "evaluated_severity": "Low",
+            "evaluation_comment": "Valid",
+            "created_at": None,
+        }
+
+    async def test_error_status_raises(self, config, http):
+        """A refused post is an error, so the run is not reported as completed."""
+        config.backend_findings_endpoint = "http://test.com/api/insert-findings"
+        http.post.return_value = respond(409, {"detail": "task not approved"})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await post_results("task-1", [self.judged()], config)
+
+
+@pytest.mark.asyncio
 class TestSharedClient:
     async def test_given_client_is_used_and_left_open(self, config):
         """A caller's client sends the requests, and no client of its own is created."""
         client = AsyncMock()
         client.get.return_value = respond(200, [])
-        client.patch.return_value = respond(204)
+        client.post.return_value = respond(200)
 
         with patch("httpx.AsyncClient") as client_class:
             await fetch_findings("task-1", config, client=client)
-            await update_finding("task-1", "abc", {"status": "pending"}, config, client=client)
+            await post_results("task-1", [], config, client=client)
 
         client_class.assert_not_called()
         client.get.assert_called_once()
-        client.patch.assert_called_once()
+        client.post.assert_called_once()
         client.aclose.assert_not_called()
 
 

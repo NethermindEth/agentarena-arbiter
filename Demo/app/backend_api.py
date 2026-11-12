@@ -19,8 +19,8 @@ def new_client() -> httpx.AsyncClient:
     """
     Return a client for the backend, to share across the calls of one task's processing.
 
-    Judging a task writes once per finding in each pass; one client keeps those writes on pooled
-    connections instead of opening a connection per call. The caller closes it.
+    Judging a task reads its findings and posts its results; one client keeps those calls on a
+    pooled connection instead of opening a connection per call. The caller closes it.
     """
     return httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 

@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # An empty variable, as `KEY=` or a compose `${KEY}` with KEY unset, counts as unset, so the
-    # field keeps its default instead of failing validation on "".
+    # field keeps its default instead of failing validation on "". A `.env` key with no field, such
+    # as one left from a removed setting, is ignored as an unknown environment variable would be.
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", env_ignore_empty=True
+        env_file=".env", env_file_encoding="utf-8", env_ignore_empty=True, extra="ignore"
     )
 
     # Claude configuration for evaluation
