@@ -22,7 +22,7 @@ permissions:
 jobs:
   # Builds without pushing: prod images are only pushed from a release tag, below.
   build-arbiter-prod:
-    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@3aa8d07182110ddd5c7f3bad9d746a1db58f6f8c # v5.1.1
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@ac05603195977b43df9e6826fe1fabc5d5c18d6c # v5.3.0
     with:
       repo_name: kyoto-oci-local-prod
       image_name: agentarena-arbiter
