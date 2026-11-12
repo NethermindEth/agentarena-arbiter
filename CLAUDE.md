@@ -5,11 +5,13 @@ repository.
 
 ## Project Overview
 
-The AgentArena arbiter is the competition's judge. During a task's submission window it stores the
-findings each audit agent posts; at the deadline it groups duplicates with Gemini, judges validity
-and severity with Claude, and writes the verdicts back to the AgentArena backend. It authenticates
-agents by reading the backend's MongoDB directly and keeps its own state in a second database on
-the same cluster. The service lives in `Demo/app/`; the repository root holds the docs and CI.
+The AgentArena arbiter is the competition's judge. Agents submit their findings to the AgentArena
+backend, which stores them; at each task's deadline the arbiter groups duplicates with Gemini,
+judges validity and severity with Claude, and writes the verdicts back to the backend. It reads
+tasks and findings from, and writes verdicts and its own per-task metadata through, the
+backend's `/api/arbiter` routes; it has no database of its own, takes no agent traffic and never
+reads the backend's database. The service lives in `Demo/app/`; the repository root holds the
+docs and CI.
 `Demo/README.md` documents the endpoints, the data model and the configuration; the root
 `README.md` is older and partly describes a design that does not exist.
 
@@ -20,7 +22,7 @@ cd Demo
 uv sync                  # .venv from uv.lock; after editing pyproject.toml: uv lock, commit both
 cp .env.example .env     # then fill in values
 uv run python -m app.main          # serves on :8004 with reload
-uv run pytest                      # needs a MongoDB at MONGODB_URL and the required settings
+uv run pytest                      # needs the required settings, placeholders are enough
 uv run ruff check .      # lint (add --fix to autofix)
 uv run ruff format .     # format
 uv run pyright           # type check; needs Node, downloaded on first run if absent
@@ -28,21 +30,30 @@ pre-commit install       # once per clone, from the repository root; runs the sa
 ```
 
 Settings are read when `app.config` is imported and the required ones have no defaults, so the
-tests need `MONGODB_URL`, the three `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
-`CLAUDE_API_KEY` and `GEMINI_API_KEY` set, with placeholders for everything but MongoDB; see the
-`tests` job in `.github/workflows/ci-tests.yaml`. The integration tests write to that MongoDB.
+tests need the four `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`, `CLAUDE_API_KEY` and
+`GEMINI_API_KEY` set; placeholders do, since every outbound call is mocked. See the `tests` job
+in `.github/workflows/ci-tests.yaml`.
 
 ## Architecture
 
-- **`app/main.py`**: the HTTP surface (`/process_findings`, `/test/process_findings`, the
-  backend-key endpoints), the APScheduler job per approved task, and the deadline processing that
-  downloads the repository, runs both LLM stages and posts the verdicts.
+- **`app/main.py`**: the HTTP surface (the backend-key endpoints under `/tasks/{task_id}/...`
+  and `/schedule-task/{task_id}`), the APScheduler job per approved task, and the deadline
+  processing that downloads the repository, runs both LLM stages and posts the verdicts.
 - **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
   groups findings that describe the same bug.
 - **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
   batch for validity and severity.
-- **`app/database/mongodb_handler.py`**: Motor access to the arbiter's `security_findings`
-  database and the backend's `agent_arena` database (agents and tasks).
+- **`app/backend_tasks.py`**: reads tasks from the backend's `/api/arbiter/approved-tasks` and
+  `/api/arbiter/tasks/{task_id}`.
+- **`app/backend_metadata.py`**: reads and replaces the arbiter's free-form per-task metadata at
+  `/api/arbiter/tasks/{task_id}/metadata`, which holds the processed-task marker; a task is
+  marked only when its run completes.
+- **`app/backend_findings.py`**: reads a task's findings through the backend's
+  `GET /api/arbiter/tasks/{task_id}/findings` (filtered by `agent_id`, `since_timestamp`) and
+  posts the judged findings in one request to `BACKEND_FINDINGS_ENDPOINT`. Both LLM stages set
+  verdicts on the in-memory findings only; that post is the run's only write, so a failed run
+  leaves the backend unchanged. `app/backend_api.py` holds the URL, header and client pieces the
+  backend clients share.
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
 - **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
   directions.

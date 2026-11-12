@@ -9,7 +9,6 @@ from app.core.claude_model import (
     evaluate_findings_structured,
 )
 from app.core.gemini_model import DuplicateFinding
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Severity
 from app.types import TaskCache
@@ -24,15 +23,13 @@ class FindingEvaluator:
     Supports batch evaluation for efficiency.
     """
 
-    def __init__(self, mongodb_client=None, batch_size: int = 10):
+    def __init__(self, batch_size: int = 10):
         """
         Initialize the finding evaluator.
 
         Args:
-            mongodb_client: MongoDB client instance (uses global instance if None)
             batch_size: Maximum number of findings to evaluate in a single batch
         """
-        self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
         self.evaluation_model = self._setup_structured_evaluation_model()
         self.batch_size = batch_size
 
@@ -167,68 +164,48 @@ class FindingEvaluator:
 
         return evaluation_results
 
-    async def apply_evaluation_results(
-        self, task_id: str, evaluation_results: list[FindingEvaluation]
+    def apply_evaluation_results(
+        self, findings: list[FindingDB], evaluation_results: list[FindingEvaluation]
     ) -> dict[str, Any]:
         """
-        Apply evaluation results to findings in the database.
+        Set each evaluated finding's severity and comment, and dispute the invalid ones.
+
+        The findings are changed in memory only; the run writes them to the backend once, after
+        this step.
 
         Args:
-            task_id: Task identifier
+            findings: The findings that were evaluated
             evaluation_results: List of evaluation results to apply
 
         Returns:
-            Summary of applied changes
+            Summary of applied changes; a result naming no finding of the list counts as failed
         """
+        finding_map = {f.str_id: f for f in findings}
         valid_count = 0
         disputed_count = 0
         failed_count = 0
 
         for eval_result in evaluation_results:
-            try:
-                update_fields = {
-                    "evaluated_severity": self._normalize_severity(eval_result.severity),
-                    "evaluation_comment": eval_result.comment,
-                    "updated_at": datetime.now(UTC),
-                }
-
-                if not eval_result.comment:
-                    logger.warning(
-                        f"evaluation_comment is empty for finding {eval_result.finding_id}"
-                    )
-
-                # Set status to DISPUTED for invalid findings
-                if not eval_result.is_valid:
-                    update_fields["status"] = Status.DISPUTED
-
-                success = await self.mongodb.update_finding(
-                    task_id, eval_result.finding_id, update_fields
-                )
-
-                if success:
-                    if eval_result.is_valid:
-                        valid_count += 1
-                        logger.info(
-                            f"Successfully updated valid finding {eval_result.finding_id} (no status change)"
-                        )
-                    else:
-                        disputed_count += 1
-                        logger.info(
-                            f"Successfully updated finding {eval_result.finding_id} with status {update_fields['status']}"
-                        )
-                else:
-                    failed_count += 1
-                    logger.error(f"Failed to update finding {eval_result.finding_id} in database")
-
-            except Exception as e:
+            finding = finding_map.get(eval_result.finding_id)
+            if finding is None:
                 failed_count += 1
-                logger.error(
-                    f"Error applying evaluation for finding '{eval_result.finding_id}': {str(e)}"
-                )
-                logger.error(
-                    f"eval_result data: is_valid={eval_result.is_valid}, severity={eval_result.severity}, comment={eval_result.comment}"
-                )
+                logger.error(f"Evaluation names unknown finding {eval_result.finding_id}")
                 continue
+
+            if not eval_result.comment:
+                logger.warning(f"evaluation_comment is empty for finding {eval_result.finding_id}")
+
+            finding.evaluated_severity = self._normalize_severity(eval_result.severity)
+            finding.evaluation_comment = eval_result.comment
+            finding.updated_at = datetime.now(UTC)
+
+            if eval_result.is_valid:
+                valid_count += 1
+                logger.info(f"Finding {eval_result.finding_id} is valid (no status change)")
+            else:
+                finding.status = Status.DISPUTED
+                disputed_count += 1
+                logger.info(f"Finding {eval_result.finding_id} is disputed")
 
         return {
             "total_evaluations": len(evaluation_results),
@@ -239,7 +216,6 @@ class FindingEvaluator:
 
     async def evaluate_all_findings(
         self,
-        task_id: str,
         findings: list[FindingDB],
         duplicate_relationships: list[DuplicateFinding],
         task_cache: TaskCache,
@@ -248,7 +224,6 @@ class FindingEvaluator:
         Evaluate all findings in batches, keeping duplicates together.
 
         Args:
-            task_id: Task identifier
             findings: List of findings to evaluate
             duplicate_relationships: Duplicate relationships for grouping
             task_cache: Task context containing smart contract files and documentation
@@ -303,7 +278,7 @@ class FindingEvaluator:
             all_evaluation_results.extend(batch_results)
 
         # Apply all evaluation results
-        apply_results = await self.apply_evaluation_results(task_id, all_evaluation_results)
+        apply_results = self.apply_evaluation_results(findings, all_evaluation_results)
 
         results = {
             "total_findings": len(findings),
@@ -318,7 +293,7 @@ class FindingEvaluator:
 
         if failed_count > 0:
             logger.warning(
-                f"Completed batch evaluation: {valid_count} valid, {disputed_count} disputed, {failed_count} failed to update"
+                f"Completed batch evaluation: {valid_count} valid, {disputed_count} disputed, {failed_count} unmatched"
             )
         else:
             logger.info(

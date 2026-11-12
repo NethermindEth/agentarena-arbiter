@@ -12,7 +12,6 @@ from app.core.gemini_model import (
     create_structured_deduplication_model,
     find_duplicates_structured,
 )
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.types import TaskCache
 
@@ -25,15 +24,8 @@ class FindingDeduplication:
     Processes all findings in a single prompt to identify duplicates.
     """
 
-    def __init__(self, mongodb_client=None):
-        """
-        Initialize the finding deduplication handler.
-
-        Args:
-            mongodb_client: MongoDB client instance (uses global instance if None)
-        """
-        self.mongodb = mongodb_client or mongodb  # Use global instance if none provided
-
+    def __init__(self):
+        """Initialize the finding deduplication handler."""
         # Initialize structured deduplication model
         self.deduplication_model = create_structured_deduplication_model()
 
@@ -215,19 +207,21 @@ class FindingDeduplication:
         logger.error("Finding status determination fell through to fallback")
         return Status.UNIQUE_VALID
 
-    async def apply_finding_statuses(
-        self, task_id: str, findings: list[FindingDB], dedup_results: dict[str, Any]
+    def apply_finding_statuses(
+        self, findings: list[FindingDB], dedup_results: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Apply appropriate statuses to all findings based on deduplication results.
+        Set each finding's status, duplicate link and comment from the deduplication results.
+
+        The findings are changed in memory only; the run writes them to the backend once, after
+        evaluation.
 
         Args:
-            task_id: Task identifier
             findings: All findings being processed
             dedup_results: Results from deduplication analysis
 
         Returns:
-            Summary of applied status changes
+            Summary of the statuses set
         """
         try:
             status_counts = {
@@ -305,15 +299,9 @@ class FindingDeduplication:
                             f"Already reported in finding '{original_id}': {explanation}"
                         )
 
-                # Save to database
-                success = await self.mongodb.update_finding(task_id, finding.str_id, finding)
-
-                if success:
-                    updated_count += 1
-                    status_counts[new_status] += 1
-                    logger.info(f"Updated '{finding.title}' status: {old_status} → {new_status}")
-                else:
-                    logger.warning(f"Failed to update status for '{finding.title}'")
+                updated_count += 1
+                status_counts[new_status] += 1
+                logger.info(f"Set '{finding.title}' status: {old_status} → {new_status}")
 
             return {
                 "total_processed": len(findings),
@@ -335,7 +323,10 @@ class FindingDeduplication:
             }
 
     async def process_findings(
-        self, task_id: str, findings: list[FindingDB], task_cache: TaskCache
+        self,
+        task_id: str,
+        findings: list[FindingDB],
+        task_cache: TaskCache,
     ) -> dict[str, Any]:
         """
         Main entry point for processing findings through deduplication with comprehensive status management.
@@ -343,6 +334,7 @@ class FindingDeduplication:
         Args:
             task_id: Task identifier
             findings: List of findings to process
+            task_cache: Task context containing smart contract files and documentation
 
         Returns:
             Complete processing results with detailed status information
@@ -353,7 +345,7 @@ class FindingDeduplication:
         dedup_results = await self.deduplicate_findings(findings, task_cache)
 
         # Step 2: Apply comprehensive status management
-        status_results = await self.apply_finding_statuses(task_id, findings, dedup_results)
+        status_results = self.apply_finding_statuses(findings, dedup_results)
 
         # Combine results
         combined_results = {

@@ -6,9 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-    mongodb_url: str = Field(..., description="MongoDB connection URL")
+    # An empty variable, as `KEY=` or a compose `${KEY}` with KEY unset, counts as unset, so the
+    # field keeps its default instead of failing validation on "". A `.env` key with no field, such
+    # as one left from a removed setting, is ignored as an unknown environment variable would be.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", env_ignore_empty=True, extra="ignore"
+    )
 
     # Claude configuration for evaluation
     claude_api_key: str = Field(..., description="Claude API key")
@@ -39,11 +42,16 @@ class Settings(BaseSettings):
 
     backend_api_key: str = Field(..., description="Backend API key")
     backend_findings_endpoint: str = Field(..., description="Backend findings endpoint URL")
-    backend_submissions_endpoint: str = Field(..., description="Backend submissions endpoint URL")
     backend_task_repository_endpoint: str = Field(
         ..., description="Backend task repository endpoint URL"
     )
-    max_findings_per_submission: int = Field(20, description="Maximum findings per submission")
+    backend_approved_tasks_endpoint: str = Field(
+        ..., description="Backend approved tasks endpoint URL (/api/arbiter/approved-tasks)"
+    )
+    backend_tasks_endpoint: str = Field(
+        ...,
+        description="Backend task endpoint base URL (/api/arbiter/tasks); the task id is appended",
+    )
     data_dir: str = "task_data"  # Hardcoded value - helps with gitignore
 
 
