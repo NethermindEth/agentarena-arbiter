@@ -1,13 +1,13 @@
-"""
-Unit tests for deduplication logic.
-"""
+"""Unit tests for deduplication logic."""
 
-from unittest.mock import AsyncMock, patch
+from itertools import permutations
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from app.core.deduplication import FindingDeduplication
 from app.core.gemini_model import DeduplicationResult, DuplicateFinding
+from app.models.finding_db import Status
 from tests.conftest import mock_mongodb
 
 
@@ -93,3 +93,42 @@ class TestFindingDeduplication:
             assert dup_rel.duplicateOf == sample_findings[0].str_id
 
             mock_mongodb.update_finding.assert_called()
+
+
+class TestDetermineFindingStatus:
+    """Each agent receives credit once per group, independent of evaluation order."""
+
+    @pytest.mark.parametrize(
+        ("agents", "expected"),
+        [
+            (
+                ("alice", "alice", "alice"),
+                (Status.BEST_VALID, Status.ALREADY_REPORTED, Status.ALREADY_REPORTED),
+            ),
+            (
+                ("alice", "bob", "carol"),
+                (Status.BEST_VALID, Status.SIMILAR_VALID, Status.SIMILAR_VALID),
+            ),
+            (
+                ("alice", "bob", "bob"),
+                (Status.BEST_VALID, Status.SIMILAR_VALID, Status.ALREADY_REPORTED),
+            ),
+        ],
+    )
+    def test_statuses_are_independent_of_processing_order(self, agents, expected):
+        deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+        findings = {
+            key: Mock(str_id=key, agent_id=agent, status=Status.PENDING)
+            for key, agent in zip(("original", "d1", "d2"), agents, strict=True)
+        }
+        original_to_duplicates = {"original": ["d2", "d1"]}
+        duplicate_to_original = {"d1": "original", "d2": "original"}
+        for order in permutations(findings):
+            for finding in findings.values():
+                finding.status = Status.PENDING
+            for key in order:
+                finding = findings[key]
+                finding.status = deduplicator.determine_finding_status(
+                    finding, original_to_duplicates, duplicate_to_original, findings
+                )
+            assert tuple(f.status for f in findings.values()) == expected
