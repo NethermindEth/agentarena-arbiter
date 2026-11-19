@@ -2,13 +2,13 @@
 Unit tests for deduplication logic.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from app.core.deduplication import FindingDeduplication
 from app.core.gemini_model import DeduplicationResult, DuplicateFinding
-from tests.conftest import mock_mongodb
+from app.models.finding_db import Status
 
 
 class TestFindingDeduplication:
@@ -17,7 +17,7 @@ class TestFindingDeduplication:
     @pytest.fixture
     def deduplicator(self):
         """Create FindingDeduplication instance."""
-        return FindingDeduplication(mongodb_client=mock_mongodb)
+        return FindingDeduplication()
 
     def test_initialization(self, deduplicator):
         """Test deduplicator initializes correctly."""
@@ -45,7 +45,6 @@ class TestFindingDeduplication:
         """Test processing findings with no duplicates found."""
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = DeduplicationResult(results=[])
-            mock_mongodb.update_finding = AsyncMock()
 
             # Use only the first finding to avoid duplicates
             single_finding = [sample_findings[0]]
@@ -58,8 +57,9 @@ class TestFindingDeduplication:
             assert result["summary"]["duplicates_found"] == 0
             assert len(result["deduplication"]["duplicate_relationships"]) == 0
 
-            # The update_finding method should be called when setting the finding as unique
-            mock_mongodb.update_finding.assert_called_once()
+            # The finding is set unique in memory
+            assert single_finding[0].status == Status.UNIQUE_VALID
+            assert result["summary"]["successfully_updated"] == 1
 
     @pytest.mark.asyncio
     async def test_process_findings_with_duplicates(
@@ -78,7 +78,6 @@ class TestFindingDeduplication:
                 ]
             )
             mock_find_duplicates.return_value = mock_duplicates
-            mock_mongodb.update_finding = AsyncMock()
 
             result = await deduplicator.process_findings(
                 "test-task", sample_findings, sample_task_cache
@@ -92,4 +91,23 @@ class TestFindingDeduplication:
             assert dup_rel.findingId == sample_findings[1].str_id
             assert dup_rel.duplicateOf == sample_findings[0].str_id
 
-            mock_mongodb.update_finding.assert_called()
+            # The statuses and the duplicate link are set on the findings themselves
+            assert sample_findings[0].status == Status.BEST_VALID
+            assert sample_findings[1].status == Status.SIMILAR_VALID
+            assert sample_findings[1].duplicateOf == sample_findings[0].str_id
+            assert sample_findings[1].deduplication_comment
+
+    @pytest.mark.asyncio
+    async def test_writes_nothing_to_the_backend(
+        self, deduplicator, sample_findings, sample_task_cache
+    ):
+        """Deduplication sends no request; the run posts every verdict once, after evaluation."""
+        with (
+            patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates,
+            patch("httpx.AsyncClient") as client_class,
+        ):
+            mock_find_duplicates.return_value = DeduplicationResult(results=[])
+
+            await deduplicator.process_findings("test-task", sample_findings, sample_task_cache)
+
+        client_class.assert_not_called()

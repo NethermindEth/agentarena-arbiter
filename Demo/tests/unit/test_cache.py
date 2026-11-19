@@ -4,7 +4,7 @@ Tests individual components related to task processing and TESTTASK caching.
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -15,37 +15,37 @@ from app.types import TaskCache
 class TestFetchTaskData:
     """Unit tests for fetch_task_data functionality."""
 
-    @patch("app.main.mongodb")
-    async def test_fetch_task_data_task_not_found(self, mock_mongodb):
+    @patch("app.main.fetch_task")
+    async def test_fetch_task_data_task_not_found(self, mock_fetch_task):
         """Test fetch_task_data when task is not found in database."""
         from app import main as app_main
 
-        mock_mongodb.get_task = AsyncMock(return_value=None)
+        mock_fetch_task.return_value = None
 
         result = await app_main.fetch_task_data("nonexistent-task")
 
         assert result is None
-        mock_mongodb.get_task.assert_called_once_with("nonexistent-task")
+        mock_fetch_task.assert_called_once_with("nonexistent-task", app_main.config)
 
-    @patch("app.main.mongodb")
-    async def test_fetch_task_data_no_selected_files(self, mock_mongodb, sample_task):
+    @patch("app.main.fetch_task")
+    async def test_fetch_task_data_no_selected_files(self, mock_fetch_task, sample_task):
         """Test fetch_task_data when task has no selected files."""
         from app import main as app_main
 
         # Modify sample task to have no files
         sample_task.selectedFiles = []
 
-        mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+        mock_fetch_task.return_value = sample_task
 
         result = await app_main.fetch_task_data("TEST123")
 
         assert result is None
 
     @patch("app.main.download_repository")
-    @patch("app.main.mongodb")
+    @patch("app.main.fetch_task")
     @patch("app.main.config")
     async def test_fetch_task_data_download_failure(
-        self, mock_config, mock_mongodb, mock_download, sample_task
+        self, mock_config, mock_fetch_task, mock_download, sample_task
     ):
         """Test fetch_task_data when repository download fails."""
         import tempfile
@@ -56,7 +56,7 @@ class TestFetchTaskData:
             mock_config.backend_task_repository_endpoint = "http://test.com/repo"
             mock_config.data_dir = temp_data_dir
 
-            mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+            mock_fetch_task.return_value = sample_task
             mock_download.return_value = (None, None)  # Download failure
 
             result = await app_main.fetch_task_data("TEST123")
@@ -64,8 +64,8 @@ class TestFetchTaskData:
             assert result is None
 
     @patch("app.main.download_repository")
-    @patch("app.main.mongodb")
-    async def test_testtask_cache_hit(self, mock_mongodb, mock_download, sample_task):
+    @patch("app.main.fetch_task")
+    async def test_testtask_cache_hit(self, mock_fetch_task, mock_download, sample_task):
         """Test that TESTTASK uses cache when commitSha matches."""
         from app import main as app_main
 
@@ -90,7 +90,7 @@ class TestFetchTaskData:
         sample_task.taskId = "TESTTASK"
         sample_task.commitSha = "abc123def456"  # Same as cached
 
-        mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+        mock_fetch_task.return_value = sample_task
 
         result = await app_main.fetch_task_data("TESTTASK")
 
@@ -99,9 +99,11 @@ class TestFetchTaskData:
         mock_download.assert_not_called()
 
     @patch("app.main.download_repository")
-    @patch("app.main.mongodb")
+    @patch("app.main.fetch_task")
     @patch("app.main.config")
-    async def test_testtask_cache_miss(self, mock_config, mock_mongodb, mock_download, sample_task):
+    async def test_testtask_cache_miss(
+        self, mock_config, mock_fetch_task, mock_download, sample_task
+    ):
         """Test that TESTTASK re-downloads when commitSha changes."""
         import tempfile
 
@@ -145,7 +147,7 @@ class TestFetchTaskData:
             mock_config.data_dir = temp_data_dir
             mock_download.return_value = (temp_repo_dir, temp_download_dir)  # Real temp paths
 
-            mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+            mock_fetch_task.return_value = sample_task
 
             result = await app_main.fetch_task_data("TESTTASK")
 

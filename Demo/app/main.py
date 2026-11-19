@@ -9,7 +9,6 @@ import os
 import shutil
 import sys
 import traceback
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -17,15 +16,17 @@ from typing import Any
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.backend_api import TaskNotFoundError, new_client
+from app.backend_findings import fetch_findings, post_results
+from app.backend_metadata import fetch_processed_marker, mark_task_processed
+from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
-from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
-from app.models.finding_input import FindingInput
 from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
 from app.types import TaskCache
 
@@ -48,9 +49,6 @@ evaluator = FindingEvaluator()
 # Cache for TESTTASK to avoid re-downloading repository unnecessarily
 test_task_cache: dict[str, Any] | None = None
 
-# Initialize per-agent submission locks to prevent concurrent processing
-# Key format: (task_id, agent_id)
-agent_submission_locks: dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Initialize APScheduler for task processing jobs
 scheduler = AsyncIOScheduler()
@@ -108,7 +106,8 @@ async def schedule_task_processing(task_id: str, start_time: datetime, deadline:
 async def process_task_scheduled(task_id: str):
     """
     Wrapper function for scheduled task processing.
-    Includes additional checks and metadata management.
+    Skips a task already marked processed in the backend's task metadata, and marks one whose run
+    completes.
 
     Args:
         task_id: Task identifier
@@ -116,24 +115,19 @@ async def process_task_scheduled(task_id: str):
     try:
         logger.info(f"Scheduled task processing triggered for task {task_id}")
 
-        # Check if this task has already been processed
-        processed_key = f"task_{task_id}"
-        processed_metadata = await mongodb.get_metadata(processed_key)
-
-        if processed_metadata:
+        marker = await fetch_processed_marker(task_id, config)
+        if marker:
             logger.info(
-                f"Task {task_id} was already processed at {processed_metadata.get('processed_at')}. Skipping."
+                f"Task {task_id} was already processed at {marker.get('processed_at')}. Skipping."
             )
             return
 
-        # Process the task findings
-        await process_task(task_id)
+        # A failed run leaves the task unmarked, so POST /tasks/{task_id}/process can retry it.
+        if not await process_task(task_id):
+            logger.error(f"Scheduled processing of task {task_id} failed; not marking it processed")
+            return
 
-        # Mark this task as processed
-        current_time = datetime.now(UTC)
-        await mongodb.set_metadata(
-            processed_key, {"processed_at": current_time, "scheduled_processing": True}
-        )
+        await mark_task_processed(task_id, config, scheduled=True)
 
         logger.info(f"Marked task {task_id} as processed via scheduled job")
 
@@ -146,9 +140,6 @@ async def lifespan(_app: FastAPI):
     """Manage application lifespan events."""
     # Startup
     try:
-        await mongodb.connect()
-        logger.info("✅ Connected to MongoDB")
-
         # Start the scheduler
         scheduler.start()
         logger.info("✅ Started APScheduler for task processing jobs")
@@ -194,10 +185,6 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             logger.error(f"Error shutting down scheduler: {str(e)}")
 
-        # Close MongoDB connection
-        await mongodb.close()
-        logger.info("✅ Disconnected from MongoDB")
-
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
         sys.exit(1)  # Exit the application with a non-zero status to indicate an error
@@ -226,16 +213,16 @@ app.add_middleware(
 
 
 async def schedule_approved_tasks():
-    """Fetch approved tasks metadata from database and schedule processing jobs."""
-    logger.info("Fetching approved tasks from database")
+    """Fetch approved tasks metadata from the backend and schedule processing jobs."""
+    logger.info("Fetching approved tasks from backend")
     try:
-        tasks = await mongodb.get_approved_tasks()
+        tasks = await fetch_approved_tasks(config)
     except Exception as e:
-        logger.error(f"Error fetching approved tasks from database: {str(e)}")
+        logger.error(f"Error fetching approved tasks from backend: {str(e)}")
         return
 
     if not tasks:
-        logger.info("No approved tasks found in database; skipping task scheduling")
+        logger.info("No approved tasks returned by backend; skipping task scheduling")
         return
 
     scheduled_count = 0
@@ -292,10 +279,9 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
     """
     task = None
     try:
-        # Fetch task from database
-        task = await mongodb.get_task(task_id)
+        task = await fetch_task(task_id, config)
         if not task:
-            logger.error(f"Task {task_id} not found in database")
+            logger.error(f"Task {task_id} not found in backend")
             return None
 
         selected_files = task.selectedFiles or []
@@ -386,26 +372,7 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
         return None
 
 
-def format_finding(finding: FindingDB) -> dict[str, Any]:
-    return {
-        "id": finding.str_id,
-        "agent_id": finding.agent_id,
-        "title": finding.title,
-        "description": finding.description,
-        "severity": finding.severity,
-        "status": finding.status,
-        "file_paths": finding.file_paths,
-        "duplicate_of": finding.duplicateOf if finding.duplicateOf else None,
-        "deduplication_comment": finding.deduplication_comment
-        if finding.deduplication_comment
-        else None,
-        "evaluated_severity": finding.evaluated_severity if finding.evaluated_severity else None,
-        "evaluation_comment": finding.evaluation_comment if finding.evaluation_comment else None,
-        "created_at": finding.created_at.isoformat(),
-    }
-
-
-async def process_task(task_id: str):
+async def process_task(task_id: str) -> bool:
     """
     Process all findings for a task that has ended.
     This function is called automatically when a task deadline passes.
@@ -413,500 +380,109 @@ async def process_task(task_id: str):
 
     Args:
         task_id: Task identifier for the ended task
+
+    Returns:
+        True when the run completed, posting the results included, or the task has no findings;
+        False when it stopped early, so the caller must not mark the task processed
     """
     try:
-        logger.info(f"Processing task findings for task_id: {task_id}")
-
-        # Get all pending task findings for this task
-        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
-
-        if not pending_findings:
-            logger.info(f"No pending task findings found for task_id: {task_id}")
-            return
-
-        logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
-
-        # Fetch task data with repository download
-        task_cache = await fetch_task_data(task_id)
-        if not task_cache:
-            logger.error(
-                f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context."
-            )
-            return
-
-        # Step 1: Identify duplicates
-        logger.info(f"Starting deduplication for task_id: {task_id}")
-
-        dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
-        duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
-
-        logger.info(
-            f"Deduplication completed for task_id: {task_id}: "
-            f"{dedup_results['summary']['originals_found']} originals, "
-            f"{dedup_results['summary']['duplicates_found']} duplicates"
-        )
-
-        # Step 2: Re-fetch pending findings after deduplication to get updated statuses
-        deduplicated_findings = await mongodb.get_findings(task_id=task_id)
-        logger.info(
-            f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}"
-        )
-
-        # Step 3: Evaluate findings in batches, keeping duplicates together
-        logger.info(f"Starting batch evaluation for task_id: {task_id}")
-
-        evaluation_results = await evaluator.evaluate_all_findings(
-            task_id, deduplicated_findings, duplicate_relationships, task_cache
-        )
-
-        logger.info(
-            f"Evaluation completed for task_id: {task_id}: "
-            f"{evaluation_results['application_results']['valid_count']} valid, "
-            f"{evaluation_results['application_results']['disputed_count']} disputed, "
-            f"{evaluation_results['application_results']['failed_count']} failed to update"
-        )
-
-        # Step 4: Post results to backend endpoint
-        try:
-            # Get all findings for this task from all agents
-            all_task_findings = await mongodb.get_findings(task_id=task_id)
-
-            if not all_task_findings:
-                logger.info(f"No findings to sync with backend endpoint for task_id: {task_id}")
-            else:
-                logger.info(
-                    f"Syncing all {len(all_task_findings)} findings for task_id: {task_id} in one batch"
-                )
-
-                # Format findings data for the backend endpoint
-                formatted_findings = [format_finding(finding) for finding in all_task_findings]
-
-                # Prepare payload for backend endpoint
-                payload = {"task_id": task_id, "findings": formatted_findings}
-
-                # Post to backend endpoint
-                backend_endpoint = config.backend_findings_endpoint
-                if backend_endpoint:
-                    async with httpx.AsyncClient() as client:
-                        headers = {"X-API-Key": config.backend_api_key}
-                        response = await client.post(
-                            backend_endpoint, json=payload, headers=headers
-                        )
-                        logger.debug(
-                            f"Backend API response for task_id: {task_id}: {response.json()}"
-                        )
-                        logger.debug(
-                            f"Backend API status code for task_id: {task_id}: {response.status_code}"
-                        )
-
-                        if response.status_code == 200:
-                            logger.info(
-                                f"Successfully posted {len(formatted_findings)} findings to backend for task_id: {task_id}"
-                            )
-                        else:
-                            logger.error(
-                                f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}"
-                            )
-                else:
-                    logger.warning(
-                        f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}"
-                    )
-
-            logger.info(f"Task processing completed successfully for task_id: {task_id}")
-            logger.info(
-                f"Processing summary: "
-                f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
-                f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
-                f"Failed: {evaluation_results['application_results']['failed_count']}, "
-                f"Total: {len(pending_findings)}"
-            )
-
-        except Exception as post_error:
-            logger.error(
-                f"Error posting results to backend for task_id: {task_id}: {str(post_error)}"
-            )
-
+        # One client for the run's read of the findings and its final post.
+        async with new_client() as client:
+            return await _process_task(task_id, client)
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"Error during task processing for task_id: {task_id}: {str(e)}")
         logger.error(f"Traceback for task_id: {task_id}: {error_trace}")
+        return False
 
 
-async def process_task_for_agent(task_id: str, agent_id: str):
-    """
-    Process only the pending findings for a specific agent and task.
-    Intended for the TESTTASK flow where submissions are processed immediately.
-    """
-    try:
-        logger.info(f"Processing task findings for task_id: {task_id}, agent_id: {agent_id}")
+def _clear_verdicts(findings: list[FindingDB]) -> None:
+    """Return each finding to pending with no verdict, so a run judges the whole set afresh."""
+    for finding in findings:
+        finding.status = Status.PENDING
+        finding.duplicateOf = None
+        finding.deduplication_comment = None
+        finding.evaluated_severity = None
+        finding.evaluation_comment = None
 
-        # Get pending task findings for this agent
-        pending_findings = await mongodb.get_findings(
-            task_id=task_id, agent_id=agent_id, status=Status.PENDING
-        )
 
-        if not pending_findings:
-            logger.info(f"No pending findings for task_id: {task_id}, agent_id: {agent_id}")
-            return
+async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
+    """Run process_task's steps with one backend client; see process_task."""
+    logger.info(f"Processing task findings for task_id: {task_id}")
 
-        logger.info(
-            f"Found {len(pending_findings)} pending findings for task_id: {task_id}, agent_id: {agent_id}"
-        )
+    # Both stages work on these objects in memory; post_results is the run's only write, so a run
+    # that fails before it leaves the backend unchanged and a retry starts over.
+    findings = await fetch_findings(task_id, config, client=client)
 
-        # Fetch task data with repository download
-        task_cache = await fetch_task_data(task_id)
-        if not task_cache:
-            logger.error(
-                f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context."
-            )
-            return
+    if findings is None:
+        logger.error(f"Task {task_id} not found in backend; nothing to process")
+        return False
 
-        # Deduplicate only this agent's pending findings
-        logger.info(f"Starting deduplication for task_id: {task_id}, agent_id: {agent_id}")
-        dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
-        duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
-        logger.info(
-            f"Deduplication completed for task_id: {task_id}, agent_id: {agent_id}: "
-            f"{dedup_results['summary']['originals_found']} originals, "
-            f"{dedup_results['summary']['duplicates_found']} duplicates"
-        )
+    if not findings:
+        logger.info(f"No findings found for task_id: {task_id}")
+        return True
 
-        # Re-fetch findings for this agent after deduplication
-        deduplicated_findings = await get_latest_findings(task_id, agent_id)
-        logger.info(
-            f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}, agent_id: {agent_id}"
-        )
+    logger.info(f"Found {len(findings)} findings for task_id: {task_id}")
+    # Verdicts left by an earlier arbiter version, which wrote them finding by finding, would
+    # otherwise steer the same-agent check in deduplication.
+    _clear_verdicts(findings)
 
-        # Evaluate only this agent's findings
-        logger.info(f"Starting evaluation for task_id: {task_id}, agent_id: {agent_id}")
-        evaluation_results = await evaluator.evaluate_all_findings(
-            task_id, deduplicated_findings, duplicate_relationships, task_cache
-        )
-        logger.info(
-            f"Evaluation completed for task_id: {task_id}, agent_id: {agent_id}: "
-            f"{evaluation_results['application_results']['valid_count']} valid, "
-            f"{evaluation_results['application_results']['disputed_count']} disputed, "
-            f"{evaluation_results['application_results']['failed_count']} failed to update"
-        )
-
-        # Post only this agent's findings to backend, honoring last-sync for TESTTASK
-        try:
-            latest_findings = await get_latest_findings(task_id, agent_id)
-
-            if not latest_findings:
-                logger.info(
-                    f"No new findings to sync with backend endpoint for task_id: {task_id}, agent_id: {agent_id}"
-                )
-                return
-
-            formatted_findings = [format_finding(finding) for finding in latest_findings]
-            current_sync_time = datetime.now(UTC)
-
-            payload = {"task_id": task_id, "findings": formatted_findings}
-
-            backend_endpoint = config.backend_findings_endpoint
-            if backend_endpoint:
-                async with httpx.AsyncClient() as client:
-                    headers = {"X-API-Key": config.backend_api_key}
-                    response = await client.post(backend_endpoint, json=payload, headers=headers)
-                    logger.debug(
-                        f"Backend API response for task_id: {task_id}, agent_id: {agent_id}: {response.json()}"
-                    )
-                    logger.debug(
-                        f"Backend API status code for task_id: {task_id}, agent_id: {agent_id}: {response.status_code}"
-                    )
-
-                    if response.status_code == 200:
-                        last_sync_key = f"last_sync_{task_id}_{agent_id}"
-                        await mongodb.set_metadata(last_sync_key, {"timestamp": current_sync_time})
-                        logger.info(
-                            f"Updated last sync timestamp to {current_sync_time} for task_id: {task_id}, agent_id: {agent_id}"
-                        )
-                    elif response.status_code != 200:
-                        logger.error(
-                            f"Failed to post findings to backend. Status code: {response.status_code}, Response: {response.text}"
-                        )
-            else:
-                logger.warning(
-                    f"BACKEND_FINDINGS_ENDPOINT not configured, skipping backend post for task_id: {task_id}, agent_id: {agent_id}"
-                )
-
-            logger.info(
-                f"Task processing completed successfully for task_id: {task_id}, agent_id: {agent_id}"
-            )
-            logger.info(
-                f"Processing summary: "
-                f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
-                f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
-                f"Failed: {evaluation_results['application_results']['failed_count']}, "
-                f"Total: {len(pending_findings)}"
-            )
-        except Exception as post_error:
-            logger.error(
-                f"Error posting results to backend for task_id: {task_id}, agent_id: {agent_id}: {str(post_error)}"
-            )
-
-    except Exception as e:
-        error_trace = traceback.format_exc()
+    # Fetch task data with repository download
+    task_cache = await fetch_task_data(task_id)
+    if not task_cache:
         logger.error(
-            f"Error during agent-specific task processing for task_id: {task_id}, agent_id: {agent_id}: {str(e)}"
+            f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context."
         )
-        logger.error(f"Traceback for task_id: {task_id}, agent_id: {agent_id}: {error_trace}")
+        return False
 
+    # Step 1: Identify duplicates
+    logger.info(f"Starting deduplication for task_id: {task_id}")
 
-async def get_latest_findings(task_id: str, agent_id: str) -> list[FindingDB]:
-    last_sync_key = f"last_sync_{task_id}_{agent_id}"
-    last_sync = await mongodb.get_metadata(last_sync_key)
-    last_sync_time = last_sync.get("timestamp") if last_sync else None
+    dedup_results = await deduplicator.process_findings(task_id, findings, task_cache)
+    duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
 
-    if last_sync_time:
-        latest_findings = await mongodb.get_findings(
-            task_id=task_id, agent_id=agent_id, since_timestamp=last_sync_time
-        )
-        logger.info(
-            f"Found {len(latest_findings)} new findings since last sync at {last_sync_time} "
-            f"for task_id: {task_id}, agent_id: {agent_id}"
-        )
-    else:
-        latest_findings = await mongodb.get_findings(task_id=task_id, agent_id=agent_id)
-        logger.info(
-            f"No previous sync found. Fetched all {len(latest_findings)} findings for "
-            f"task_id: {task_id}, agent_id: {agent_id}"
-        )
+    logger.info(
+        f"Deduplication completed for task_id: {task_id}: "
+        f"{dedup_results['summary']['originals_found']} originals, "
+        f"{dedup_results['summary']['duplicates_found']} duplicates"
+    )
 
-    return latest_findings
+    # Step 2: Evaluate findings in batches, keeping duplicates together
+    logger.info(f"Starting batch evaluation for task_id: {task_id}")
+
+    evaluation_results = await evaluator.evaluate_all_findings(
+        findings, duplicate_relationships, task_cache
+    )
+
+    logger.info(
+        f"Evaluation completed for task_id: {task_id}: "
+        f"{evaluation_results['application_results']['valid_count']} valid, "
+        f"{evaluation_results['application_results']['disputed_count']} disputed, "
+        f"{evaluation_results['application_results']['failed_count']} unmatched"
+    )
+
+    # Step 3: Write every finding with its verdict in one call
+    try:
+        await post_results(task_id, findings, config, client=client)
+    except Exception as post_error:
+        logger.error(f"Error posting results to backend for task_id: {task_id}: {str(post_error)}")
+        return False
+
+    logger.info(f"Posted {len(findings)} findings to backend for task_id: {task_id}")
+    logger.info(
+        f"Processing summary: "
+        f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
+        f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+        f"Unmatched evaluations: {evaluation_results['application_results']['failed_count']}, "
+        f"Total: {len(findings)}"
+    )
+    return True
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {"message": "Welcome to the ArbiterAgent API!"}
-
-
-async def post_submission(task_id: str, agent_id: str, findings_count: int):
-    """
-    Post the number of findings being processed to the backend endpoint.
-
-    Args:
-        task_id: Task identifier
-        agent_id: Agent identifier
-        findings_count: Number of findings being processed
-    """
-    try:
-        # Check if we have a submissions endpoint configured
-        submissions_endpoint = config.backend_submissions_endpoint
-        if not submissions_endpoint:
-            logger.warning("BACKEND_SUBMISSIONS_ENDPOINT not configured, skipping submission post")
-            return
-
-        payload = {"task_id": task_id, "agent_id": agent_id, "findings_count": findings_count}
-
-        async with httpx.AsyncClient() as client:
-            headers = {"X-API-Key": config.backend_api_key}
-            response = await client.post(submissions_endpoint, json=payload, headers=headers)
-
-            if response.status_code == 200:
-                logger.info(
-                    f"Successfully posted submission: {findings_count} findings for task {task_id}, agent {agent_id}"
-                )
-            else:
-                logger.error(
-                    f"Failed to post submission. Status code: {response.status_code}, Response: {response.text}"
-                )
-
-    except Exception as e:
-        logger.error(f"Error posting submission to backend: {str(e)}")
-
-
-@app.post("/process_findings")
-async def process_findings(
-    input_data: FindingInput, x_api_key: str = Header(..., alias="X-API-Key")
-):
-    """
-    Submit security findings for processing.
-    Validates input and stores findings during submission timeframe.
-    Findings are only processed after the task deadline.
-
-    Args:
-        input_data: Batch of findings with task_id and findings list
-        background_tasks: FastAPI background tasks handler
-        x_api_key: API key for authentication
-
-    Returns:
-        Processing confirmation
-    """
-    try:
-        # 1. Verify API key and get agent_id from database
-        try:
-            agent_id = await mongodb.get_agent_id(x_api_key)
-        except ValueError as ve:
-            logger.warning(f"Agent authentication failed: {str(ve)}")
-            raise HTTPException(status_code=401, detail="Invalid API key") from ve
-
-        # 2. Submission size validation
-        if len(input_data.findings) > config.max_findings_per_submission:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission.",
-            )
-
-        # 3. Check if we're within the submission timeframe
-        task = None
-        try:
-            task = await mongodb.get_task(input_data.task_id)
-            if not task:
-                raise HTTPException(status_code=404, detail=f"Task {input_data.task_id} not found")
-
-            # Parse timestamps
-            start_time = datetime.fromtimestamp(float(task.startTime), tz=UTC)
-            deadline = datetime.fromtimestamp(float(task.deadline), tz=UTC)
-
-        except HTTPException as he:
-            raise he
-        except (ValueError, TypeError) as te:
-            logger.error(
-                f"Invalid timestamp format for task {input_data.task_id}: startTime={getattr(task, 'startTime', None)}, deadline={getattr(task, 'deadline', None)} - {str(te)}"
-            )
-            raise HTTPException(
-                status_code=500, detail=f"Invalid task configuration for {input_data.task_id}"
-            ) from te
-        except Exception as e:
-            logger.error(f"Error fetching task {input_data.task_id}: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail=f"Error validating task {input_data.task_id}"
-            ) from e
-
-        # Check if submission is allowed
-        current_time = datetime.now(UTC)
-
-        if current_time < start_time:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Submission period has not started yet. Starts at: {start_time.isoformat()}",
-            )
-
-        if current_time > deadline:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Submission period has ended. Deadline was: {deadline.isoformat()}",
-            )
-
-        logger.info(
-            f"Accepting findings submission for task_id: {input_data.task_id}, agent_id: {agent_id}"
-        )
-
-        # 4-6. Critical section: Must be atomic per agent to prevent race conditions
-        submission_key = (input_data.task_id, agent_id)
-        lock = agent_submission_locks[submission_key]
-
-        async with lock:
-            # 4. Delete any existing findings for this agent to allow only one submission
-            deleted_count = await mongodb.delete_agent_findings(input_data.task_id, agent_id)
-            if deleted_count > 0:
-                logger.info(
-                    f"Deleted {deleted_count} existing findings for task_id: {input_data.task_id}, agent_id: {agent_id} (overriding previous submission)"
-                )
-
-            # 5. Store findings as pending processing
-            for finding in input_data.findings:
-                await mongodb.create_finding(
-                    task_id=input_data.task_id,
-                    agent_id=agent_id,
-                    finding=finding,
-                    status=Status.PENDING,
-                )
-
-            logger.info(
-                f"Stored {len(input_data.findings)} findings for task_id: {input_data.task_id}, agent_id: {agent_id} - awaiting task end for processing"
-            )
-
-            # 6. Post submission count to backend
-            await post_submission(input_data.task_id, agent_id, len(input_data.findings))
-
-        # 7. Return submission summary
-        return {
-            "task_id": input_data.task_id,
-            "agent_id": agent_id,
-            "total_findings": len(input_data.findings),
-        }
-
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logger.error(f"Error processing findings: {str(e)}")
-        logger.error(f"Traceback: {error_trace}")
-
-        # Check if this is already an HTTPException so we preserve the status code
-        if isinstance(e, HTTPException):
-            raise e
-        # Otherwise, wrap it in a 500 error
-        raise HTTPException(status_code=500, detail=f"Error processing findings: {str(e)}") from e
-
-
-@app.post("/test/process_findings")
-async def test_process_findings(
-    input_data: FindingInput,
-    background_tasks: BackgroundTasks,
-    x_api_key: str = Header(..., alias="X-API-Key"),
-):
-    """
-    Submit findings for test task and queue processing in the background.
-    """
-    try:
-        # 1. Basic validation
-        if input_data.task_id != "TESTTASK":
-            raise HTTPException(status_code=400, detail="Invalid test task ID")
-
-        if len(input_data.findings) > config.max_findings_per_submission:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Submission contains too many findings. Maximum allowed: {config.max_findings_per_submission} findings per submission.",
-            )
-
-        # 2. Verify API key and get agent_id from database
-        try:
-            agent_id = await mongodb.get_agent_id(x_api_key)
-        except ValueError as ve:
-            logger.warning(f"Agent authentication failed: {str(ve)}")
-            raise HTTPException(status_code=401, detail="Invalid API key") from ve
-
-        # 3-4. Critical section: Must be atomic per agent to prevent race conditions
-        submission_key = (input_data.task_id, agent_id)
-        lock = agent_submission_locks[submission_key]
-
-        async with lock:
-            # 3. Store findings as pending
-            for finding in input_data.findings:
-                await mongodb.create_finding(
-                    task_id=input_data.task_id,
-                    agent_id=agent_id,
-                    finding=finding,
-                    status=Status.PENDING,
-                )
-
-            # 4. Post submission count to backend
-            await post_submission(input_data.task_id, agent_id, len(input_data.findings))
-
-        # 5. Queue processing in background for only this agent (do not await)
-        logger.info(
-            f"Queuing background processing for test task_id: {input_data.task_id}, agent_id: {agent_id}"
-        )
-        background_tasks.add_task(process_task_for_agent, input_data.task_id, agent_id)
-
-        # 6. Response (immediate)
-        return {
-            "task_id": input_data.task_id,
-            "agent_id": agent_id,
-            "total_findings": len(input_data.findings),
-            "queued": True,
-        }
-
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logger.error(f"[TEST] Error in immediate processing: {str(e)}")
-        logger.error(f"Traceback: {error_trace}")
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"Error in test processing: {str(e)}") from e
 
 
 @app.get("/tasks/{task_id}/findings", response_model=list[dict[str, Any]])
@@ -924,19 +500,22 @@ async def get_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-
         if x_api_key != config.backend_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        findings = await mongodb.get_findings(task_id)
+        findings = await fetch_findings(task_id, config)
+        if findings is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         return [finding.model_dump() for finding in findings]
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving findings: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving findings: {str(e)}") from e
+        # The error text can name the backend's internal URL, so it stays in the log.
+        logger.error(f"Error retrieving findings for task {task_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving findings") from e
 
 
 @app.post("/tasks/{task_id}/process")
 async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., alias="X-API-Key")):
     """
-    Manually trigger task processing for all pending findings of a task.
+    Manually trigger task processing for all findings of a task.
     This endpoint allows immediate processing without waiting for the scheduled deadline.
 
     Args:
@@ -950,45 +529,45 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
         if x_api_key != config.backend_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Check if this task has already been processed
-        processed_key = f"task_{task_id}"
-        processed_metadata = await mongodb.get_metadata(processed_key)
+        try:
+            marker = await fetch_processed_marker(task_id, config)
+        except TaskNotFoundError as e:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found") from e
 
-        if processed_metadata:
-            logger.info(
-                f"Task {task_id} was already processed at {processed_metadata.get('processed_at')}"
-            )
+        if marker:
+            logger.info(f"Task {task_id} was already processed at {marker.get('processed_at')}")
             return {
                 "task_id": task_id,
                 "status": "already_processed",
-                "message": f"Task was already processed at {processed_metadata.get('processed_at')}",
-                "processed_at": processed_metadata.get("processed_at"),
-                "scheduled_processing": processed_metadata.get("scheduled_processing", False),
+                "message": f"Task was already processed at {marker.get('processed_at')}",
+                "processed_at": marker.get("processed_at"),
+                "scheduled_processing": marker.get("scheduled_processing", False),
             }
 
-        # Check if there are any pending findings
-        pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
+        findings = await fetch_findings(task_id, config)
 
-        if not pending_findings:
+        if findings is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        if not findings:
             return {
                 "task_id": task_id,
-                "status": "no_pending_findings",
-                "message": "No pending findings found for this task",
+                "status": "no_findings",
+                "message": "No findings found for this task",
                 "total_findings": 0,
             }
 
         logger.info(
-            f"Manual task processing triggered for task: {task_id} with {len(pending_findings)} pending findings"
+            f"Manual task processing triggered for task: {task_id} with {len(findings)} findings"
         )
 
-        # Process the task findings
-        await process_task(task_id)
+        # A failed run leaves the task unmarked, so this endpoint can be called again.
+        if not await process_task(task_id):
+            raise HTTPException(
+                status_code=502, detail=f"Processing task {task_id} failed; see the arbiter's log"
+            )
 
-        # Mark this task as processed
-        current_time = datetime.now(UTC)
-        await mongodb.set_metadata(
-            processed_key, {"processed_at": current_time, "scheduled_processing": False}
-        )
+        current_time = await mark_task_processed(task_id, config, scheduled=False)
 
         logger.info(f"Manual task processing completed for task: {task_id}")
 
@@ -997,7 +576,7 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
             "status": "processed",
             "message": "Task processing completed successfully",
             "processed_at": current_time.isoformat(),
-            "total_pending_findings": len(pending_findings),
+            "total_findings": len(findings),
             "manual_trigger": True,
         }
 
@@ -1007,7 +586,8 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
         error_trace = traceback.format_exc()
         logger.error(f"Error during manual task processing for task {task_id}: {str(e)}")
         logger.error(f"Traceback: {error_trace}")
-        raise HTTPException(status_code=500, detail=f"Error processing task: {str(e)}") from e
+        # The error text can name the backend's internal URL, so it stays in the log.
+        raise HTTPException(status_code=500, detail="Error processing task") from e
 
 
 @app.post("/schedule-task/{task_id}")
@@ -1030,17 +610,16 @@ async def schedule_task(task_id: str, x_api_key: str = Header(..., alias="X-API-
         if not task_id:
             raise HTTPException(status_code=400, detail="Missing required field: task_id")
 
-        # Fetch task from database
         try:
-            task = await mongodb.get_task(task_id)
+            task = await fetch_task(task_id, config)
         except Exception as e:
             logger.error(f"Error fetching task {task_id}: {str(e)}")
             raise HTTPException(
-                status_code=500, detail=f"Error retrieving task {task_id} from database"
+                status_code=500, detail=f"Error retrieving task {task_id} from backend"
             ) from e
 
         if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found in database")
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found in backend")
 
         # Parse timestamps
         try:
@@ -1072,79 +651,6 @@ async def schedule_task(task_id: str, x_api_key: str = Header(..., alias="X-API-
         logger.error(f"Error scheduling task: {str(e)}")
         logger.error(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Error scheduling task: {str(e)}") from e
-
-
-@app.post("/tasks/{task_id}/post")
-async def post_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-API-Key")):
-    """
-    Post all findings for a task to the backend database.
-    This endpoint sends all findings for the specified task to the configured backend endpoint.
-
-    Args:
-        task_id: Task identifier for the task to post findings for
-        x_api_key: API key for authentication
-
-    Returns:
-        Posting status and summary
-    """
-    try:
-        if x_api_key != config.backend_api_key:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
-        # Check if backend endpoint is configured
-        if not config.backend_findings_endpoint:
-            raise HTTPException(status_code=503, detail="Backend findings endpoint not configured")
-
-        # Get all findings for this task
-        all_findings = await mongodb.get_findings(task_id=task_id)
-
-        if not all_findings:
-            return {
-                "task_id": task_id,
-                "status": "no_findings",
-                "message": "No findings found for this task",
-                "total_findings": 0,
-            }
-
-        formatted_findings = [format_finding(finding) for finding in all_findings]
-
-        # Prepare batched payload for backend endpoint
-        payload = {"task_id": task_id, "findings": formatted_findings}
-
-        try:
-            # Post all findings to the backend endpoint
-            async with httpx.AsyncClient() as client:
-                headers = {"X-API-Key": config.backend_api_key}
-                response = await client.post(
-                    config.backend_findings_endpoint, json=payload, headers=headers
-                )
-
-                if response.status_code == 200:
-                    logger.info(
-                        f"Successfully posted {len(all_findings)} findings for task {task_id}"
-                    )
-                else:
-                    logger.error(
-                        f"Failed to post findings for task {task_id}. Status code: {response.status_code}, Response: {response.text}"
-                    )
-
-        except Exception as batch_error:
-            logger.error(f"Error posting findings batch: {str(batch_error)}")
-
-        # Summary
-        return {
-            "task_id": task_id,
-            "status": "completed",
-            "message": f"Posted {len(all_findings)} findings to backend database",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logger.error(f"Error posting task findings for task {task_id}: {str(e)}")
-        logger.error(f"Traceback: {error_trace}")
-        raise HTTPException(status_code=500, detail=f"Error posting findings: {str(e)}") from e
 
 
 if __name__ == "__main__":

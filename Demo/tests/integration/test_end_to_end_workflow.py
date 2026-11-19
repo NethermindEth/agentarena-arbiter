@@ -4,7 +4,7 @@ These tests verify the complete processing flow from findings input to structure
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from bson import ObjectId
@@ -62,7 +62,7 @@ class TestCompleteWorkflow:
 
     @pytest.mark.asyncio
     async def test_complete_deduplication_and_evaluation_workflow(
-        self, workflow_findings, sample_task_cache, mock_mongodb
+        self, workflow_findings, sample_task_cache
     ):
         """Test the complete workflow from findings input through deduplication to evaluation."""
 
@@ -96,9 +96,8 @@ class TestCompleteWorkflow:
         # Step 3: Run deduplication
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = expected_duplicates
-            mock_mongodb.update_finding = AsyncMock()
 
-            deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+            deduplicator = FindingDeduplication()
             dedup_result = await deduplicator.process_findings(
                 "test-task", workflow_findings, sample_task_cache
             )
@@ -115,9 +114,9 @@ class TestCompleteWorkflow:
             # Mock batch evaluation to return expected results
             mock_evaluate_batch.return_value = expected_evaluations
 
-            evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
+            evaluator = FindingEvaluator(batch_size=10)
             eval_result = await evaluator.evaluate_all_findings(
-                "test-task", workflow_findings, duplicate_relationships, sample_task_cache
+                workflow_findings, duplicate_relationships, sample_task_cache
             )
 
             # Verify evaluation results
@@ -128,10 +127,14 @@ class TestCompleteWorkflow:
             # Verify that findings were grouped correctly for evaluation
             assert mock_evaluate_batch.call_count == 2
 
+        # Both stages leave their verdicts on the findings, which the run then posts at once
+        assert workflow_findings[0].status == Status.BEST_VALID
+        assert workflow_findings[1].status == Status.SIMILAR_VALID
+        assert workflow_findings[2].status == Status.UNIQUE_VALID
+        assert workflow_findings[2].evaluated_severity == Severity.MEDIUM
+
     @pytest.mark.asyncio
-    async def test_workflow_with_all_duplicates(
-        self, workflow_findings, sample_task_cache, mock_mongodb
-    ):
+    async def test_workflow_with_all_duplicates(self, workflow_findings, sample_task_cache):
         """Test workflow when all findings are duplicates of the first one."""
 
         # Mock all findings as duplicates of the first
@@ -146,10 +149,9 @@ class TestCompleteWorkflow:
 
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = DeduplicationResult(results=duplicate_relationships)
-            mock_mongodb.update_finding = AsyncMock()
 
             # Run deduplication
-            deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+            deduplicator = FindingDeduplication()
             dedup_result = await deduplicator.process_findings(
                 "test-task", workflow_findings, sample_task_cache
             )
@@ -167,13 +169,13 @@ class TestCompleteWorkflow:
                     )
                 ]
 
-                evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
+                evaluator = FindingEvaluator(batch_size=10)
 
                 # Get duplicate relationships from deduplication result
                 duplicate_rels = dedup_result["deduplication"]["duplicate_relationships"]
 
                 await evaluator.evaluate_all_findings(
-                    "test-task", workflow_findings, duplicate_rels, sample_task_cache
+                    workflow_findings, duplicate_rels, sample_task_cache
                 )
 
                 # Should have called batch evaluation only once (all findings in one group)
@@ -185,18 +187,15 @@ class TestCompleteWorkflow:
                 assert len(evaluated_findings) == len(workflow_findings)
 
     @pytest.mark.asyncio
-    async def test_workflow_with_no_duplicates(
-        self, workflow_findings, sample_task_cache, mock_mongodb
-    ):
+    async def test_workflow_with_no_duplicates(self, workflow_findings, sample_task_cache):
         """Test workflow when no duplicates are found."""
 
         # Mock no duplicates found
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = DeduplicationResult(results=[])
-            mock_mongodb.update_finding = AsyncMock()
 
             # Run deduplication
-            deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+            deduplicator = FindingDeduplication()
             dedup_result = await deduplicator.process_findings(
                 "test-task", workflow_findings, sample_task_cache
             )
@@ -218,9 +217,8 @@ class TestCompleteWorkflow:
                 ]
                 mock_evaluate_batch.return_value = mock_evaluations
 
-                evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
+                evaluator = FindingEvaluator(batch_size=10)
                 eval_result = await evaluator.evaluate_all_findings(
-                    "test-task",
                     workflow_findings,
                     [],  # No duplicate relationships
                     sample_task_cache,
@@ -230,7 +228,7 @@ class TestCompleteWorkflow:
 
     @pytest.mark.asyncio
     async def test_workflow_error_handling_deduplication_failure(
-        self, workflow_findings, sample_task_cache, mock_mongodb
+        self, workflow_findings, sample_task_cache
     ):
         """Test workflow behavior when deduplication fails."""
 
@@ -239,9 +237,8 @@ class TestCompleteWorkflow:
             patch("app.core.deduplication.logger") as mock_logger,
         ):
             mock_find_duplicates.side_effect = Exception("Deduplication API error")
-            mock_mongodb.update_finding = AsyncMock(return_value=True)
 
-            deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+            deduplicator = FindingDeduplication()
 
             result = await deduplicator.process_findings(
                 "test-task", workflow_findings, sample_task_cache
@@ -256,30 +253,27 @@ class TestCompleteWorkflow:
             assert result["summary"]["duplicates_found"] == 0
             assert result["summary"]["originals_found"] == len(workflow_findings)
 
-            # All findings should be updated with UNIQUE_VALID status in the fallback
-            assert mock_mongodb.update_finding.call_count == len(workflow_findings)
+            # Every finding is set UNIQUE_VALID in the fallback
+            assert all(f.status == Status.UNIQUE_VALID for f in workflow_findings)
 
     @pytest.mark.asyncio
     async def test_workflow_error_handling_evaluation_failure(
-        self, workflow_findings, sample_task_cache, mock_mongodb
+        self, workflow_findings, sample_task_cache
     ):
         """Test workflow behavior when evaluation fails."""
 
         # Deduplication succeeds
         with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
             mock_find_duplicates.return_value = DeduplicationResult(results=[])
-            mock_mongodb.update_finding = AsyncMock()
 
-            deduplicator = FindingDeduplication(mongodb_client=mock_mongodb)
+            deduplicator = FindingDeduplication()
             await deduplicator.process_findings("test-task", workflow_findings, sample_task_cache)
 
             # Evaluation fails
             with patch.object(FindingEvaluator, "evaluate_findings_batch") as mock_evaluate_batch:
                 mock_evaluate_batch.side_effect = Exception("Evaluation API error")
 
-                evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
+                evaluator = FindingEvaluator(batch_size=10)
 
                 with pytest.raises(Exception, match="Evaluation API error"):
-                    await evaluator.evaluate_all_findings(
-                        "test-task", workflow_findings, [], sample_task_cache
-                    )
+                    await evaluator.evaluate_all_findings(workflow_findings, [], sample_task_cache)

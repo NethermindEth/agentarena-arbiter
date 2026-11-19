@@ -9,7 +9,7 @@ import tempfile
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -81,12 +81,15 @@ class TestFetchTaskDataIntegration:
             task_id="TEST123", description="A task for integration testing"
         )
 
-        with patch("app.main.config") as mock_config, patch("app.main.mongodb") as mock_mongodb:
+        with (
+            patch("app.main.config") as mock_config,
+            patch("app.main.fetch_task") as mock_fetch_task,
+        ):
             mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
             mock_config.backend_api_key = "test_key"
             mock_config.data_dir = test_data_dir
 
-            mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+            mock_fetch_task.return_value = sample_task
 
             result = await app_main.fetch_task_data("TEST123")
 
@@ -115,12 +118,15 @@ class TestFetchTaskDataIntegration:
             # Verify the directory doesn't exist initially
             assert not os.path.exists(data_dir)
 
-            with patch("app.main.config") as mock_config, patch("app.main.mongodb") as mock_mongodb:
+            with (
+                patch("app.main.config") as mock_config,
+                patch("app.main.fetch_task") as mock_fetch_task,
+            ):
                 mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
                 mock_config.backend_api_key = "test_key"
                 mock_config.data_dir = data_dir
 
-                mock_mongodb.get_task = AsyncMock(return_value=sample_task)
+                mock_fetch_task.return_value = sample_task
 
                 result = await app_main.fetch_task_data("TEST123")
 
@@ -177,12 +183,15 @@ class TestTESSTASKCacheIntegration:
             commitSha="abc123def456",
         )
 
-        with patch("app.main.config") as mock_config, patch("app.main.mongodb") as mock_mongodb:
+        with (
+            patch("app.main.config") as mock_config,
+            patch("app.main.fetch_task") as mock_fetch_task,
+        ):
             mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
             mock_config.backend_api_key = "test_key"
             mock_config.data_dir = test_data_dir
 
-            mock_mongodb.get_task = AsyncMock(return_value=testtask)
+            mock_fetch_task.return_value = testtask
 
             # First call - should download and cache
             result1 = await app_main.fetch_task_data("TESTTASK")
@@ -234,19 +243,22 @@ class TestTESSTASKCacheIntegration:
             commitSha="new789commit012",
         )
 
-        with patch("app.main.config") as mock_config, patch("app.main.mongodb") as mock_mongodb:
+        with (
+            patch("app.main.config") as mock_config,
+            patch("app.main.fetch_task") as mock_fetch_task,
+        ):
             mock_config.backend_task_repository_endpoint = f"{mock_http_server}/repo"
             mock_config.backend_api_key = "test_key"
             mock_config.data_dir = test_data_dir
 
             # First call with old commitSha
-            mock_mongodb.get_task = AsyncMock(return_value=testtask_v1)
+            mock_fetch_task.return_value = testtask_v1
             result1 = await app_main.fetch_task_data("TESTTASK")
             assert result1 is not None
             assert app_main.test_task_cache["commitSha"] == "old123commit456"
 
             # Second call with new commitSha - should re-download
-            mock_mongodb.get_task = AsyncMock(return_value=testtask_v2)
+            mock_fetch_task.return_value = testtask_v2
             result2 = await app_main.fetch_task_data("TESTTASK")
             assert result2 is not None
             assert result2 is not result1  # Should be different objects

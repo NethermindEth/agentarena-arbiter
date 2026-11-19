@@ -1,9 +1,8 @@
 # Workflow
 ## Submission Process
 
-- When a new finding is submitted, the system adds these additional fields:
-    - **status** (initialized as `Status.PENDING`)
-    - **evaluation_comment** (initially empty)
+- Agents submit findings to the AgentArena backend, not to the arbiter. The backend stores each one
+  as `Status.PENDING`, and the arbiter reads them from the backend at the task's deadline.
 
 ## Self-Deduplication Process
 
@@ -36,13 +35,12 @@
 
 ### Prerequisites
 - [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
-- MongoDB
 - Claude and Gemini API keys
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
 2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
-3. Configure MongoDB connection string (defaults to localhost if not specified)
+3. Set the `BACKEND_*` values to the AgentArena backend the arbiter judges for
 4. Set desired similarity threshold (default: 0.8)
 
 ### Installation
@@ -88,13 +86,9 @@ uv run pytest
 uv run pytest --cov=app --cov-report=term-missing
 ```
 
-Settings are read at import time, so the required variables must be set, with
-placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
-them. The integration tests write to the MongoDB at `MONGODB_URL`.
-
-### Prerequisites for Testing
-- A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
-  backend calls are mocked
+Settings are read at import time, so the required variables must be set;
+placeholders do, since the LLM and backend calls are mocked.
+`.github/workflows/ci-tests.yaml` lists them.
 
 ### 🧪 Writing Tests
 
@@ -114,8 +108,8 @@ async def test_process_findings_no_duplicates(deduplicator, sample_findings):
 Test components working together:
 
 ```python
-def test_api_endpoint_success(client):
-    response = client.post("/process_findings", headers={"X-API-Key": "test"}, json=data)
+def test_get_task_findings_success(client):
+    response = client.get("/tasks/task-1/findings", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
 ```
 
@@ -150,32 +144,12 @@ docker-compose logs -f
 
 The API will be available at http://localhost:8004.
 
-**Note:** When running with Docker, you need to configure the MongoDB connection string in your `.env` file. This allows you to use either a local MongoDB instance or a MongoDB Atlas cluster.
-
 ### Stopping Docker Services
 ```bash
 docker-compose down
 ```
 
 ## API Usage
-
-### Submit Findings
-```bash
-curl -X POST http://localhost:8004/process_findings \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
-  -d '{
-    "task_id": "test-task-1",
-    "findings": [
-      {
-        "title": "Integer Overflow",
-        "description": "Function X is vulnerable to integer overflow",
-        "severity": "HIGH",
-        "file_paths": ["contracts/Contract.sol", "contracts/Token.sol"]
-      }
-    ]
-  }'
-```
 
 ### Retrieve Findings
 ```bash
@@ -184,18 +158,13 @@ curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
 
 ## Data Models
 
-### Finding Input Format
+### Finding
 ```python
 class Finding(BaseModel):
     title: str
     description: str
     severity: Severity  # Enum: HIGH, MEDIUM, LOW, or INFO
     file_paths: List[str]
-
-
-class FindingInput(BaseModel):
-    task_id: str
-    findings: List[Finding]
 ```
 
 ### Finding in Database
@@ -214,7 +183,6 @@ class FindingDB(Finding):
 ## Configuration
 The application requires the following environment variables:
 
-- `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
 - `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
@@ -227,11 +195,11 @@ The application requires the following environment variables:
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
-- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
-- `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
+- `BACKEND_FINDINGS_ENDPOINT`: The backend's `/api/insert-findings` endpoint. A run's only write: once deduplication and evaluation have decided every finding in memory, the arbiter posts all of the task's findings with their verdicts in one request, so a run that fails earlier leaves the backend unchanged and a retry judges all the findings again
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
+- `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
+- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}` and reads its findings at `GET /{task_id}/findings` (query filters `agent_id`, `since_timestamp`). It keeps its processed-task marker in the task's metadata, read with `GET /{task_id}/metadata` and replaced with `PUT /{task_id}/metadata`; the arbiter has no database of its own.
 
 ## API Endpoints
 
-- `POST /process_findings`: Submit batch of findings for processing, deduplication, and evaluation
 - `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task
