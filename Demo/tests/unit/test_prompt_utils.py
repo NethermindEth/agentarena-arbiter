@@ -4,6 +4,7 @@ Unit tests for prompt_utils module.
 
 from datetime import UTC, datetime
 
+from app.core.languages import DEFAULT_LANGUAGES
 from app.core.prompt_utils import build_context_section
 from app.types import QAPair, TaskCache
 
@@ -18,6 +19,7 @@ class TestBuildContextSection:
             startTime=datetime.now(UTC),
             deadline=datetime.now(UTC),
             selectedFilesContent="contract Test { function example() {} }",
+            languages=DEFAULT_LANGUAGES,
             selectedDocsContent="This is documentation content",
             additionalLinks=["https://example.com", "https://docs.example.com"],
             additionalDocs="Additional documentation text",

@@ -10,6 +10,21 @@ class QAPair(BaseModel):
     answer: str
 
 
+class LanguageDefinition(BaseModel):
+    """
+    A language of a task, as the backend's task endpoints return it.
+
+    The backend owns and validates the language catalogue; this model reads only the fields the
+    prompts use and ignores the rest. A file is code of this language when its name ends with one
+    of ``file_extensions`` and with none of ``excluded_extensions``.
+    """
+
+    slug: str
+    caption: str
+    file_extensions: list[str] = []
+    excluded_extensions: list[str] = []
+
+
 class Task(BaseModel):
     """Response model for task creation."""
 
@@ -23,6 +38,7 @@ class Task(BaseModel):
     deadline: str
     selectedBranch: str
     selectedFiles: list[str]
+    languages: list[LanguageDefinition] = []
     selectedDocs: list[str] | None = []
     additionalLinks: list[str] | None = []
     additionalDocs: str | None = None
@@ -37,6 +53,7 @@ class TaskCache(BaseModel):
     startTime: datetime | None = None
     deadline: datetime | None = None
     selectedFilesContent: str | None = None
+    languages: list[LanguageDefinition] = []
     selectedDocsContent: str | None = None
     additionalLinks: list[str] | None = []
     additionalDocs: str | None = None

@@ -5,6 +5,7 @@ from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 
 from app.config import config
+from app.core.languages import language_line
 from app.core.prompt_utils import build_context_section
 from app.models.finding_db import FindingDB
 from app.types import TaskCache
@@ -155,6 +156,9 @@ def _get_related_findings_prompt(findings_batch: list[FindingDB], task_cache: Ta
 
     # Build context section
     context_section = build_context_section(task_cache)
+    languages = language_line(
+        (path for finding in findings_batch for path in finding.file_paths), task_cache.languages
+    )
 
     return f"""
 You are a smart contract security expert tasked with evaluating a batch of RELATED findings that refer to the same underlying vulnerability.
@@ -218,6 +222,7 @@ Return a JSON object with the following structure:
 {context_section}
 
 ## FINDINGS TO ANALYZE
+{languages}
 {[finding.dump() for finding in findings_batch]}
 
 ## EVALUATION INSTRUCTIONS
@@ -236,6 +241,9 @@ def _get_individual_findings_prompt(findings_batch: list[FindingDB], task_cache:
 
     # Build context section
     context_section = build_context_section(task_cache)
+    languages = language_line(
+        (path for finding in findings_batch for path in finding.file_paths), task_cache.languages
+    )
 
     return f"""
 You are a smart contract security expert tasked with evaluating a batch of INDIVIDUAL findings that describe different vulnerabilities within the same protocol or smart contract.
@@ -299,6 +307,7 @@ Return a JSON object with the following structure:
 {context_section}
 
 ## FINDINGS TO ANALYZE
+{languages}
 {[finding.dump() for finding in findings_batch]}
 
 ## EVALUATION INSTRUCTIONS
