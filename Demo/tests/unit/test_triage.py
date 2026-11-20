@@ -43,7 +43,7 @@ from app.types import TaskCache
 # ---------------------------------------------------------------------------------------
 def _cfg(tmp_path, **overrides):
     base = dict(
-        triage_poc_mode="required",
+        triage_poc_scope="high_medium",
         triage_work_dir=str(tmp_path / "work"),
         triage_max_parallel_agents=2,
         triage_agent_max_budget_usd=0,
@@ -415,27 +415,20 @@ class TestPreflight:
         t.secret_paths = lambda: [tmp_path / "secret"]
         return t
 
-    def test_off(self, tmp_path):
-        assert self._triage(tmp_path, triage_poc_mode="off").preflight() is False
-
-    def test_required_raises_when_sandbox_unavailable(self, tmp_path):
+    def test_unavailable_sandbox_always_fails(self, tmp_path):
+        """PoCs are never run unsandboxed and there is no static-only fallback."""
         with patch("app.core.claude_code_triage.probe_bubblewrap", return_value="no userns"):
-            with pytest.raises(SandboxUnavailable):
-                self._triage(tmp_path, triage_poc_mode="required").preflight()
-
-    def test_optional_degrades(self, tmp_path):
-        with patch("app.core.claude_code_triage.probe_bubblewrap", return_value="no userns"):
-            assert self._triage(tmp_path, triage_poc_mode="optional").preflight() is False
+            with pytest.raises(SandboxUnavailable, match="no userns"):
+                self._triage(tmp_path).preflight()
 
     def test_available(self, tmp_path, short_dir):
         with patch("app.core.claude_code_triage.probe_bubblewrap", return_value=None):
-            triage = self._triage(tmp_path, triage_poc_mode="required", triage_work_dir=short_dir)
-            assert triage.preflight() is True
+            self._triage(tmp_path, triage_work_dir=short_dir).preflight()
 
     def test_missing_cli(self, tmp_path):
         t = ClaudeCodeTriage(
             cli=ClaudeCodeCLI(model="m", command="definitely-not-claude", api_key="k"),
-            settings=_cfg(tmp_path, triage_poc_mode="off"),
+            settings=_cfg(tmp_path),
         )
         t.secret_paths = lambda: [tmp_path / "secret"]
         with pytest.raises(SandboxUnavailable):
@@ -516,7 +509,8 @@ def _task_cache(tmp_path):
     )
 
 
-def _unit(key="u000", severity="Medium"):
+def _unit(key="u000", severity="Low"):
+    """A unit; the default Low claim gets no PoCs (and no build agent) under high_medium."""
     return TriageUnit(
         key,
         {
@@ -548,7 +542,7 @@ class TestPipeline:
             }
         )
         verdicts = await self._triage(tmp_path, cli).run_task(
-            _task_cache(tmp_path), [_unit()], poc_enabled=True
+            _task_cache(tmp_path), [_unit(severity="Medium")]
         )
         v = verdicts["u000"]
         assert v.is_valid and v.severity == "High" and not v.error
@@ -574,7 +568,7 @@ class TestPipeline:
         )
         triage = self._triage(tmp_path, cli)
         triage.cfg.debug = True
-        await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+        await triage.run_task(_task_cache(tmp_path), [_unit()])
         (run_dir,) = (tmp_path / "work").glob("run-*")
         assert (run_dir / "base").is_dir()
         assert len(list((run_dir / AGENTS_DIR).iterdir())) == 4  # analyst, verifiers, judge
@@ -589,11 +583,7 @@ class TestPipeline:
                 "judge": [_final("INVALID", "Invalid")],
             }
         )
-        v = (
-            await self._triage(tmp_path, cli).run_task(
-                _task_cache(tmp_path), [_unit()], poc_enabled=False
-            )
-        )["u000"]
+        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()]))["u000"]
         assert not v.is_valid and v.severity == "Info" and not v.error
 
     @pytest.mark.asyncio
@@ -606,11 +596,7 @@ class TestPipeline:
                 "judge": [_final("PARTIALLY_VALID", "Low")],
             }
         )
-        v = (
-            await self._triage(tmp_path, cli).run_task(
-                _task_cache(tmp_path), [_unit()], poc_enabled=False
-            )
-        )["u000"]
+        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()]))["u000"]
         assert v.is_valid and v.severity == "Low" and v.comment.startswith("Partially valid:")
         # Static mode: no build agent, no Bash, no sandbox block.
         assert all(r != "build" for r, _ in calls)
@@ -628,7 +614,7 @@ class TestPipeline:
             {"analyst": [ANALYSIS], "refute": [AGREE], "severity": [AGREE], "judge": [final]}
         )
         triage = self._triage(tmp_path, cli)
-        v = (await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False))["u000"]
+        v = (await triage.run_task(_task_cache(tmp_path), [_unit()]))["u000"]
         assert v.is_valid is expected_valid and v.severity == "Info"
         assert v.comment.startswith("Informational:")
 
@@ -642,11 +628,7 @@ class TestPipeline:
                 "judge": [_final("VALID", "Critical")],
             }
         )
-        v = (
-            await self._triage(tmp_path, cli).run_task(
-                _task_cache(tmp_path), [_unit()], poc_enabled=False
-            )
-        )["u000"]
+        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()]))["u000"]
         assert v.is_valid and v.severity == "High"
 
     @pytest.mark.asyncio
@@ -659,11 +641,7 @@ class TestPipeline:
                 "judge": [_final()],
             }
         )
-        v = (
-            await self._triage(tmp_path, cli).run_task(
-                _task_cache(tmp_path), [_unit()], poc_enabled=False
-            )
-        )["u000"]
+        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()]))["u000"]
         assert v.is_valid and [r for r, _ in calls].count("analyst") == 2
 
     @pytest.mark.asyncio
@@ -680,7 +658,7 @@ class TestPipeline:
             }
         )
         verdicts = await self._triage(tmp_path, cli).run_task(
-            _task_cache(tmp_path), [_unit("u000"), _unit("u001")], poc_enabled=False
+            _task_cache(tmp_path), [_unit("u000"), _unit("u001")]
         )
         assert verdicts["u000"].error and not verdicts["u000"].is_valid
         assert verdicts["u000"].comment.startswith("EVALUATION_ERROR")
@@ -690,16 +668,14 @@ class TestPipeline:
     async def test_everything_failing_is_an_infrastructure_error(self, tmp_path):
         cli, _ = _fake_cli({})
         with pytest.raises(TriageInfrastructureError):
-            await self._triage(tmp_path, cli).run_task(
-                _task_cache(tmp_path), [_unit()], poc_enabled=False
-            )
+            await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()])
 
     @pytest.mark.asyncio
     async def test_missing_checkout_is_an_infrastructure_error(self, tmp_path):
         cli, _ = _fake_cli({})
         tc = TaskCache(taskId="t", repoPath=str(tmp_path / "missing"))
         with pytest.raises(TriageInfrastructureError):
-            await self._triage(tmp_path, cli).run_task(tc, [_unit()], poc_enabled=False)
+            await self._triage(tmp_path, cli).run_task(tc, [_unit()])
 
 
 # ---------------------------------------------------------------------------------------
@@ -796,15 +772,13 @@ class TestEvaluatorWiring:
         ev.aggregator.aggregate = AsyncMock(return_value=None)  # fall back to the representative
         captured = {}
 
-        async def run_task(task_cache, units, *, poc_enabled):
+        async def run_task(task_cache, units):
             captured["units"] = units
             return {u.key: TriageVerdict(True, "Medium", "ok") for u in units}
 
         ev.triage.run_task = run_task
         group = sample_findings[:2]
-        results, failed = await ev.evaluate_groups(
-            [group, [sample_findings[2]]], sample_task_cache, poc_enabled=False
-        )
+        results, failed = await ev.evaluate_groups([group, [sample_findings[2]]], sample_task_cache)
         assert failed == []
         assert [r.finding_id for r in results] == [f.str_id for f in sample_findings[:3]]
         assert all(r.is_valid and r.severity == "Medium" for r in results)
@@ -948,10 +922,7 @@ class TestReviewFixes:
         triage.secret_paths = lambda: [tmp_path / "secret"]
         tc = _task_cache(tmp_path)
         await asyncio.gather(
-            *(
-                triage.run_task(tc, [_unit("u000"), _unit("u001")], poc_enabled=False)
-                for _ in range(3)
-            )
+            *(triage.run_task(tc, [_unit("u000"), _unit("u001")]) for _ in range(3))
         )
         assert peak <= 2
 
@@ -965,7 +936,7 @@ class TestUnevaluatedUnits:
         ev = FindingEvaluator()
         ev.aggregator.aggregate = AsyncMock(return_value=None)
 
-        async def run_task(task_cache, units, *, poc_enabled):
+        async def run_task(task_cache, units):
             return {
                 units[0].key: TriageVerdict(False, "Medium", "EVALUATION_ERROR: x", error=True),
                 units[1].key: TriageVerdict(True, "Low", "ok"),
@@ -973,9 +944,7 @@ class TestUnevaluatedUnits:
 
         ev.triage.run_task = run_task
         group = sample_findings[:2]
-        results, failed = await ev.evaluate_groups(
-            [group, [sample_findings[2]]], sample_task_cache, poc_enabled=False
-        )
+        results, failed = await ev.evaluate_groups([group, [sample_findings[2]]], sample_task_cache)
         assert [f.str_id for f in failed] == [f.str_id for f in group]  # the whole duplicate group
         assert [r.finding_id for r in results] == [sample_findings[2].str_id]
 
@@ -1001,7 +970,7 @@ class TestUnevaluatedUnits:
 
         with (
             patch.object(app_main, "fetch_findings", AsyncMock(return_value=sample_findings)),
-            patch.object(app_main, "triage_preflight", return_value=None),
+            patch.object(app_main, "triage_preflight", return_value=False),
             patch.object(app_main, "fetch_task_data", AsyncMock()) as fetch_task_data,
             patch.object(app_main.deduplicator, "process_findings", AsyncMock()) as dedup,
             patch.object(app_main, "post_results", AsyncMock()) as post,
@@ -1018,7 +987,7 @@ class TestUnevaluatedUnits:
 
         with (
             patch.object(app_main, "fetch_findings", AsyncMock(return_value=sample_findings)),
-            patch.object(app_main, "triage_preflight", return_value=False),
+            patch.object(app_main, "triage_preflight", return_value=True),
             patch.object(app_main, "fetch_task_data", AsyncMock(return_value=sample_task_cache)),
             patch.object(
                 app_main.deduplicator,
@@ -1062,7 +1031,7 @@ def _db_finding(i: int):
         _id=ObjectId(),
         title=f"Finding {i}",
         description=f"description {i}",
-        severity=Severity.HIGH,
+        severity=Severity.LOW,  # no PoCs, so no build agent
         file_paths=[f"src/F{i}.sol"],
         agent_id=f"agent{i}",
     )
@@ -1083,7 +1052,7 @@ class TestAgentLaunch:
     def test_blank_api_key_fails_the_preflight(self, tmp_path, key):
         triage = ClaudeCodeTriage(
             cli=ClaudeCodeCLI(model="m", command=sys.executable, api_key=key),
-            settings=_cfg(tmp_path, triage_poc_mode="off"),
+            settings=_cfg(tmp_path),
         )
         triage.secret_paths = lambda: [tmp_path / "secret"]
         with pytest.raises(ValueError, match="CLAUDE_API_KEY"):
@@ -1136,8 +1105,8 @@ class TestAgentLaunch:
             ]
 
         await asyncio.gather(
-            evaluator.evaluate_groups(groups(0), tc, poc_enabled=False),
-            evaluator.evaluate_groups(groups(100), tc, poc_enabled=False),
+            evaluator.evaluate_groups(groups(0), tc),
+            evaluator.evaluate_groups(groups(100), tc),
         )
         assert peak == 2
 
@@ -1151,14 +1120,14 @@ class TestAgentLaunch:
         evaluator.aggregator.aggregate = AsyncMock(side_effect=OSError("claude not found"))
         captured = {}
 
-        async def run_task(task_cache, units, *, poc_enabled):
+        async def run_task(task_cache, units):
             captured["units"] = units
             return {u.key: TriageVerdict(True, "Low", "ok") for u in units}
 
         evaluator.triage.run_task = run_task
         group = sample_findings[:2]
         results, failed = await evaluator.evaluate_groups(
-            [group, [sample_findings[2]]], sample_task_cache, poc_enabled=False
+            [group, [sample_findings[2]]], sample_task_cache
         )
 
         assert failed == [] and len(results) == 3
@@ -1190,7 +1159,7 @@ class TestAgentLaunch:
         )
         triage.secret_paths = lambda: [tmp_path / "secret"]
 
-        verdicts = await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+        verdicts = await triage.run_task(_task_cache(tmp_path), [_unit()])
 
         assert not verdicts["u000"].error and verdicts["u000"].is_valid
         # The other verifier ran to its end before the judge, and nothing is left running.
@@ -1273,7 +1242,7 @@ class TestEvidenceRetention:
         triage = ClaudeCodeTriage(cli=cli, settings=_cfg(tmp_path))
         triage.secret_paths = lambda: [tmp_path / "secret"]
 
-        await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+        await triage.run_task(_task_cache(tmp_path), [_unit()])
 
         assert not old.exists()
         assert len(list((tmp_path / "work").glob("run-*"))) == 1  # this run's evidence
@@ -1370,3 +1339,56 @@ class TestPocStaging:
         ws.seal_base()
         note = ws.stage_into(ws.make_sandbox("u000-judge"), "u000", ["refute"])
         assert "not staged: none" in note
+
+
+class TestPocScope:
+    @staticmethod
+    def _recording_cli():
+        calls = []
+
+        async def run_agent(prompt, *, label, tools, **kw):
+            name = label.rsplit("/", 1)[-1]
+            calls.append((name, list(tools), prompt))
+            if name == "build":
+                return AgentResult(True, {"build_succeeded": True, "projects": []}, "", 0.0, 0.0)
+            role = name.split("-")[1]
+            out = {"analyst": ANALYSIS, "refute": AGREE, "severity": AGREE, "judge": _final()}[role]
+            return AgentResult(True, out, "", 0.0, 0.0)
+
+        return SimpleNamespace(run_agent=run_agent, command=sys.executable), calls
+
+    def _triage(self, tmp_path, cli, scope="high_medium"):
+        (tmp_path / "secret").mkdir(exist_ok=True)
+        triage = ClaudeCodeTriage(cli=cli, settings=_cfg(tmp_path, triage_poc_scope=scope))
+        triage.secret_paths = lambda: [tmp_path / "secret"]
+        return triage
+
+    async def test_high_medium_gives_pocs_to_high_and_medium_claims_only(self, tmp_path):
+        cli, calls = self._recording_cli()
+        units = [_unit("u000", "High"), _unit("u001", "Medium"), _unit("u002", "Low")]
+        units.append(_unit("u003", "Info"))
+
+        verdicts = await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), units)
+
+        assert not any(v.error for v in verdicts.values())
+        assert [name for name, _, _ in calls].count("build") == 1
+        for name, tools, prompt in calls:
+            if name == "build":
+                continue
+            poc = name.split("-")[0] in ("u000", "u001")
+            assert ("Bash" in tools) is poc, name
+            assert ("NOT AVAILABLE for this finding" in prompt) is not poc, name
+
+    async def test_no_unit_with_pocs_means_no_build_agent(self, tmp_path):
+        cli, calls = self._recording_cli()
+        await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit("u000", "Low")])
+        assert "build" not in [name for name, _, _ in calls]
+        assert not any("Bash" in tools for _, tools, _ in calls)
+
+    async def test_scope_all_gives_every_unit_pocs(self, tmp_path):
+        cli, calls = self._recording_cli()
+        await self._triage(tmp_path, cli, scope="all").run_task(
+            _task_cache(tmp_path), [_unit("u000", "Info")]
+        )
+        assert calls[0][0] == "build"
+        assert all("Bash" in tools for _, tools, _ in calls)

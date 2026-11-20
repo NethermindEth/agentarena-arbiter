@@ -16,11 +16,10 @@ from app.types import Task, TaskCache
 @pytest.fixture(autouse=True)
 def no_triage_preflight():
     """
-    Never probe the host (bubblewrap, claude CLI, work dir) from unit tests: evaluation runs as
-    if the PoC sandbox were unavailable-but-optional. Tests of the preflight itself call
-    ClaudeCodeTriage.preflight directly.
+    Never probe the host (bubblewrap, claude CLI, work dir) from unit tests: the preflight
+    passes. Tests of the preflight itself call ClaudeCodeTriage.preflight directly.
     """
-    with patch("app.core.evaluation.FindingEvaluator.preflight", return_value=False):
+    with patch("app.core.evaluation.FindingEvaluator.preflight", return_value=None):
         yield
 
 

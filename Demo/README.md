@@ -49,7 +49,12 @@ per unit:  Analyst ─ code trace + PoC in its own sandbox
   verdict; the run then posts nothing and leaves the task unmarked, so the backend is unchanged
   and `POST /tasks/{task_id}/process` judges the whole task again. If the sandbox preflight
   fails, the run stops before downloading the repository or calling any model.
-- Cost: 4 agents per unit plus one build agent per task, and one merge per duplicate group,
+- PoCs: with `TRIAGE_POC_SCOPE=high_medium` (default), only units whose reports claim High or
+  Medium get Bash and write PoCs; a duplicate group counts at the highest severity any member
+  claims, so the merge cannot talk it out of them. Other units are analysed statically, and
+  their agents are told why. `all` gives every unit PoCs.
+- Cost: 4 agents per unit, one merge per duplicate group, and one build agent per task when any
+  unit gets PoCs,
   each capped by `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` of these
   Claude Code runs (merges included) go at once across the whole service. Finding
   titles/descriptions are capped before they reach any prompt, and so are a duplicate group's
@@ -90,9 +95,9 @@ the sponsor, so every agent is treated as potentially hostile:
 
 **Host requirements.** PoCs need bubblewrap + socat and unprivileged user namespaces. On Ubuntu
 24.04+ hosts, AppArmor blocks them unless bubblewrap's AppArmor profile is installed. Docker's
-default seccomp profile blocks them too (see `docker-compose.yml`). With
-`TRIAGE_POC_MODE=required` (default) a host that cannot sandbox leaves tasks unprocessed
-rather than running PoCs unsandboxed; `optional` falls back to static analysis.
+default seccomp profile blocks them too (see `docker-compose.yml`). The sandbox is always
+required, whatever `TRIAGE_POC_SCOPE` says: a host that cannot sandbox leaves tasks unprocessed
+rather than running PoCs unsandboxed or falling back to static analysis.
 `TRIAGE_WORK_DIR` must be at most 48 bytes long: the CLI binds the sandbox's proxy sockets in
 each agent's TMPDIR under it, and a Unix socket path is limited to 107 bytes (the preflight
 checks it).
@@ -261,7 +266,8 @@ code review.
 - `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
 - `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-5-5)
 - `CLAUDE_EFFORT`: Effort passed to `claude --effort` (default: high)
-- `TRIAGE_POC_MODE`: `required` (default), `optional` or `off`; see Final Evaluation
+- `TRIAGE_POC_SCOPE`: which units get PoCs, `high_medium` (default) or `all`; see Final
+  Evaluation
 - `TRIAGE_WORK_DIR`: sandboxes + PoC evidence; must be outside HOME, the service dir and task
   data, and at most 48 bytes long (default: `<system tmp>/arbiter-triage-<uid>`; the image uses
   `/var/lib/arbiter-triage`)

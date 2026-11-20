@@ -115,7 +115,7 @@ _PROCESS_RELATIVE = (Path("/proc"), Path("/dev"))
 
 
 class SandboxUnavailable(RuntimeError):
-    """The command sandbox cannot run here, and PoC execution is required."""
+    """The command sandbox (or the CLI that runs it) cannot run here."""
 
 
 # ----------------------------------------------------------------------------------------

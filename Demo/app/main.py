@@ -393,20 +393,20 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
         return None
 
 
-async def triage_preflight(task_id: str) -> bool | None:
+async def triage_preflight(task_id: str) -> bool:
     """
     Check the evaluation host before a run downloads or judges anything.
 
-    Returns whether triage agents may run PoCs, or None when the task must not be processed now
-    (PoC sandbox required but unavailable, or misconfiguration); the task then stays unmarked and
-    can be retried once the host is fixed.
+    Returns False when the task must not be processed now (no PoC sandbox, or misconfiguration);
+    the task then stays unmarked and can be retried once the host is fixed.
     """
     try:
         # The bubblewrap probe runs subprocesses for up to 40 s; keep it off the event loop.
-        return await asyncio.to_thread(evaluator.preflight)
+        await asyncio.to_thread(evaluator.preflight)
     except (SandboxUnavailable, ValueError) as e:
         logger.error(f"Triage preflight failed for task_id: {task_id}; not processing it: {e}")
-        return None
+        return False
+    return True
 
 
 async def process_task(task_id: str) -> bool:
@@ -465,8 +465,7 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
     _clear_verdicts(findings)
 
     # Make sure the triage can run before downloading the repository or calling any model.
-    poc_enabled = await triage_preflight(task_id)
-    if poc_enabled is None:
+    if not await triage_preflight(task_id):
         return False
 
     # Fetch task data with repository download
@@ -493,7 +492,7 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
     logger.info(f"Starting triage evaluation for task_id: {task_id}")
 
     evaluation_results = await evaluator.evaluate_all_findings(
-        findings, duplicate_relationships, task_cache, poc_enabled=poc_enabled
+        findings, duplicate_relationships, task_cache
     )
 
     failed_findings = evaluation_results["failed_findings"]

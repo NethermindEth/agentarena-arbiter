@@ -17,7 +17,7 @@ services:
       # true keeps every triage agent's sandbox (a full repository copy each) on the volume
       - DEBUG=${DEBUG}
       # Findings-triage evaluation (see README "Final Evaluation")
-      - TRIAGE_POC_MODE=${TRIAGE_POC_MODE}
+      - TRIAGE_POC_SCOPE=${TRIAGE_POC_SCOPE}
       - TRIAGE_MAX_PARALLEL_AGENTS=${TRIAGE_MAX_PARALLEL_AGENTS}
       - TRIAGE_AGENT_MAX_BUDGET_USD=${TRIAGE_AGENT_MAX_BUDGET_USD}
     env_file:
@@ -28,8 +28,8 @@ services:
       - triage-work:/var/lib/arbiter-triage
     # The PoC sandbox is bubblewrap (>= 0.8.0, not setuid), which needs unprivileged user
     # namespaces and a fresh /proc mount. Docker's default seccomp profile blocks the namespaces,
-    # so the preflight fails and (with TRIAGE_POC_MODE=required) tasks are left unprocessed
-    # instead of running PoCs unsandboxed. To enable PoCs, give this service a seccomp profile
+    # so the preflight fails and tasks are left unprocessed instead of running PoCs
+    # unsandboxed. To enable PoCs, give this service a seccomp profile
     # that allows unshare/clone with namespace flags (e.g. security_opt: [seccomp=./seccomp-userns.json])
     # and verify on the target host that the preflight passes; see README. Claude Code's "weaker
     # nested sandbox" mode is deliberately unsupported: it lets agents undo the write denies.

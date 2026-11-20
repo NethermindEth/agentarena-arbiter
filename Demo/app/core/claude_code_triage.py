@@ -75,6 +75,8 @@ BUILD_ALLOWED_DOMAINS = (
 )
 # Days a run's directory (its PoC evidence) is kept; older ones are deleted when a run starts.
 EVIDENCE_RETENTION_DAYS = 30
+# Claimed severities that get PoCs under TRIAGE_POC_SCOPE=high_medium.
+POC_SEVERITIES = ("High", "Medium")
 _POC_LABEL = {
     "CONFIRMED_BY_POC": "confirmed by PoC",
     "REFUTED_BY_POC": "refuted by PoC",
@@ -93,7 +95,7 @@ class TriageUnit:
 
     key: str  # safe identifier, e.g. "u003"
     finding: dict[str, Any]  # untrusted finding JSON shown to the agents
-    claimed_severity: str
+    claimed_severity: str  # for a duplicate group, the highest severity any member claims
 
 
 @dataclass
@@ -111,9 +113,9 @@ class TriageVerdict:
 @dataclass
 class _Run:
     ws: TriageWorkspace
-    poc_enabled: bool
     sem: asyncio.Semaphore
-    context: str = ""
+    poc_units: frozenset[str] = frozenset()  # keys of the units that get PoCs (and Bash)
+    contexts: dict[bool, str] = field(default_factory=dict)  # by "gets PoCs"
     cost_usd: float = 0.0
     agents: int = 0
     failures: int = 0
@@ -152,14 +154,15 @@ class ClaudeCodeTriage:
         candidates = [Path.home(), SERVICE_ROOT, Path(self.cfg.data_dir).resolve(), Path.cwd()]
         return [p for p in candidates if p.resolve() != Path(p.anchor)]
 
-    def preflight(self) -> bool:
+    def preflight(self) -> None:
         """
-        Decide whether agents may run PoCs. Returns ``True`` when the command sandbox works.
+        Check that this host can run the triage, PoC sandbox included.
 
-        Raises :class:`SandboxUnavailable` when PoCs are required but the sandbox cannot run,
-        and ``ValueError`` when the API key or the work directory is misconfigured (including a
-        work directory too long for the sandbox's sockets). Call it before touching
-        any finding so a broken host leaves the task unprocessed (and retryable).
+        Raises :class:`SandboxUnavailable` when the CLI or the command sandbox cannot run, and
+        ``ValueError`` when the API key or the work directory is misconfigured (including a work
+        directory too long for the sandbox's sockets). Call it before touching any finding so a
+        broken host leaves the task unprocessed (and retryable). The sandbox is required even if
+        no unit of a task gets PoCs, so a host's fitness does not depend on the findings.
         """
         if not (self.cli.api_key or "").strip():
             # The settings reject an empty CLAUDE_API_KEY; a blank one would only fail in every
@@ -168,25 +171,28 @@ class ClaudeCodeTriage:
         work_dir = resolve_work_dir(self.cfg.triage_work_dir, self.secret_paths())
         if not shutil.which(self.cli.command):
             raise SandboxUnavailable(f"Claude Code CLI '{self.cli.command}' not found on PATH")
-        mode = self.cfg.triage_poc_mode
-        if mode == "off":
-            return False
         reason = probe_bubblewrap()
-        if reason is None:
-            check_socket_paths(work_dir)
-            return True
-        if mode == "required":
+        if reason is not None:
             raise SandboxUnavailable(reason)
-        logger.error(
-            "PoC sandbox unavailable (%s); triage continues with static analysis only", reason
-        )
-        return False
+        check_socket_paths(work_dir)
+
+    def gets_poc(self, unit: TriageUnit) -> bool:
+        """Whether a unit's agents write and run PoCs, per TRIAGE_POC_SCOPE."""
+        if self.cfg.triage_poc_scope == "all":
+            return True
+        # An unrecognised claim gets the full investigation rather than less.
+        return normalize_severity(unit.claimed_severity, "High") in POC_SEVERITIES
 
     # --- entry point -----------------------------------------------------------------------
     async def run_task(
-        self, task_cache: TaskCache, units: Sequence[TriageUnit], *, poc_enabled: bool
+        self, task_cache: TaskCache, units: Sequence[TriageUnit]
     ) -> dict[str, TriageVerdict]:
-        """Triage every unit of one task; returns verdicts keyed by ``unit.key``."""
+        """
+        Triage every unit of one task; returns verdicts keyed by ``unit.key``.
+
+        Units that get PoCs (see :meth:`gets_poc`) have Bash in the sandbox; the build agent
+        prepares the checkout only when at least one does.
+        """
         if not units:
             return {}
         repo = Path(task_cache.repoPath or "")
@@ -210,19 +216,25 @@ class ClaudeCodeTriage:
             keep_sandboxes=self.cfg.debug,
         )
         self._active_runs.add(ws.root)
-        run = _Run(ws=ws, poc_enabled=poc_enabled, sem=self.semaphore)
+        run = _Run(
+            ws=ws,
+            sem=self.semaphore,
+            poc_units=frozenset(u.key for u in units if self.gets_poc(u)),
+        )
         logger.info(
-            "triage run %s: %d unit(s), PoCs %s",
+            "triage run %s: %d unit(s), %d with PoCs",
             ws.root.name,
             len(units),
-            "on" if poc_enabled else "off",
+            len(run.poc_units),
         )
         try:
             await asyncio.to_thread(ws.init_base, repo)
             task = self._task_json(task_cache)
-            build_report = await self._build(run, task) if poc_enabled else None
+            build_report = await self._build(run, task) if run.poc_units else None
             await asyncio.to_thread(ws.seal_base)
-            run.context = build_context(task, build_report, poc_enabled=poc_enabled)
+            run.contexts = {
+                poc: build_context(task, build_report, poc_enabled=poc) for poc in (True, False)
+            }
 
             outcomes = await asyncio.gather(
                 *(self._triage_unit(run, u) for u in units), return_exceptions=True
@@ -292,7 +304,7 @@ class ClaudeCodeTriage:
 
     # --- per-unit pipeline -----------------------------------------------------------------
     async def _triage_unit(self, run: _Run, unit: TriageUnit) -> TriageVerdict:
-        ctx, finding = run.context, unit.finding
+        ctx, finding = run.contexts[unit.key in run.poc_units], unit.finding
 
         analysis = await self._role(
             run,
@@ -383,7 +395,7 @@ class ClaudeCodeTriage:
     ) -> dict[str, Any] | None:
         """Run one role in a fresh sandbox (with retries); collect the PoCs it created."""
         ws = run.ws
-        bash = run.poc_enabled
+        bash = unit.key in run.poc_units
         tools = ["Read", "Grep", "Glob"] + (["Edit", "Write", "Bash"] if bash else [])
         for attempt in range(retries + 1):
             label = f"{unit.key}-{role}" + (f"-retry{attempt}" if attempt else "")

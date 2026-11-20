@@ -29,6 +29,7 @@ MAX_MEMBER_REPORTS_JSON_CHARS = 60_000
 MAX_AGGREGATION_JSON_CHARS = 200_000
 MIN_AGGREGATION_MEMBER_JSON_CHARS = 2_000
 _TRUNCATED = " ...(truncated by the arbiter)"
+_SEVERITY_RANK = {Severity.INFO: 0, Severity.LOW: 1, Severity.MEDIUM: 2, Severity.HIGH: 3}
 
 
 def _cap(text: str, limit: int) -> str:
@@ -86,15 +87,14 @@ class FindingEvaluator:
         self.aggregator = ClaudeCodeAggregator()
         self.batch_size = batch_size
 
-    def preflight(self) -> bool:
+    def preflight(self) -> None:
         """
         Check the host can run the triage before any work starts.
 
-        Returns whether PoC execution is enabled. Raises ``SandboxUnavailable`` (PoCs required
-        but no sandbox) or ``ValueError`` (misconfiguration); callers must then leave the task
-        unprocessed.
+        Raises ``SandboxUnavailable`` (no CLI or no PoC sandbox) or ``ValueError``
+        (misconfiguration); callers must then leave the task unprocessed.
         """
-        return self.triage.preflight()
+        self.triage.preflight()
 
     def _normalize_severity(self, severity_text: str) -> Severity:
         """
@@ -203,11 +203,8 @@ class FindingEvaluator:
         original member reports are attached too, so the agents judge the strongest correct
         version of the issue instead of trusting the merge (or a planted duplicate's wording).
         """
-        representative = group[0]
         if len(group) == 1:
-            return TriageUnit(
-                key, self._finding_json(representative), self._severity_str(representative.severity)
-            )
+            return TriageUnit(key, self._finding_json(group[0]), self._highest_claim(group))
         merged = await self._aggregate(group, task_cache)
         return self._group_unit(key, group, merged)
 
@@ -215,7 +212,15 @@ class FindingEvaluator:
         """A duplicate group's unit: the merged finding plus the members' original reports."""
         finding = self._finding_json(merged)
         finding["member_reports"], finding["member_reports_omitted"] = self._member_reports(group)
-        return TriageUnit(key, finding, self._severity_str(merged.severity))
+        return TriageUnit(key, finding, self._highest_claim(group))
+
+    def _highest_claim(self, group: list[FindingDB]) -> str:
+        """
+        The highest severity any of the group's reports claims. It decides whether the unit gets
+        PoCs, so the merge cannot talk a group out of them.
+        """
+        claims = (self._normalize_severity(self._severity_str(f.severity)) for f in group)
+        return max(claims, key=_SEVERITY_RANK.__getitem__).value
 
     def _member_reports(self, group: list[FindingDB]) -> tuple[list[dict[str, Any]], int]:
         """
@@ -300,7 +305,7 @@ class FindingEvaluator:
         )
 
     async def evaluate_groups(
-        self, groups: list[list[FindingDB]], task_cache: TaskCache, *, poc_enabled: bool
+        self, groups: list[list[FindingDB]], task_cache: TaskCache
     ) -> tuple[list[FindingEvaluation], list[FindingDB]]:
         """
         Triage every group (one unit per group).
@@ -330,7 +335,7 @@ class FindingEvaluator:
                     return self._group_unit(key, group, group[0])
 
         units = await asyncio.gather(*(build(k, g) for k, g in zip(keys, groups, strict=True)))
-        verdicts = await self.triage.run_task(task_cache, units, poc_enabled=poc_enabled)
+        verdicts = await self.triage.run_task(task_cache, units)
 
         results: list[FindingEvaluation] = []
         failed: list[FindingDB] = []
@@ -418,24 +423,23 @@ class FindingEvaluator:
         findings: list[FindingDB],
         duplicate_relationships: list[DuplicateFinding],
         task_cache: TaskCache,
-        poc_enabled: bool | None = None,
     ) -> dict[str, Any]:
         """
         Evaluate all findings, keeping duplicates together, and set the verdicts in memory.
+
+        Run :meth:`preflight` first; the service does so before downloading the repository.
 
         Args:
             findings: List of findings to evaluate
             duplicate_relationships: Duplicate relationships for grouping
             task_cache: Task context (checkout path, audit scope, docs/Q&A)
-            poc_enabled: Result of :meth:`preflight` (run here when not given)
 
         Returns:
             Summary of evaluation results. ``failed_findings`` lists findings that could not be
             evaluated (they carry no verdict); the caller must not post the run's results then.
 
         Raises:
-            SandboxUnavailable / ValueError from the preflight, or TriageInfrastructureError when
-            nothing could be evaluated. No verdict is set in those cases.
+            TriageInfrastructureError when nothing could be evaluated; no verdict is set then.
         """
         if not findings:
             return {
@@ -452,8 +456,6 @@ class FindingEvaluator:
             }
 
         logger.info(f"Starting triage evaluation of {len(findings)} findings")
-        if poc_enabled is None:
-            poc_enabled = await asyncio.to_thread(self.preflight)
 
         # Group findings: each duplicate group is one unit; every other finding is its own unit.
         if duplicate_relationships:
@@ -469,9 +471,7 @@ class FindingEvaluator:
             [f] for batch in individual_findings_groups for f in batch
         ]
 
-        all_evaluation_results, failed_findings = await self.evaluate_groups(
-            groups, task_cache, poc_enabled=poc_enabled
-        )
+        all_evaluation_results, failed_findings = await self.evaluate_groups(groups, task_cache)
 
         # Apply all evaluation results
         apply_results = self.apply_evaluation_results(findings, all_evaluation_results)

@@ -59,9 +59,11 @@ report are wrong or overstated), INFORMATIONAL (true, but with no security impac
 def _poc_rules(poc_enabled: bool, build_ok: bool) -> str:
     if not poc_enabled:
         return """\
-PoC tooling: NOT AVAILABLE in this run (no command tool). Analyse statically. Set
-poc.attempted=false and poc.result/poc_check to NOT_ATTEMPTED/NOT_RUN, and weigh claims that a
-PoC would have settled with correspondingly lower confidence."""
+PoC tooling: NOT AVAILABLE for this finding (no command tool): in this run only findings whose
+reports claim High or Medium severity get PoCs. Analyse statically. Set poc.attempted=false and
+poc.result/poc_check to NOT_ATTEMPTED/NOT_RUN, and weigh claims that a PoC would have settled
+with correspondingly lower confidence. If the code shows the issue is more severe than claimed,
+rate it by the rubric all the same."""
     build_line = (
         "The repository was prebuilt; use the projects and test commands from the build report."
         if build_ok

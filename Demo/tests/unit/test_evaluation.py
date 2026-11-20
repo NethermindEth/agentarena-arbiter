@@ -162,12 +162,17 @@ class TestFindingEvaluator:
         assert sample_findings[0].evaluation_comment is None
 
 
-def _finding(i: int, description: str = "d", paths: list[str] | None = None) -> FindingDB:
+def _finding(
+    i: int,
+    description: str = "d",
+    paths: list[str] | None = None,
+    severity: Severity = Severity.HIGH,
+) -> FindingDB:
     return FindingDB(
         _id=ObjectId(),
         title=f"Finding {i}",
         description=description,
-        severity=Severity.HIGH,
+        severity=severity,
         file_paths=paths if paths is not None else [f"src/F{i}.sol"],
         agent_id=f"agent{i}",
     )
@@ -282,3 +287,30 @@ class TestPromptBudgets:
             {"src/Merged.sol"} if merge_ok else set()
         )
         assert set(merged.file_paths) == expected
+
+
+class TestClaimedSeverity:
+    """A unit claims the highest severity of its reports; it decides whether it gets PoCs."""
+
+    async def test_a_group_claims_its_highest_member_severity(self, sample_task_cache):
+        group = [
+            _finding(0, severity=Severity.LOW),
+            _finding(1, severity=Severity.HIGH),
+            _finding(2, severity=Severity.INFO),
+        ]
+        evaluator = FindingEvaluator()
+        # The merge rates the group Low; it cannot talk the group out of its PoCs.
+        evaluator.aggregator.aggregate = AsyncMock(
+            return_value=AggregatedFinding("Merged", "merged", "Low", [])
+        )
+
+        unit = await evaluator._build_unit("u000", group, sample_task_cache)
+
+        assert unit.claimed_severity == "High"
+        assert unit.finding["claimed_severity"] == "Low"  # the merged finding is shown as merged
+
+    async def test_a_single_finding_claims_its_own_severity(self, sample_task_cache):
+        unit = await FindingEvaluator()._build_unit(
+            "u000", [_finding(0, severity=Severity.INFO)], sample_task_cache
+        )
+        assert unit.claimed_severity == "Info"

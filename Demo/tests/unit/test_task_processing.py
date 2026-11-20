@@ -231,7 +231,6 @@ class TestTriagePreflight:
 
         def preflight():
             threads.append(threading.get_ident())
-            return True
 
         with patch.object(app_main.evaluator, "preflight", side_effect=preflight):
             assert await app_main.triage_preflight("t1") is True
@@ -244,4 +243,4 @@ class TestTriagePreflight:
 
         exc = SandboxUnavailable("no userns") if error == "SandboxUnavailable" else ValueError("x")
         with patch.object(app_main.evaluator, "preflight", side_effect=exc):
-            assert await app_main.triage_preflight("t1") is None
+            assert await app_main.triage_preflight("t1") is False

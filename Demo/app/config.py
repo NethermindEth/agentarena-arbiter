@@ -29,12 +29,13 @@ class Settings(BaseSettings):
 
     # Findings-triage evaluation pipeline (analyst -> refute + severity verifiers -> judge, each
     # writing/running PoCs in its own sandbox). See app/core/claude_code_triage.py.
-    triage_poc_mode: Literal["required", "optional", "off"] = Field(
-        "required",
+    triage_poc_scope: Literal["all", "high_medium"] = Field(
+        "high_medium",
         description=(
-            "required: PoCs run only inside the Claude Code bubblewrap sandbox; if the sandbox is "
-            "unavailable the task is not processed. optional: fall back to static analysis "
-            "(no Bash) when the sandbox is unavailable. off: never give agents Bash."
+            "Which units get PoCs (Bash in the bubblewrap sandbox): all, or high_medium = only "
+            "units whose reports claim High or Medium severity (a duplicate group: the highest "
+            "any member claims); the rest are analysed statically. The sandbox is required either "
+            "way: a host without it leaves the task unprocessed."
         ),
     )
     triage_work_dir: str = Field(
