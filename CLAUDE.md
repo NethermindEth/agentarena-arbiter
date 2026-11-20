@@ -41,8 +41,17 @@ in `.github/workflows/ci-tests.yaml`.
   processing that downloads the repository, runs both LLM stages and posts the verdicts.
 - **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
   groups findings that describe the same bug.
-- **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
-  batch for validity and severity.
+- **`app/core/evaluation.py`**: judges validity and severity with the findings-triage pipeline,
+  one unit per finding or duplicate group. **`app/core/claude_code_triage.py`** runs, per unit,
+  an analyst who writes a PoC, refute and severity verifiers, and a judge, each a hardened
+  `claude -p` subprocess (**`app/core/claude_code_cli.py`**) in its own bubblewrap sandbox
+  (**`app/core/triage_sandbox.py`**); prompts live in **`app/core/triage_prompts.py`**.
+  **`app/core/claude_code_aggregator.py`** merges a duplicate group into one digest first.
+  The host needs the Claude Code CLI, bubblewrap and socat (see the README's Host requirements).
+- **`app/task_runs.py`**: one run per task at a time (a manual trigger and the scheduled job
+  both claim the task; a second manual trigger gets 409), and the manual runs that
+  `POST /tasks/{task_id}/process` starts in the background (it answers 202), which shutdown
+  cancels.
 - **`app/backend_tasks.py`**: reads tasks from the backend's `/api/arbiter/approved-tasks` and
   `/api/arbiter/tasks/{task_id}`.
 - **`app/backend_metadata.py`**: reads and replaces the arbiter's free-form per-task metadata at
@@ -68,7 +77,8 @@ repository.
   is also listed in the branch rulesets in the repository settings; that step is manual.
 - The image builds from `Demo/Dockerfile` through the shared `docker-build-push-jfrog` workflow
   (v5.1.1) for `linux/amd64`: a uv-built environment on the official Python image, copied onto a
-  distroless runtime with no shell. An image push is gated by a JFrog Xray scan (watch
+  `debian:trixie-slim` runtime with what the findings-triage agents need (Node.js and the pinned
+  Claude Code CLI, bubblewrap, socat, git, a compiler toolchain, Foundry). An image push is gated by a JFrog Xray scan (watch
   `iac-all-repos`): a Critical vulnerability or a malicious package fails the job before the push.
   Pull requests and the build-only `main` run push nothing, so they are not scanned. A waiver is an
   Xray ignore rule scoped to `xray-scan-agentarena-arbiter`, owned by the platform team.
