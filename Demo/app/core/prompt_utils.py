@@ -5,10 +5,12 @@ def build_context_section(task_cache: TaskCache) -> str:
     """Build the context section for evaluation prompts."""
     context_parts = []
 
-    # Smart contract files
+    # Smart contract files; the fence names the language only when the task has a single one
     if task_cache.selectedFilesContent:
+        languages = task_cache.languages
+        fence = languages[0].slug if len(languages) == 1 else ""
         context_parts.append(
-            f"### SMART CONTRACT CODE:\n```solidity\n{task_cache.selectedFilesContent}\n```\n"
+            f"### SMART CONTRACT CODE:\n```{fence}\n{task_cache.selectedFilesContent}\n```\n"
         )
 
     # Documentation files

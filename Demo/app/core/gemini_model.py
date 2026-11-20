@@ -5,6 +5,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
 from app.config import config
+from app.core.languages import language_line
 from app.core.prompt_utils import build_context_section
 from app.models.finding_db import FindingDB
 from app.types import TaskCache
@@ -156,6 +157,9 @@ async def find_duplicates_structured(
 
     # Build context section
     context_section = build_context_section(task_cache)
+    languages = language_line(
+        (path for finding in findings for path in finding.file_paths), task_cache.languages
+    )
 
     prompt = f"""
 You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
@@ -223,6 +227,7 @@ Return a JSON object with the following structure:
 {context_section}
 
 ## FINDINGS TO ANALYZE
+{languages}
 {[finding.dump() for finding in findings]}
 
 Analyze systematically: group similar findings, examine each vulnerability against the smart contract context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from bson import ObjectId
 
+from app.core.languages import DEFAULT_LANGUAGES
 from app.models.finding_db import Severity, Status
 from app.types import Task, TaskCache
 
@@ -63,6 +64,7 @@ def sample_task_cache() -> TaskCache:
         startTime=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
         deadline=datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC),
         selectedFilesContent="contract Test { function withdraw() {} }",
+        languages=DEFAULT_LANGUAGES,
         selectedDocsContent="Documentation for the test contract",
         additionalLinks=[],
         additionalDocs="",

@@ -26,6 +26,7 @@ from app.backend_tasks import fetch_approved_tasks, fetch_task
 from app.config import config
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
+from app.core.languages import DEFAULT_LANGUAGES
 from app.models.finding_db import FindingDB, Status
 from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
 from app.types import TaskCache
@@ -344,6 +345,7 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
             startTime=datetime.fromtimestamp(float(task.startTime), tz=UTC),
             deadline=datetime.fromtimestamp(float(task.deadline), tz=UTC),
             selectedFilesContent=concatenated_contracts,
+            languages=task.languages or DEFAULT_LANGUAGES,
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,
             additionalDocs=task.additionalDocs,
