@@ -24,7 +24,7 @@ blocks is trusted and written here.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.core.claude_code_cli import json_block
 
@@ -85,7 +85,9 @@ PoC tooling. {build_line}
     the files you created are carried over."""
 
 
-def build_context(task: Dict[str, Any], build_report: Optional[Dict[str, Any]], *, poc_enabled: bool) -> str:
+def build_context(
+    task: dict[str, Any], build_report: dict[str, Any] | None, *, poc_enabled: bool
+) -> str:
     """The CONTEXT block every agent prompt starts with (the skill's references/context-template.md)."""
     build_ok = bool(build_report and build_report.get("build_succeeded"))
     report_block = (
@@ -130,9 +132,23 @@ _POC = {
     "type": "object",
     "properties": {
         "attempted": {"type": "boolean"},
-        "files": {"type": "array", "items": {"type": "string"}, "description": "paths of PoC files you created, relative to your working directory"},
+        "files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "paths of PoC files you created, relative to your working directory",
+        },
         "command": {"type": "string"},
-        "result": {"type": "string", "enum": ["DEMONSTRATES_ISSUE", "REFUTES_ISSUE", "PARTIAL", "COMPILE_FAILED", "RUNTIME_FAILED", "NOT_ATTEMPTED"]},
+        "result": {
+            "type": "string",
+            "enum": [
+                "DEMONSTRATES_ISSUE",
+                "REFUTES_ISSUE",
+                "PARTIAL",
+                "COMPILE_FAILED",
+                "RUNTIME_FAILED",
+                "NOT_ATTEMPTED",
+            ],
+        },
         "output_excerpt": {"type": "string"},
         "what_it_shows": {"type": "string"},
     },
@@ -144,101 +160,207 @@ _ACTIONABLE = {
     "description": "true if a competent developer would change code because of this finding (a real defect or hardening opportunity); false if nothing should change",
 }
 
-ANALYSIS_SCHEMA: Dict[str, Any] = {
+ANALYSIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "verdict": {"type": "string", "enum": VERDICTS},
         "technical_claim_holds": {"type": "boolean"},
-        "claim_summary": {"type": "string", "description": "precise restatement of what the finding claims"},
-        "claim_accuracy_notes": {"type": "string", "description": "what the report gets right/wrong: lines, functions, paths, overstated or understated impact"},
+        "claim_summary": {
+            "type": "string",
+            "description": "precise restatement of what the finding claims",
+        },
+        "claim_accuracy_notes": {
+            "type": "string",
+            "description": "what the report gets right/wrong: lines, functions, paths, overstated or understated impact",
+        },
         "root_cause": {"type": "string"},
-        "code_references": {"type": "array", "items": {"type": "string"}, "description": "repo-relative path:line - note"},
+        "code_references": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "repo-relative path:line - note",
+        },
         "reachable_in_scope": {"type": "boolean"},
         "reachability_notes": {"type": "string"},
         "who_can_trigger": {"type": "string"},
         "who_is_harmed": {"type": "string"},
         "preconditions": {"type": "array", "items": {"type": "string"}},
         "exploit_scenario": {"type": "string", "description": "step-by-step"},
-        "impact": {"type": "string", "description": "who loses what and how much; can it be amplified or repeated"},
+        "impact": {
+            "type": "string",
+            "description": "who loses what and how much; can it be amplified or repeated",
+        },
         "likelihood": {"type": "string", "enum": ["High", "Medium", "Low", "None"]},
-        "mitigations_and_docs": {"type": "string", "description": "existing validations, protections the affected party controls, docs/code comments/tests acknowledging the behavior"},
+        "mitigations_and_docs": {
+            "type": "string",
+            "description": "existing validations, protections the affected party controls, docs/code comments/tests acknowledging the behavior",
+        },
         "recommended_severity": {"type": "string", "enum": SEVERITIES},
         "severity_rationale": {"type": "string"},
-        "claimed_severity_assessment": {"type": "string", "description": "agree/disagree with the severity the finding claims, and why"},
+        "claimed_severity_assessment": {
+            "type": "string",
+            "description": "agree/disagree with the severity the finding claims, and why",
+        },
         "actionable": _ACTIONABLE,
         "poc": _POC,
         "recommended_fix": {"type": "string"},
         "confidence": {"type": "string", "enum": CONFIDENCE},
     },
     "required": [
-        "verdict", "technical_claim_holds", "claim_summary", "claim_accuracy_notes", "root_cause",
-        "code_references", "reachable_in_scope", "reachability_notes", "who_can_trigger", "who_is_harmed",
-        "preconditions", "exploit_scenario", "impact", "likelihood", "mitigations_and_docs",
-        "recommended_severity", "severity_rationale", "claimed_severity_assessment", "actionable",
-        "poc", "recommended_fix", "confidence",
+        "verdict",
+        "technical_claim_holds",
+        "claim_summary",
+        "claim_accuracy_notes",
+        "root_cause",
+        "code_references",
+        "reachable_in_scope",
+        "reachability_notes",
+        "who_can_trigger",
+        "who_is_harmed",
+        "preconditions",
+        "exploit_scenario",
+        "impact",
+        "likelihood",
+        "mitigations_and_docs",
+        "recommended_severity",
+        "severity_rationale",
+        "claimed_severity_assessment",
+        "actionable",
+        "poc",
+        "recommended_fix",
+        "confidence",
     ],
 }
 
-VERIFY_SCHEMA: Dict[str, Any] = {
+VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "agrees_with_verdict": {"type": "boolean"},
         "agrees_with_severity": {"type": "boolean"},
         "proposed_verdict": {"type": "string", "enum": VERDICTS},
         "proposed_severity": {"type": "string", "enum": SEVERITIES},
-        "poc_check": {"type": "string", "enum": ["REPRODUCED", "NOT_REPRODUCED", "POC_FLAWED", "NOT_RUN", "NO_POC"]},
-        "poc_critique": {"type": "string", "description": "is the analyst PoC realistic and does it prove what it claims?"},
-        "own_poc_files": {"type": "array", "items": {"type": "string"}, "description": "PoC files you created, relative to your working directory"},
+        "poc_check": {
+            "type": "string",
+            "enum": ["REPRODUCED", "NOT_REPRODUCED", "POC_FLAWED", "NOT_RUN", "NO_POC"],
+        },
+        "poc_critique": {
+            "type": "string",
+            "description": "is the analyst PoC realistic and does it prove what it claims?",
+        },
+        "own_poc_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "PoC files you created, relative to your working directory",
+        },
         "own_poc_result": {"type": "string"},
-        "strongest_argument": {"type": "string", "description": "the strongest argument against the analyst conclusion (or why none holds)"},
-        "missed_considerations": {"type": "string", "description": "escalations, mitigations, docs, code paths the analyst missed"},
+        "strongest_argument": {
+            "type": "string",
+            "description": "the strongest argument against the analyst conclusion (or why none holds)",
+        },
+        "missed_considerations": {
+            "type": "string",
+            "description": "escalations, mitigations, docs, code paths the analyst missed",
+        },
         "reasoning": {"type": "string"},
         "confidence": {"type": "string", "enum": CONFIDENCE},
     },
     "required": [
-        "agrees_with_verdict", "agrees_with_severity", "proposed_verdict", "proposed_severity", "poc_check",
-        "poc_critique", "own_poc_files", "strongest_argument", "missed_considerations", "reasoning", "confidence",
+        "agrees_with_verdict",
+        "agrees_with_severity",
+        "proposed_verdict",
+        "proposed_severity",
+        "poc_check",
+        "poc_critique",
+        "own_poc_files",
+        "strongest_argument",
+        "missed_considerations",
+        "reasoning",
+        "confidence",
     ],
 }
 
-FINAL_SCHEMA: Dict[str, Any] = {
+FINAL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "final_verdict": {"type": "string", "enum": VERDICTS},
         "final_severity": {"type": "string", "enum": SEVERITIES},
         "actionable": _ACTIONABLE,
-        "one_line": {"type": "string", "description": "<= 220 chars headline of the final conclusion"},
-        "summary": {"type": "string", "description": "one solid paragraph: what is true, what is not, why this severity"},
+        "one_line": {
+            "type": "string",
+            "description": "<= 220 chars headline of the final conclusion",
+        },
+        "summary": {
+            "type": "string",
+            "description": "one solid paragraph: what is true, what is not, why this severity",
+        },
         "technical_validity": {"type": "string"},
         "impact_and_likelihood": {"type": "string"},
-        "key_evidence": {"type": "array", "items": {"type": "string"}, "description": "code refs, PoC results, docs"},
-        "poc_status": {"type": "string", "enum": ["CONFIRMED_BY_POC", "REFUTED_BY_POC", "PARTIAL", "NO_WORKING_POC"]},
-        "best_poc": {"type": "string", "description": "'<role>: <relative path>' of the most convincing PoC, or empty"},
+        "key_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "code refs, PoC results, docs",
+        },
+        "poc_status": {
+            "type": "string",
+            "enum": ["CONFIRMED_BY_POC", "REFUTED_BY_POC", "PARTIAL", "NO_WORKING_POC"],
+        },
+        "best_poc": {
+            "type": "string",
+            "description": "'<role>: <relative path>' of the most convincing PoC, or empty",
+        },
         "recommended_fix": {"type": "string"},
-        "claimed_severity_agreement": {"type": "string", "enum": ["AGREE", "SHOULD_BE_HIGHER", "SHOULD_BE_LOWER", "SHOULD_BE_INVALID"]},
-        "resolution_notes": {"type": "string", "description": "how disagreements between analyst and verifiers were resolved"},
+        "claimed_severity_agreement": {
+            "type": "string",
+            "enum": ["AGREE", "SHOULD_BE_HIGHER", "SHOULD_BE_LOWER", "SHOULD_BE_INVALID"],
+        },
+        "resolution_notes": {
+            "type": "string",
+            "description": "how disagreements between analyst and verifiers were resolved",
+        },
         "confidence": {"type": "string", "enum": CONFIDENCE},
     },
     "required": [
-        "final_verdict", "final_severity", "actionable", "one_line", "summary", "technical_validity",
-        "impact_and_likelihood", "key_evidence", "poc_status", "best_poc", "recommended_fix",
-        "claimed_severity_agreement", "resolution_notes", "confidence",
+        "final_verdict",
+        "final_severity",
+        "actionable",
+        "one_line",
+        "summary",
+        "technical_validity",
+        "impact_and_likelihood",
+        "key_evidence",
+        "poc_status",
+        "best_poc",
+        "recommended_fix",
+        "claimed_severity_agreement",
+        "resolution_notes",
+        "confidence",
     ],
 }
 
-BUILD_SCHEMA: Dict[str, Any] = {
+BUILD_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "build_succeeded": {"type": "boolean", "description": "true if PoC tests for the in-scope code can be compiled and run offline"},
+        "build_succeeded": {
+            "type": "boolean",
+            "description": "true if PoC tests for the in-scope code can be compiled and run offline",
+        },
         "projects": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "build root relative to the repository root ('.' for the root)"},
+                    "path": {
+                        "type": "string",
+                        "description": "build root relative to the repository root ('.' for the root)",
+                    },
                     "stack": {"type": "string", "description": "foundry, hardhat, cargo, ..."},
-                    "test_dir": {"type": "string", "description": "test directory relative to the project path"},
-                    "test_command": {"type": "string", "description": "command (run from the project path) that runs ONE test file; use <FILE> as placeholder"},
+                    "test_dir": {
+                        "type": "string",
+                        "description": "test directory relative to the project path",
+                    },
+                    "test_command": {
+                        "type": "string",
+                        "description": "command (run from the project path) that runs ONE test file; use <FILE> as placeholder",
+                    },
                     "incremental_compile_seconds": {"type": "number"},
                     "notes": {"type": "string"},
                 },
@@ -250,7 +372,10 @@ BUILD_SCHEMA: Dict[str, Any] = {
             "type": "string",
             "description": "<= 40 lines of FACTS: components and their main files, external entry points, roles and what each controls, test helpers useful for PoCs, docs/comments with explicit warnings",
         },
-        "problems": {"type": "string", "description": "what failed or is missing, and what you tried"},
+        "problems": {
+            "type": "string",
+            "description": "what failed or is missing, and what you tried",
+        },
     },
     "required": ["build_succeeded", "projects", "toolchain", "repo_map", "problems"],
 }
@@ -259,7 +384,8 @@ BUILD_SCHEMA: Dict[str, Any] = {
 # ---------------------------------------------------------------------------------------
 # Role prompts (triage.js analystPrompt / refutePrompt / severityPrompt / judgePrompt)
 # ---------------------------------------------------------------------------------------
-def builder_prompt(task: Dict[str, Any]) -> str:
+def builder_prompt(task: dict[str, Any]) -> str:
+    """The build agent's prompt: install dependencies and prebuild the checkout, then map it."""
     return f"""\
 YOUR ROLE: build preparation agent for a security triage run. Other agents will later write and
 run proof-of-concept tests against this repository in copies of your working directory, fully
@@ -295,7 +421,8 @@ Steps:
     and a factual repo map (no opinions about security) as the structured result."""
 
 
-def analyst_prompt(context: str, finding: Dict[str, Any]) -> str:
+def analyst_prompt(context: str, finding: dict[str, Any]) -> str:
+    """The lead analyst's prompt: trace the finding through the code and prove it with a PoC."""
     return f"""\
 {context}
 YOUR ROLE: lead analyst for the finding below.
@@ -327,7 +454,10 @@ applied, only shown in its .triage/diffs file. A PoC that only works with those 
 not demonstrate the issue."""
 
 
-def refute_prompt(context: str, finding: Dict[str, Any], analysis: Dict[str, Any], staged_note: str) -> str:
+def refute_prompt(
+    context: str, finding: dict[str, Any], analysis: dict[str, Any], staged_note: str
+) -> str:
+    """The refutation verifier's prompt: try to overturn the analysis and audit its PoC."""
     return f"""\
 {context}
 YOUR ROLE: adversarial verifier (REFUTATION lens).
@@ -352,7 +482,10 @@ Your job: try hard to REFUTE the analyst's conclusion, in whichever direction it
 Be adversarial but honest: if you cannot build a real refutation, say so and agree. Report whether you agree with the analyst's verdict AND its recommended severity, and what you would propose instead. List every PoC file you created in own_poc_files."""
 
 
-def severity_prompt(context: str, finding: Dict[str, Any], analysis: Dict[str, Any], staged_note: str) -> str:
+def severity_prompt(
+    context: str, finding: dict[str, Any], analysis: dict[str, Any], staged_note: str
+) -> str:
+    """The severity verifier's prompt: look for escalations and mitigations of the impact."""
     return f"""\
 {context}
 YOUR ROLE: adversarial verifier (IMPACT & SEVERITY lens).
@@ -379,11 +512,12 @@ Report whether you agree with the analyst's verdict AND recommended severity, an
 
 def judge_prompt(
     context: str,
-    finding: Dict[str, Any],
-    analysis: Dict[str, Any],
-    verifiers: List[Optional[Dict[str, Any]]],
+    finding: dict[str, Any],
+    analysis: dict[str, Any],
+    verifiers: list[dict[str, Any] | None],
     staged_note: str,
 ) -> str:
+    """The judge's prompt: weigh the analysis and both verifications into the final ruling."""
     return f"""\
 {context}
 YOUR ROLE: final judge.

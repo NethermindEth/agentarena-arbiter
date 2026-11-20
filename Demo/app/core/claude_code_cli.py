@@ -38,9 +38,10 @@ import os
 import re
 import signal
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any
 
 from app.config import config
 
@@ -50,8 +51,8 @@ logger = logging.getLogger(__name__)
 # The severity vocabulary the models may return (mirrors app.models.finding_input.Severity).
 VALID_SEVERITIES = ("High", "Medium", "Low", "Info")
 
-# Environment variables inherited from the service process. Everything else (MongoDB URL,
-# backend/Gemini keys, ...) is withheld from the agent. RUSTUP_HOME only locates a Rust
+# Environment variables inherited from the service process. Everything else (the backend and
+# Gemini keys, ...) is withheld from the agent. RUSTUP_HOME only locates a Rust
 # toolchain installed outside HOME; every other tool cache lives in the agent's private HOME.
 _ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "RUSTUP_HOME")
 
@@ -73,7 +74,7 @@ def json_block(obj) -> str:
     return json.dumps(obj, indent=2)
 
 
-def render_template(template: str, replacements: Dict[str, str]) -> str:
+def render_template(template: str, replacements: dict[str, str]) -> str:
     """
     Substitute ``{{TOKEN}}`` placeholders in a *single* left-to-right regex pass.
 
@@ -115,7 +116,7 @@ class AgentResult:
     """Outcome of one Claude Code run."""
 
     ok: bool
-    structured: Optional[Dict[str, Any]]  # schema-validated output (when a schema was given)
+    structured: dict[str, Any] | None  # schema-validated output (when a schema was given)
     text: str  # the CLI's final ``result`` text
     cost_usd: float
     duration_s: float
@@ -127,10 +128,10 @@ class ClaudeCodeCLI:
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        command: Optional[str] = None,
-        api_key: Optional[str] = None,
-        effort: Optional[str] = None,
+        model: str | None = None,
+        command: str | None = None,
+        api_key: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self.model = model if model is not None else config.claude_model
         self.command = command if command is not None else config.claude_command
@@ -142,9 +143,9 @@ class ClaudeCodeCLI:
         self,
         *,
         tools: Sequence[str],
-        settings: Dict[str, Any],
-        json_schema: Optional[Dict[str, Any]] = None,
-        max_budget_usd: Optional[float] = None,
+        settings: dict[str, Any],
+        json_schema: dict[str, Any] | None = None,
+        max_budget_usd: float | None = None,
     ) -> list:
         """Return the full argv for one run (the prompt is fed on stdin)."""
         argv = [
@@ -155,11 +156,15 @@ class ClaudeCodeCLI:
             "--strict-mcp-config",
             "--disable-slash-commands",
             "--no-session-persistence",
-            "--permission-prompts", "none",
-            "--output-format", "json",
+            "--permission-prompts",
+            "none",
+            "--output-format",
+            "json",
             # "" means no built-in tools at all.
-            "--tools", ",".join(tools),
-            "--settings", json.dumps(settings, separators=(",", ":")),
+            "--tools",
+            ",".join(tools),
+            "--settings",
+            json.dumps(settings, separators=(",", ":")),
         ]
         if self.model:
             argv += ["--model", self.model]
@@ -171,7 +176,7 @@ class ClaudeCodeCLI:
             argv += ["--max-budget-usd", f"{max_budget_usd:g}"]
         return argv
 
-    def child_env(self, home: Path, tmpdir: Path) -> Dict[str, str]:
+    def child_env(self, home: Path, tmpdir: Path) -> dict[str, str]:
         """
         Build the *minimal* environment for the subprocess.
 
@@ -203,17 +208,19 @@ class ClaudeCodeCLI:
         home: Path,
         tmpdir: Path,
         tools: Sequence[str],
-        settings: Dict[str, Any],
-        json_schema: Optional[Dict[str, Any]] = None,
+        settings: dict[str, Any],
+        json_schema: dict[str, Any] | None = None,
         timeout_s: float,
-        max_budget_usd: Optional[float] = None,
+        max_budget_usd: float | None = None,
         label: str = "agent",
     ) -> AgentResult:
         """Run one agent with ``prompt`` on stdin inside ``cwd`` and parse its JSON result."""
         argv = self.build_argv(
             tools=tools, settings=settings, json_schema=json_schema, max_budget_usd=max_budget_usd
         )
-        logger.debug("[%s] launching claude (cwd=%s, tools=%s)", label, cwd, ",".join(tools) or "none")
+        logger.debug(
+            "[%s] launching claude (cwd=%s, tools=%s)", label, cwd, ",".join(tools) or "none"
+        )
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -229,10 +236,14 @@ class ClaudeCodeCLI:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(prompt.encode("utf-8")), timeout=timeout_s
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._kill_group(proc)
-            logger.warning("[%s] claude timed out after %ss; process group killed", label, timeout_s)
-            return AgentResult(False, None, "", 0.0, time.monotonic() - started, f"timeout after {timeout_s}s")
+            logger.warning(
+                "[%s] claude timed out after %ss; process group killed", label, timeout_s
+            )
+            return AgentResult(
+                False, None, "", 0.0, time.monotonic() - started, f"timeout after {timeout_s}s"
+            )
         except BaseException:
             # Cancellation (shutdown) or anything unexpected: never leave an agent running.
             await self._kill_group(proc)
@@ -244,12 +255,19 @@ class ClaudeCodeCLI:
         duration = time.monotonic() - started
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
-        return self._parse(label, proc.returncode, stdout, stderr, duration, json_schema is not None)
+        return self._parse(
+            label, proc.returncode, stdout, stderr, duration, json_schema is not None
+        )
 
     # --- result parsing ----------------------------------------------------------------
     @staticmethod
     def _parse(
-        label: str, returncode: Optional[int], stdout: str, stderr: str, duration: float, want_structured: bool
+        label: str,
+        returncode: int | None,
+        stdout: str,
+        stderr: str,
+        duration: float,
+        want_structured: bool,
     ) -> AgentResult:
         data: Any = None
         try:
@@ -274,24 +292,26 @@ class ClaudeCodeCLI:
             logger.warning("[%s] claude returned no structured output", label)
             return AgentResult(False, None, text, cost, duration, "no structured output")
         logger.info("[%s] claude finished in %.0fs (cost $%.2f)", label, duration, cost)
-        return AgentResult(True, structured if isinstance(structured, dict) else None, text, cost, duration)
+        return AgentResult(
+            True, structured if isinstance(structured, dict) else None, text, cost, duration
+        )
 
     # --- process cleanup ---------------------------------------------------------------
     @staticmethod
     def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
         try:
             os.killpg(proc.pid, sig)
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError, PermissionError:
             pass
 
     async def _kill_group(self, proc: asyncio.subprocess.Process) -> None:
         self._signal_group(proc, signal.SIGTERM)
         try:
             await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         self._signal_group(proc, signal.SIGKILL)
         try:
             await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("claude process %s did not exit after SIGKILL", proc.pid)

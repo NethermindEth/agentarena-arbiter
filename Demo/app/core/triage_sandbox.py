@@ -45,9 +45,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,21 @@ TRIAGE_DIR = ".triage"
 # Directory basenames skipped when computing what an agent changed: build outputs and caches
 # (noise; never propagated) plus the system's own staging dir and VCS metadata.
 SKIP_DIFF_DIRS = frozenset(
-    {".triage", ".git", "out", "cache", "target", "artifacts", "broadcast", "node_modules",
-     "typechain", "typechain-types", "coverage", "__pycache__", ".pytest_cache"}
+    {
+        ".triage",
+        ".git",
+        "out",
+        "cache",
+        "target",
+        "artifacts",
+        "broadcast",
+        "node_modules",
+        "typechain",
+        "typechain-types",
+        "coverage",
+        "__pycache__",
+        ".pytest_cache",
+    }
 )
 MAX_STAGED_FILES = 100
 MAX_STAGED_FILE_BYTES = 1_000_000
@@ -76,16 +89,18 @@ class SandboxUnavailable(RuntimeError):
 # ----------------------------------------------------------------------------------------
 # Host checks
 # ----------------------------------------------------------------------------------------
-def _bwrap_version(bwrap: str) -> Optional[Tuple[int, ...]]:
+def _bwrap_version(bwrap: str) -> tuple[int, ...] | None:
     try:
-        out = subprocess.run([bwrap, "--version"], capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
+        out = subprocess.run(  # noqa: S603  bwrap is the absolute path shutil.which found
+            [bwrap, "--version"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except OSError, subprocess.TimeoutExpired:
         return None
     m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", out or "")
     return tuple(int(x or 0) for x in m.groups()) if m else None
 
 
-def probe_bubblewrap() -> Optional[str]:
+def probe_bubblewrap() -> str | None:
     """
     Check that bubblewrap can provide the isolation the Claude Code sandbox relies on.
 
@@ -104,12 +119,25 @@ def probe_bubblewrap() -> Optional[str]:
         return "bwrap is setuid; it then cannot disable nested user namespaces (which can undo write denies)"
     version = _bwrap_version(bwrap)
     if version is None or version < MIN_BWRAP_VERSION:
-        return (f"bubblewrap {'.'.join(map(str, version)) if version else '(unknown version)'} is too old; "
-                f">= {'.'.join(map(str, MIN_BWRAP_VERSION))} is needed to disable nested user namespaces")
-    argv = [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev",
-            "--proc", "/proc", "true"]
+        return (
+            f"bubblewrap {'.'.join(map(str, version)) if version else '(unknown version)'} is too old; "
+            f">= {'.'.join(map(str, MIN_BWRAP_VERSION))} is needed to disable nested user namespaces"
+        )
+    argv = [
+        bwrap,
+        "--unshare-all",
+        "--die-with-parent",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "true",
+    ]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)  # noqa: S603  fixed argv, bwrap from shutil.which
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"bubblewrap probe failed: {exc}"
     if proc.returncode != 0:
@@ -121,10 +149,10 @@ def harden_service_process() -> None:
     """
     Mark this (the arbiter) process non-dumpable (Linux), as defence in depth.
 
-    The arbiter's environment holds the MongoDB URL and API keys. A non-dumpable process's /proc
-    entries are root-owned, so even a sandbox escape running as the same user cannot read
-    ``/proc/<arbiter pid>/environ``. Children (the ``claude`` CLI) are unaffected: the flag
-    resets on exec.
+    The arbiter's environment holds the Claude, Gemini and backend API keys. A non-dumpable
+    process's /proc entries are root-owned, so even a sandbox escape running as the same user
+    cannot read ``/proc/<arbiter pid>/environ``. Children (the ``claude`` CLI) are unaffected:
+    the flag resets on exec.
     """
     if not sys.platform.startswith("linux"):
         return
@@ -190,7 +218,11 @@ def resolve_work_dir(configured: str, protected: Sequence[Path]) -> Path:
     Agents are denied all reads inside ``protected`` (HOME, service dir, task data), and a
     permission deny cannot be re-allowed for a sub-path, so sandboxes must live elsewhere.
     """
-    base = Path(configured).expanduser() if configured else Path(tempfile.gettempdir()) / f"arbiter-triage-{os.getuid()}"
+    base = (
+        Path(configured).expanduser()
+        if configured
+        else Path(tempfile.gettempdir()) / f"arbiter-triage-{os.getuid()}"
+    )
     base = base.resolve()
     for region in protected:
         if _is_within(base, Path(region).resolve()):
@@ -215,7 +247,7 @@ def _safe_rel(rel: str) -> bool:
     return bool(parts) and all(_SAFE_COMPONENT.match(p) and p not in (".", "..") for p in parts)
 
 
-def _read_beneath(root: Path, rel: str, limit: int) -> Optional[bytes]:
+def _read_beneath(root: Path, rel: str, limit: int) -> bytes | None:
     """
     Read a regular file ``root/rel`` of at most ``limit`` bytes, opening every path component
     relative to its parent's directory handle with ``O_NOFOLLOW``: a component swapped for a
@@ -255,7 +287,7 @@ def _read_beneath(root: Path, rel: str, limit: int) -> Optional[bytes]:
         os.close(ffd)
 
 
-def _walk_files(root: Path) -> Iterable[Tuple[str, os.stat_result]]:
+def _walk_files(root: Path) -> Iterable[tuple[str, os.stat_result]]:
     """Yield ``(relpath, lstat)`` for regular files under ``root``; never follows symlinks."""
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIFF_DIRS]
@@ -269,7 +301,7 @@ def _walk_files(root: Path) -> Iterable[Tuple[str, os.stat_result]]:
                 yield str(full.relative_to(root)), st
 
 
-def _safe_mkdirs(root: Path, rel: str) -> Optional[Path]:
+def _safe_mkdirs(root: Path, rel: str) -> Path | None:
     """Create ``root/rel`` dirs, refusing any existing component that is not a real directory."""
     cur = root
     for part in Path(rel).parts:
@@ -297,7 +329,7 @@ def _force_rmtree(path: Path) -> None:
     if not stat.S_ISDIR(st.st_mode):
         os.unlink(path)
         return
-    subprocess.run(["chmod", "-R", "u+rwX", "--", str(path)], capture_output=True)
+    subprocess.run(["chmod", "-R", "u+rwX", "--", str(path)], capture_output=True)  # noqa: S603, S607  fixed coreutils argv on paths the service built; PATH is the service's own
     shutil.rmtree(path, ignore_errors=True)
     if os.path.lexists(path):
         logger.warning("could not fully delete %s", path)
@@ -311,7 +343,11 @@ def _fresh_dir(path: Path) -> None:
 
 def _copy_tree(src: Path, dst: Path) -> None:
     """``cp -a`` (timestamps preserved so build caches stay valid; symlinks copied as links)."""
-    subprocess.run(["cp", "-a", "--reflink=auto", f"{src}/.", str(dst)], check=True, capture_output=True)
+    subprocess.run(  # noqa: S603  fixed coreutils argv on paths the service built; PATH is the service's own
+        ["cp", "-a", "--reflink=auto", f"{src}/.", str(dst)],  # noqa: S607  see above
+        check=True,
+        capture_output=True,
+    )
 
 
 # ----------------------------------------------------------------------------------------
@@ -319,19 +355,24 @@ def _copy_tree(src: Path, dst: Path) -> None:
 # ----------------------------------------------------------------------------------------
 @dataclass
 class Sandbox:
+    """One agent's private directory tree: its repository copy, HOME and TMPDIR."""
+
     name: str
     root: Path
 
     @property
     def repo(self) -> Path:
+        """The agent's copy of the prebuilt checkout (its working directory)."""
         return self.root / "repo"
 
     @property
     def home(self) -> Path:
+        """The agent's private HOME (toolchain and compiler caches)."""
         return self.root / ".home"
 
     @property
     def tmp(self) -> Path:
+        """The agent's private TMPDIR."""
         return self.root / ".tmp"
 
 
@@ -339,9 +380,9 @@ class Sandbox:
 class AgentChanges:
     """What an agent did to its sandbox, computed by the system (not self-reported)."""
 
-    new_files: List[str] = field(default_factory=list)
-    modified_files: List[str] = field(default_factory=list)
-    deleted_files: List[str] = field(default_factory=list)
+    new_files: list[str] = field(default_factory=list)
+    modified_files: list[str] = field(default_factory=list)
+    deleted_files: list[str] = field(default_factory=list)
     diff: str = ""
 
 
@@ -361,10 +402,12 @@ class TriageWorkspace:
         self.base = Sandbox("base", self.root / "base")
         self.agents_dir = self.root / "agents"
         self.evidence_dir = self.root / "evidence"
-        self.secret_paths = [p for p in dict.fromkeys(Path(s).resolve() for s in secret_paths) if p.exists()]
+        self.secret_paths = [
+            p for p in dict.fromkeys(Path(s).resolve() for s in secret_paths) if p.exists()
+        ]
         self.extra_read = [str(Path(p).expanduser().resolve()) for p in extra_read_paths]
         self.keep_sandboxes = keep_sandboxes
-        self._index: Dict[str, Tuple[int, int]] = {}
+        self._index: dict[str, tuple[int, int]] = {}
         for d in (self.base.root, self.agents_dir, self.evidence_dir):
             d.mkdir(mode=0o700)
 
@@ -387,7 +430,10 @@ class TriageWorkspace:
             if not stat.S_ISDIR(st.st_mode):
                 raise RuntimeError(f"{d} is no longer a real directory")
         _fresh_dir(self.base.tmp)
-        subprocess.run(["chmod", "-R", "u+rwX", "--", str(self.base.repo), str(self.base.home)], capture_output=True)
+        subprocess.run(  # noqa: S603  fixed coreutils argv on paths the service built; PATH is the service's own
+            ["chmod", "-R", "u+rwX", "--", str(self.base.repo), str(self.base.home)],  # noqa: S607  see above
+            capture_output=True,
+        )
         removed = 0
         base_root = self.base.root.resolve()
         for top in (self.base.repo, self.base.home):
@@ -402,7 +448,9 @@ class TriageWorkspace:
                         p.unlink()
                         removed += 1
         if removed:
-            logger.warning("removed %d symlink(s) pointing outside the sandbox from the base", removed)
+            logger.warning(
+                "removed %d symlink(s) pointing outside the sandbox from the base", removed
+            )
         # The build agent's own CLI state must not leak into the agents' HOME copies.
         for entry in self.base.home.glob(".claude*"):
             _force_rmtree(entry)
@@ -427,6 +475,7 @@ class TriageWorkspace:
         kill_processes_under(sb.root)
 
     def discard(self, sb: Sandbox) -> None:
+        """Stop anything left running in an agent's sandbox, then delete it (unless kept)."""
         kill_processes_under(sb.root)
         if not self.keep_sandboxes:
             _force_rmtree(sb.root)
@@ -450,7 +499,7 @@ class TriageWorkspace:
         """
         out = AgentChanges()
         seen = set()
-        chunks: List[str] = []
+        chunks: list[str] = []
         for rel, st in _walk_files(sb.repo):
             seen.add(rel)
             meta = self._index.get(rel)
@@ -475,18 +524,21 @@ class TriageWorkspace:
         return out
 
     @staticmethod
-    def _diff_one(rel: str, before: Optional[bytes], after: Optional[bytes]) -> str:
+    def _diff_one(rel: str, before: bytes | None, after: bytes | None) -> str:
         if before is None or after is None or b"\0" in before[:8192] or b"\0" in after[:8192]:
             return f"--- a/{rel}\n+++ b/{rel}\n(binary, oversized or unreadable file changed)\n"
         lines = difflib.unified_diff(
             before.decode("utf-8", "replace").splitlines(keepends=True),
             after.decode("utf-8", "replace").splitlines(keepends=True),
-            fromfile=f"a/{rel}", tofile=f"b/{rel}",
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
         )
         return "".join(lines) + "\n"
 
     # --- evidence staging ---------------------------------------------------------------
-    def collect_evidence(self, sb: Sandbox, unit: str, role: str, changes: AgentChanges) -> Tuple[Path, List[str]]:
+    def collect_evidence(
+        self, sb: Sandbox, unit: str, role: str, changes: AgentChanges
+    ) -> tuple[Path, list[str]]:
         """
         Copy the files an agent created (its PoCs) into ``evidence/<unit>/<role>/`` and save the
         system-computed diff of files it modified. Returns ``(evidence dir, staged files)``.
@@ -498,7 +550,7 @@ class TriageWorkspace:
         (self.evidence_dir / unit).mkdir(exist_ok=True)
         dest = self.evidence_dir / unit / role
         _fresh_dir(dest)  # a retry replaces the failed attempt's evidence
-        staged: List[str] = []
+        staged: list[str] = []
         total = 0
         for rel in changes.new_files:
             if len(staged) >= MAX_STAGED_FILES:
@@ -531,7 +583,7 @@ class TriageWorkspace:
         diffs_root = triage / "diffs"
         pocs_root.mkdir()
         diffs_root.mkdir()
-        lines: List[str] = []
+        lines: list[str] = []
         for role in roles:
             if not (_SAFE_NAME.match(unit) and _SAFE_NAME.match(role)):
                 raise ValueError(f"unsafe evidence key {unit!r}/{role!r}")
@@ -540,7 +592,9 @@ class TriageWorkspace:
             files = [rel for rel, _ in _walk_files(src) if _safe_rel(rel)] if src.is_dir() else []
             for rel in files:
                 data = _read_beneath(src, rel, MAX_STAGED_FILE_BYTES)
-                parent = _safe_mkdirs(pocs_root / role, str(Path(rel).parent)) if data is not None else None
+                if data is None:
+                    continue
+                parent = _safe_mkdirs(pocs_root / role, str(Path(rel).parent))
                 if parent is not None:
                     (parent / Path(rel).name).write_bytes(data)
             diff_src = self.evidence_dir / unit / f"{role}.diff"
@@ -555,7 +609,9 @@ class TriageWorkspace:
         return "\n".join(lines) if lines else "  (none)"
 
     # --- Claude Code settings ----------------------------------------------------------
-    def settings_for(self, sb: Sandbox, *, allow_bash: bool, allowed_domains: Sequence[str]) -> dict:
+    def settings_for(
+        self, sb: Sandbox, *, allow_bash: bool, allowed_domains: Sequence[str]
+    ) -> dict:
         """
         Build the ``--settings`` for one agent.
 
@@ -565,8 +621,9 @@ class TriageWorkspace:
         repo = str(sb.repo.resolve())
         allow = [f"Read(/{repo}/**)", f"Edit(/{repo}/**)"]
         if allow_bash:
-            # Under CLAUDE_CODE_SUBPROCESS_ENV_SCRUB every command runs in the sandbox and the
-            # sandbox's own auto-allow is off, so Bash needs an explicit allow rule.
+            # autoAllowBashIfSandboxed (below) is not enough on its own: under
+            # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB the CLI turns that auto-allow off and runs every
+            # command in the sandbox, so Bash also needs this explicit allow rule.
             allow.append("Bash")
         deny = [f"Read(/{p}/**)" for p in self.secret_paths] + ["WebFetch", "WebSearch"]
         settings: dict = {"permissions": {"allow": allow, "deny": deny}}
