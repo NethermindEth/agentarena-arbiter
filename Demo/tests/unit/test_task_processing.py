@@ -173,3 +173,75 @@ class TestProcessTaskScheduled:
 
         mock_logger.error.assert_called_once()
         mock_mark.assert_not_called()
+
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None)
+    @patch("app.main.process_task", new_callable=AsyncMock)
+    async def test_process_task_scheduled_skips_a_task_in_progress(
+        self, mock_process_task, mock_fetch_marker, mock_mark
+    ):
+        """A task a manual run is processing is skipped, without asking the backend."""
+        from app import task_runs
+        from app.main import process_task_scheduled
+
+        assert task_runs.try_claim("busy")
+        try:
+            await process_task_scheduled("busy")
+        finally:
+            task_runs.release("busy")
+
+        mock_fetch_marker.assert_not_called()
+        mock_process_task.assert_not_called()
+        mock_mark.assert_not_called()
+
+    @patch("app.main.mark_task_processed", new_callable=AsyncMock)
+    @patch("app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None)
+    @patch("app.main.process_task", new_callable=AsyncMock)
+    async def test_process_task_scheduled_holds_the_task_while_running(
+        self, mock_process_task, _mock_fetch_marker, _mock_mark
+    ):
+        """The scheduled run claims its task for the run and releases it at the end."""
+        from app import task_runs
+        from app.main import process_task_scheduled
+
+        claimed_during_run = []
+
+        async def run(task_id):
+            claimed_during_run.append(not task_runs.try_claim(task_id))
+            raise RuntimeError("boom")
+
+        mock_process_task.side_effect = run
+
+        await process_task_scheduled("t1")
+
+        assert claimed_during_run == [True]
+        assert task_runs.try_claim("t1")
+        task_runs.release("t1")
+
+
+class TestTriagePreflight:
+    """triage_preflight runs the host checks without blocking the event loop."""
+
+    async def test_runs_in_a_worker_thread(self):
+        import threading
+
+        from app import main as app_main
+
+        threads = []
+
+        def preflight():
+            threads.append(threading.get_ident())
+            return True
+
+        with patch.object(app_main.evaluator, "preflight", side_effect=preflight):
+            assert await app_main.triage_preflight("t1") is True
+        assert threads and threads[0] != threading.get_ident()
+
+    @pytest.mark.parametrize("error", ["SandboxUnavailable", "ValueError"])
+    async def test_a_failed_check_means_no_run(self, error):
+        from app import main as app_main
+        from app.core.triage_sandbox import SandboxUnavailable
+
+        exc = SandboxUnavailable("no userns") if error == "SandboxUnavailable" else ValueError("x")
+        with patch.object(app_main.evaluator, "preflight", side_effect=exc):
+            assert await app_main.triage_preflight("t1") is None

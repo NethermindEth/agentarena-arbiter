@@ -18,6 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.config import config
 from app.core.aggregation_prompt import AGGREGATION_PROMPT
 from app.core.claude_code_cli import (
     VALID_SEVERITIES,
@@ -63,8 +64,14 @@ class AggregatedFinding:
 class ClaudeCodeAggregator:
     """Drives the ``claude`` CLI to merge a group of duplicate findings into one digest finding."""
 
-    def __init__(self, cli: ClaudeCodeCLI | None = None) -> None:
+    def __init__(
+        self, cli: ClaudeCodeCLI | None = None, max_budget_usd: float | None = None
+    ) -> None:
         self.cli = cli or ClaudeCodeCLI()
+        # The same per-run spend cap as the triage agents (TRIAGE_AGENT_MAX_BUDGET_USD; 0 = none).
+        self.max_budget_usd = (
+            max_budget_usd if max_budget_usd is not None else config.triage_agent_max_budget_usd
+        )
 
     async def aggregate(
         self,
@@ -98,6 +105,7 @@ class ClaudeCodeAggregator:
                     settings={"permissions": {"deny": ["WebFetch", "WebSearch"]}},
                     json_schema=AGGREGATION_SCHEMA,
                     timeout_s=AGGREGATION_TIMEOUT_SECONDS,
+                    max_budget_usd=self.max_budget_usd or None,
                     label=f"aggregate (attempt {attempt + 1})",
                 )
             parsed = self._parse(res.structured, default_severity, findings) if res.ok else None

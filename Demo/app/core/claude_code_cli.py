@@ -17,8 +17,8 @@ owns the security-relevant launch decisions in one place:
   every other built-in tool (WebFetch, WebSearch, subagents...).
 * **No secrets in the environment.** The child gets a minimal allowlisted environment, a
   private ``HOME``/``TMPDIR`` (never the service user's real home), and only the Anthropic API
-  key. ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` additionally scrubs credentials from the
-  environment of commands the agent runs.
+  key. When the agent has Bash, ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` additionally scrubs
+  credentials from the environment of the commands it runs.
 * **Bounded.** Wall-clock timeout (the whole process group is killed), optional
   ``--max-budget-usd`` cap, no session persistence, no auto-updater, no non-essential traffic.
 * **Structured output.** ``--output-format json`` + ``--json-schema``: the answer is read from
@@ -129,12 +129,12 @@ class ClaudeCodeCLI:
     def __init__(
         self,
         model: str | None = None,
-        command: str | None = None,
+        command: str = "claude",
         api_key: str | None = None,
         effort: str | None = None,
     ) -> None:
         self.model = model if model is not None else config.claude_model
-        self.command = command if command is not None else config.claude_command
+        self.command = command
         self.api_key = api_key if api_key is not None else config.claude_api_key
         self.effort = effort if effort is not None else config.claude_effort
 
@@ -176,7 +176,7 @@ class ClaudeCodeCLI:
             argv += ["--max-budget-usd", f"{max_budget_usd:g}"]
         return argv
 
-    def child_env(self, home: Path, tmpdir: Path) -> dict[str, str]:
+    def child_env(self, home: Path, tmpdir: Path, *, tools: Sequence[str]) -> dict[str, str]:
         """
         Build the *minimal* environment for the subprocess.
 
@@ -192,12 +192,15 @@ class ClaudeCodeCLI:
                 "XDG_CACHE_HOME": str(home / ".cache"),
                 "SHELL": "/bin/bash",
                 "ANTHROPIC_API_KEY": self.api_key or "",
-                # Strip credentials from the environment of every command the agent runs.
-                "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
                 "DISABLE_AUTOUPDATER": "1",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             }
         )
+        if "Bash" in tools:
+            # Strip credentials from the environment of every command the agent runs. Only set
+            # with Bash: the CLI refuses to start with it when bubblewrap is unavailable, even
+            # with no tools at all, which would break the tool-less aggregator.
+            env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
         return env
 
     async def run_agent(
@@ -228,7 +231,7 @@ class ClaudeCodeCLI:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=self.child_env(home, tmpdir),
+            env=self.child_env(home, tmpdir, tools=tools),
             # Own process group, so a timeout kills the agent *and* every command it spawned.
             start_new_session=True,
         )

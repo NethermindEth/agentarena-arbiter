@@ -48,6 +48,10 @@ in `.github/workflows/ci-tests.yaml`.
   (**`app/core/triage_sandbox.py`**); prompts live in **`app/core/triage_prompts.py`**.
   **`app/core/claude_code_aggregator.py`** merges a duplicate group into one digest first.
   The host needs the Claude Code CLI, bubblewrap and socat (see the README's Host requirements).
+- **`app/task_runs.py`**: one run per task at a time (a manual trigger and the scheduled job
+  both claim the task; a second manual trigger gets 409), and the manual runs that
+  `POST /tasks/{task_id}/process` starts in the background (it answers 202), which shutdown
+  cancels.
 - **`app/backend_tasks.py`**: reads tasks from the backend's `/api/arbiter/approved-tasks` and
   `/api/arbiter/tasks/{task_id}`.
 - **`app/backend_metadata.py`**: reads and replaces the arbiter's free-form per-task metadata at

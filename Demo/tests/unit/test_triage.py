@@ -9,9 +9,11 @@ small fake executable, so process handling (timeouts, process-group kills) is ex
 import asyncio
 import json
 import os
+import shutil
 import signal
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,12 +23,14 @@ import pytest
 
 from app.core.claude_code_cli import AgentResult, ClaudeCodeCLI
 from app.core.claude_code_triage import (
+    BUILD_ALLOWED_DOMAINS,
     ClaudeCodeTriage,
     TriageInfrastructureError,
     TriageUnit,
 )
 from app.core.triage_prompts import analyst_prompt, build_context
 from app.core.triage_sandbox import (
+    AGENTS_DIR,
     SandboxUnavailable,
     TriageWorkspace,
     resolve_work_dir,
@@ -40,19 +44,26 @@ from app.types import TaskCache
 def _cfg(tmp_path, **overrides):
     base = dict(
         triage_poc_mode="required",
-        triage_informational_policy="actionable",
         triage_work_dir=str(tmp_path / "work"),
         triage_max_parallel_agents=2,
-        triage_agent_timeout_seconds=60,
-        triage_build_timeout_seconds=60,
         triage_agent_max_budget_usd=0,
-        triage_build_domains=["registry.npmjs.org"],
-        triage_extra_read=[],
-        triage_keep_sandboxes=False,
+        debug=False,
         data_dir=str(tmp_path / "task_data"),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture
+def short_dir():
+    """
+    A directory with a short path. pytest's tmp_path is too long for the agents' sandbox socket
+    paths, which the preflight checks once the sandbox is usable.
+    """
+    # mkdtemp makes a private 0700 directory; /tmp rather than $TMPDIR, which may be long.
+    path = Path(tempfile.mkdtemp(prefix="arb-", dir="/tmp"))  # noqa: S108  see above
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _make_repo(root: Path) -> Path:
@@ -67,7 +78,7 @@ def _make_repo(root: Path) -> Path:
 def _workspace(tmp_path, secret: Path) -> TriageWorkspace:
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
-    return TriageWorkspace(work, secret_paths=[secret], extra_read_paths=[], keep_sandboxes=False)
+    return TriageWorkspace(work, secret_paths=[secret], keep_sandboxes=False)
 
 
 # ---------------------------------------------------------------------------------------
@@ -114,7 +125,7 @@ class TestClaudeCodeCLI:
         monkeypatch.setenv("BACKEND_API_KEY", "backend-secret")
         monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
         env = ClaudeCodeCLI(model="m", command="claude", api_key="sk-ant-x").child_env(
-            tmp_path / "h", tmp_path / "t"
+            tmp_path / "h", tmp_path / "t", tools=["Read", "Bash"]
         )
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-x"
         assert env["HOME"] == str(tmp_path / "h") and env["TMPDIR"] == str(tmp_path / "t")
@@ -416,9 +427,10 @@ class TestPreflight:
         with patch("app.core.claude_code_triage.probe_bubblewrap", return_value="no userns"):
             assert self._triage(tmp_path, triage_poc_mode="optional").preflight() is False
 
-    def test_available(self, tmp_path):
+    def test_available(self, tmp_path, short_dir):
         with patch("app.core.claude_code_triage.probe_bubblewrap", return_value=None):
-            assert self._triage(tmp_path, triage_poc_mode="required").preflight() is True
+            triage = self._triage(tmp_path, triage_poc_mode="required", triage_work_dir=short_dir)
+            assert triage.preflight() is True
 
     def test_missing_cli(self, tmp_path):
         t = ClaudeCodeTriage(
@@ -546,15 +558,26 @@ class TestPipeline:
         assert sorted(roles[2:4]) == ["refute", "severity"]
         # Build agent gets registry network; finding agents get none. All PoC agents get Bash.
         build_kw = calls[0][1]
-        assert build_kw["settings"]["sandbox"]["network"]["allowedDomains"] == [
-            "registry.npmjs.org"
-        ]
+        assert build_kw["settings"]["sandbox"]["network"]["allowedDomains"] == list(
+            BUILD_ALLOWED_DOMAINS
+        )
         for _role, kw in calls[1:]:
             assert kw["settings"]["sandbox"]["network"]["allowedDomains"] == []
             assert "Bash" in kw["tools"]
         # Sandboxes and base are cleaned up; only evidence remains.
         run_dirs = list((tmp_path / "work").iterdir())
-        assert all(not (d / "agents").exists() and not (d / "base").exists() for d in run_dirs)
+        assert all(not (d / AGENTS_DIR).exists() and not (d / "base").exists() for d in run_dirs)
+
+    async def test_debug_keeps_the_sandboxes(self, tmp_path):
+        cli, _ = _fake_cli(
+            {"analyst": [ANALYSIS], "refute": [AGREE], "severity": [AGREE], "judge": [_final()]}
+        )
+        triage = self._triage(tmp_path, cli)
+        triage.cfg.debug = True
+        await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+        (run_dir,) = (tmp_path / "work").glob("run-*")
+        assert (run_dir / "base").is_dir()
+        assert len(list((run_dir / AGENTS_DIR).iterdir())) == 4  # analyst, verifiers, judge
 
     @pytest.mark.asyncio
     async def test_invalid_maps_to_info_and_disputed(self, tmp_path):
@@ -595,22 +618,16 @@ class TestPipeline:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "policy,actionable,expected_valid",
-        [
-            ("actionable", True, True),
-            ("actionable", False, False),
-            ("actionable", None, False),
-            ("valid", False, True),
-            ("disputed", True, False),
-        ],
+        "actionable,expected_valid", [(True, True), (False, False), (None, False)]
     )
-    async def test_informational_policy(self, tmp_path, policy, actionable, expected_valid):
+    async def test_informational_counts_only_when_actionable(
+        self, tmp_path, actionable, expected_valid
+    ):
         final = dict(_final("INFORMATIONAL", "Informational"), actionable=actionable)
         cli, _ = _fake_cli(
             {"analyst": [ANALYSIS], "refute": [AGREE], "severity": [AGREE], "judge": [final]}
         )
         triage = self._triage(tmp_path, cli)
-        triage.cfg.triage_informational_policy = policy
         v = (await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False))["u000"]
         assert v.is_valid is expected_valid and v.severity == "Info"
         assert v.comment.startswith("Informational:")
@@ -1022,3 +1039,334 @@ class TestUnevaluatedUnits:
         ):
             assert await app_main.process_task("t1") is False
         post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------------------
+# fixes that make the pipeline safe to run (PR #62 review)
+# ---------------------------------------------------------------------------------------
+MERGED = {
+    "title": "Merged",
+    "severity": "High",
+    "file_paths": [],
+    "description": "merged",
+    "rationale": "",
+}
+
+
+def _db_finding(i: int):
+    from bson import ObjectId
+
+    from app.models.finding_db import FindingDB, Severity
+
+    return FindingDB(
+        _id=ObjectId(),
+        title=f"Finding {i}",
+        description=f"description {i}",
+        severity=Severity.HIGH,
+        file_paths=[f"src/F{i}.sol"],
+        agent_id=f"agent{i}",
+    )
+
+
+class TestAgentLaunch:
+    def test_toolless_agent_gets_no_env_scrub(self, tmp_path):
+        """Without bubblewrap the CLI refuses to start with the scrub set, tools or not."""
+        cli = ClaudeCodeCLI(model="m", command="claude", api_key="k")
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in cli.child_env(
+            tmp_path / "h", tmp_path / "t", tools=[]
+        )
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in cli.child_env(
+            tmp_path / "h", tmp_path / "t", tools=["Read", "Grep", "Glob"]
+        )
+
+    @pytest.mark.parametrize("key", ["", "   ", "\n\t"])
+    def test_blank_api_key_fails_the_preflight(self, tmp_path, key):
+        triage = ClaudeCodeTriage(
+            cli=ClaudeCodeCLI(model="m", command=sys.executable, api_key=key),
+            settings=_cfg(tmp_path, triage_poc_mode="off"),
+        )
+        triage.secret_paths = lambda: [tmp_path / "secret"]
+        with pytest.raises(ValueError, match="CLAUDE_API_KEY"):
+            triage.preflight()
+
+    @pytest.mark.parametrize("budget,expected", [(7.5, 7.5), (0, None)])
+    async def test_aggregator_caps_its_spend(self, budget, expected):
+        from app.core.claude_code_aggregator import ClaudeCodeAggregator
+
+        cli = SimpleNamespace(
+            run_agent=AsyncMock(return_value=AgentResult(True, MERGED, "", 0.0, 0.1))
+        )
+        await ClaudeCodeAggregator(cli=cli, max_budget_usd=budget).aggregate(
+            findings=[], task_title="", task_description="", default_severity="Low"
+        )
+        assert cli.run_agent.call_args.kwargs["max_budget_usd"] == expected
+
+    async def test_merges_and_agents_share_one_limit(self, tmp_path):
+        """Two runs at once: one's merges and the other's agents never exceed the limit."""
+        from app.core.claude_code_aggregator import ClaudeCodeAggregator
+        from app.core.evaluation import FindingEvaluator
+
+        (tmp_path / "secret").mkdir()
+        active, peak = 0, 0
+
+        async def run_agent(prompt, *, label, **kw):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            if label.startswith("aggregate"):
+                return AgentResult(True, MERGED, "", 0.0, 0.0)
+            role = next(r for r in ("analyst", "refute", "severity", "judge") if f"-{r}" in label)
+            out = {"analyst": ANALYSIS, "refute": AGREE, "severity": AGREE, "judge": _final()}[role]
+            return AgentResult(True, out, "", 0.0, 0.0)
+
+        cli = SimpleNamespace(run_agent=run_agent, command=sys.executable)
+        evaluator = FindingEvaluator()
+        evaluator.triage = ClaudeCodeTriage(
+            cli=cli, settings=_cfg(tmp_path, triage_max_parallel_agents=2)
+        )
+        evaluator.triage.secret_paths = lambda: [tmp_path / "secret"]
+        evaluator.aggregator = ClaudeCodeAggregator(cli=cli, max_budget_usd=0)
+        tc = _task_cache(tmp_path)
+
+        def groups(offset):
+            return [
+                [_db_finding(offset + 2 * i), _db_finding(offset + 2 * i + 1)] for i in range(3)
+            ]
+
+        await asyncio.gather(
+            evaluator.evaluate_groups(groups(0), tc, poc_enabled=False),
+            evaluator.evaluate_groups(groups(100), tc, poc_enabled=False),
+        )
+        assert peak == 2
+
+    async def test_failed_merge_triages_the_unmerged_representative(
+        self, sample_findings, sample_task_cache
+    ):
+        from app.core.claude_code_triage import TriageVerdict
+        from app.core.evaluation import FindingEvaluator
+
+        evaluator = FindingEvaluator()
+        evaluator.aggregator.aggregate = AsyncMock(side_effect=OSError("claude not found"))
+        captured = {}
+
+        async def run_task(task_cache, units, *, poc_enabled):
+            captured["units"] = units
+            return {u.key: TriageVerdict(True, "Low", "ok") for u in units}
+
+        evaluator.triage.run_task = run_task
+        group = sample_findings[:2]
+        results, failed = await evaluator.evaluate_groups(
+            [group, [sample_findings[2]]], sample_task_cache, poc_enabled=False
+        )
+
+        assert failed == [] and len(results) == 3
+        unit = captured["units"][0].finding
+        assert unit["title"] == group[0].title
+        assert [m["title"] for m in unit["member_reports"]] == [f.title for f in group]
+
+    async def test_crashed_verifier_still_gets_a_judge_and_orphans_nothing(self, tmp_path):
+        (tmp_path / "secret").mkdir()
+        severity_finished = False
+        judge_prompts = []
+
+        async def run_agent(prompt, *, label, **kw):
+            nonlocal severity_finished
+            if "-refute" in label:
+                raise RuntimeError("verifier crashed")
+            if "-severity" in label:
+                await asyncio.sleep(0.05)
+                severity_finished = True
+                return AgentResult(True, AGREE, "", 0.0, 0.0)
+            if "-judge" in label:
+                judge_prompts.append(prompt)
+                return AgentResult(True, _final(), "", 0.0, 0.0)
+            return AgentResult(True, ANALYSIS, "", 0.0, 0.0)
+
+        triage = ClaudeCodeTriage(
+            cli=SimpleNamespace(run_agent=run_agent, command=sys.executable),
+            settings=_cfg(tmp_path),
+        )
+        triage.secret_paths = lambda: [tmp_path / "secret"]
+
+        verdicts = await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+
+        assert not verdicts["u000"].error and verdicts["u000"].is_valid
+        # The other verifier ran to its end before the judge, and nothing is left running.
+        assert severity_finished
+        assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == []
+        # The judge was told the refutation verifier failed (null) and got the other one.
+        assert "```json\nnull\n```" in judge_prompts[0]
+        assert '"agrees_with_verdict": true' in judge_prompts[0]
+
+
+class TestSealedBaseLinks:
+    def test_system_links_stay_and_links_into_the_work_dir_go(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        ws = _workspace(tmp_path, secret)
+        ws.init_base(_make_repo(tmp_path))
+        system = Path(shutil.which("sh") or "/bin/sh").resolve()
+        venv = ws.base.repo / ".venv" / "bin"
+        venv.mkdir(parents=True)
+        os.symlink(system, venv / "python")  # a virtualenv's interpreter link
+        os.symlink("python", venv / "python3")
+        other_run = ws.work_dir / "run-other" / "evidence"
+        other_run.mkdir(parents=True)
+        planted = {
+            "other run": (other_run, ws.base.repo / "other_run"),
+            "shared base": (ws.base.repo / "src", ws.base.repo / "abs_base"),
+            "secret": (secret, ws.base.home / "secret_link"),
+            "secret via ..": (Path("/usr/..") / secret.relative_to("/"), ws.base.repo / "dots"),
+            "relative escape": (Path("../../..") / AGENTS_DIR, ws.base.repo / "src" / "rel_up"),
+            "relative ..": (Path("../../.."), ws.base.repo / "src" / "rel_dots"),
+            # Harmless from the service's cwd, another agent's sandbox from an agent's.
+            "process-relative climb": (
+                Path("/proc/self/cwd/../..") / AGENTS_DIR / "000000" / "repo",
+                ws.base.repo / "proc_climb",
+            ),
+            "process-relative": (Path("/dev/fd/0"), ws.base.repo / "dev_fd"),
+        }
+        for target, link in planted.values():
+            os.symlink(target, link)
+
+        ws.seal_base()
+
+        assert os.readlink(venv / "python") == str(system)
+        assert os.readlink(venv / "python3") == "python"
+        for name, (_, link) in planted.items():
+            assert not os.path.lexists(link), name
+
+
+class TestEvidenceRetention:
+    def _run_dir(self, work: Path, name: str, age_days: float) -> Path:
+        path = work / name
+        (path / "evidence").mkdir(parents=True)
+        old = time.time() - age_days * 86_400
+        os.utime(path, (old, old))
+        return path
+
+    def test_old_runs_are_pruned(self, tmp_path):
+        from app.core.triage_sandbox import prune_old_runs
+
+        work = tmp_path / "work"
+        old = self._run_dir(work, "run-old", 40)
+        active = self._run_dir(work, "run-active", 40)
+        recent = self._run_dir(work, "run-recent", 5)
+        other = self._run_dir(work, "keep-me", 40)
+        os.symlink(old, work / "run-link")
+        os.utime(work / "run-link", (0, 0), follow_symlinks=False)
+
+        assert prune_old_runs(work, 30, active=[active]) == 1
+
+        assert not old.exists()
+        assert active.exists() and recent.exists() and other.exists()
+        assert os.path.islink(work / "run-link")
+
+    async def test_a_run_prunes_old_runs_first(self, tmp_path):
+        (tmp_path / "secret").mkdir()
+        old = self._run_dir(tmp_path / "work", "run-old", 40)
+        cli, _ = _fake_cli(
+            {"analyst": [ANALYSIS], "refute": [AGREE], "severity": [AGREE], "judge": [_final()]}
+        )
+        triage = ClaudeCodeTriage(cli=cli, settings=_cfg(tmp_path))
+        triage.secret_paths = lambda: [tmp_path / "secret"]
+
+        await triage.run_task(_task_cache(tmp_path), [_unit()], poc_enabled=False)
+
+        assert not old.exists()
+        assert len(list((tmp_path / "work").glob("run-*"))) == 1  # this run's evidence
+        assert triage._active_runs == set()
+
+
+class TestSocketPaths:
+    def test_longest_socket_path_matches_a_real_sandbox(self, tmp_path):
+        from app.core.triage_sandbox import _CLI_SOCKET_NAME, longest_socket_path
+
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        ws = _workspace(tmp_path, secret)
+        ws.init_base(_make_repo(tmp_path))
+        ws.seal_base()
+        sb = ws.make_sandbox("u000-analyst-retry1")
+        socket = sb.tmp / _CLI_SOCKET_NAME
+        assert len(os.fsencode(socket)) == longest_socket_path(ws.work_dir)
+        assert sb.tmp.is_dir()
+
+    def test_layout_leaves_room_for_the_image_work_dir(self):
+        from app.core.triage_sandbox import MAX_UNIX_SOCKET_PATH_BYTES, longest_socket_path
+
+        assert longest_socket_path(Path("/var/lib/arbiter-triage")) <= MAX_UNIX_SOCKET_PATH_BYTES
+
+    def test_too_long_work_dir_fails_the_preflight(self, tmp_path):
+        long_dir = tmp_path / ("w" * 60)
+        triage = ClaudeCodeTriage(
+            cli=ClaudeCodeCLI(model="m", command=sys.executable, api_key="k"),
+            settings=_cfg(tmp_path, triage_work_dir=str(long_dir)),
+        )
+        triage.secret_paths = lambda: [tmp_path / "secret"]
+        with patch("app.core.claude_code_triage.probe_bubblewrap", return_value=None):
+            with pytest.raises(ValueError, match="too long"):
+                triage.preflight()
+
+
+class TestPocStaging:
+    @pytest.mark.parametrize(
+        "rel,staged",
+        [
+            ("test/poc/Exploit.t.sol", True),
+            ("packages/core/test/poc/exploit.test.ts", True),
+            ("script/Attack.s.sol", True),
+            ("tests/poc_reentrancy.rs", True),
+            ("poc/exploit.py", True),
+            ("src/Exploit.sol", False),  # not under a PoC directory
+            ("test/poc/notes.md", False),  # not code
+            ("test/foundry.toml", False),
+            ("remappings.txt", False),
+            ("test/conftest.py", False),
+            ("tests/build.rs", False),
+            ("test/hardhat.config.ts", False),
+            ("test/vitest.config.mjs", False),
+            ("test/.env", False),
+            ("test/.hidden/Exploit.t.sol", False),
+            ("lib/forge-std/test/Rigged.t.sol", False),
+            ("test/node_modules/x/index.js", False),
+        ],
+    )
+    def test_only_poc_files_qualify(self, rel, staged):
+        from app.core.triage_sandbox import is_poc_file
+
+        assert is_poc_file(rel) is staged
+
+    def test_other_new_files_are_listed_not_staged(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        ws = _workspace(tmp_path, secret)
+        ws.init_base(_make_repo(tmp_path))
+        ws.seal_base()
+        sb = ws.make_sandbox("u000-analyst")
+        (sb.repo / "test" / "poc").mkdir()
+        (sb.repo / "test" / "poc" / "Exploit.t.sol").write_text("contract Exploit {}\n")
+        (sb.repo / "remappings.txt").write_text("forge-std/=lib/rigged/\n")
+        (sb.repo / "lib" / "rigged").mkdir(parents=True)
+        (sb.repo / "lib" / "rigged" / "Test.sol").write_text("contract Test {}\n")
+
+        _, staged = ws.collect_evidence(sb, "u000", "analyst", ws.changes(sb))
+        assert staged == ["test/poc/Exploit.t.sol"]
+
+        judge = ws.make_sandbox("u000-judge")
+        note = ws.stage_into(judge, "u000", ["analyst"])
+        pocs = judge.repo / ".triage" / "pocs" / "analyst"
+        assert (pocs / "test" / "poc" / "Exploit.t.sol").is_file()
+        assert not (pocs / "remappings.txt").exists() and not (pocs / "lib").exists()
+        assert 'not staged: ["lib/rigged/Test.sol", "remappings.txt"]' in note
+
+    def test_role_without_new_files_lists_none(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        ws = _workspace(tmp_path, secret)
+        ws.init_base(_make_repo(tmp_path))
+        ws.seal_base()
+        note = ws.stage_into(ws.make_sandbox("u000-judge"), "u000", ["refute"])
+        assert "not staged: none" in note

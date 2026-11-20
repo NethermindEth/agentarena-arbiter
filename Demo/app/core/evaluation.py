@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.claude_code_aggregator import ClaudeCodeAggregator
+from app.core.claude_code_cli import json_block
 from app.core.claude_code_triage import ClaudeCodeTriage, TriageUnit, TriageVerdict
 from app.core.gemini_model import DuplicateFinding
 from app.models.finding_db import FindingDB, Status
@@ -18,10 +19,40 @@ logger = logging.getLogger(__name__)
 # otherwise make every agent of a unit fail).
 MAX_TITLE_CHARS = 500
 MAX_DESCRIPTION_CHARS = 30_000
+# A duplicate group's original reports go into every agent prompt next to the merged digest, so
+# they get a tighter budget. Sizes are those of the JSON the prompt embeds (json_block escapes
+# every non-ASCII character, so one character can take six).
+MAX_MEMBER_REPORTS = 10
+MAX_MEMBER_REPORT_JSON_CHARS = 8_000
+MAX_MEMBER_REPORTS_JSON_CHARS = 60_000
+# The aggregator sees every member it can, each shortened to an equal share of this budget.
+MAX_AGGREGATION_JSON_CHARS = 200_000
+MIN_AGGREGATION_MEMBER_JSON_CHARS = 2_000
+_TRUNCATED = " ...(truncated by the arbiter)"
 
 
 def _cap(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + " ...(truncated by the arbiter)"
+    return text if len(text) <= limit else text[:limit] + _TRUNCATED
+
+
+def _fit_description(finding: dict[str, Any], limit: int) -> dict[str, Any]:
+    """
+    Return ``finding`` with its description shortened until its JSON fits in ``limit`` chars.
+
+    A finding whose other fields alone exceed the limit keeps only the truncation marker.
+    """
+    size = len(json_block(finding))
+    description = str(finding.get("description", "")).removesuffix(_TRUNCATED)
+    while size > limit and description:
+        description = description[: max(0, len(description) - (size - limit) - len(_TRUNCATED))]
+        finding = {**finding, "description": description + _TRUNCATED}
+        size = len(json_block(finding))
+    return finding
+
+
+def _union_paths(*path_lists: list[str] | None) -> list[str]:
+    """The distinct non-empty paths of all lists, in first-seen order."""
+    return list(dict.fromkeys(p for paths in path_lists for p in (paths or []) if p))
 
 
 class FindingEvaluation(BaseModel):
@@ -92,77 +123,59 @@ class FindingEvaluator:
         self, findings: list[FindingDB], duplicate_relationships: list[DuplicateFinding]
     ) -> tuple[list[list[FindingDB]], list[list[FindingDB]]]:
         """
-        Group findings for batch evaluation based on duplicate relationships.
-        Each batch contains an original finding and all its duplicates so they can be evaluated together.
+        Group findings for evaluation based on duplicate relationships.
+
+        Relationships are merged transitively, in any order: "A duplicates B" and "B duplicates
+        C" make one group. Each group starts with its root original, the finding the others
+        duplicate, and lists the rest in the order of ``findings``. Findings in no relationship
+        are batched by ``batch_size``.
 
         Args:
             findings: List of findings to group
             duplicate_relationships: List of duplicate relationships from deduplication
 
         Returns:
-            List of finding groups (batches) for evaluation
+            ``(related_groups, individual_batches)``
         """
-        # Create a mapping for quick finding lookup by id first
         finding_map = {f.str_id: f for f in findings}
+        # Union-find over finding ids: a duplicate's root is linked under its original's root.
+        parent: dict[str, str] = {}
 
-        # Create a mapping of originals to their duplicates based on duplicate_relationships
-        original_to_duplicates = {}
+        def root(finding_id: str) -> str:
+            while finding_id in parent:
+                finding_id = parent[finding_id]
+            return finding_id
 
+        linked: set[str] = set()
         for rel in duplicate_relationships:
-            duplicate_id = rel.findingId
-            original_id = rel.duplicateOf
-
+            duplicate_id, original_id = rel.findingId, rel.duplicateOf
             if duplicate_id not in finding_map:
                 logger.warning(f"Duplicate ID {duplicate_id} not found in findings list")
                 continue
-
             if original_id not in finding_map:
                 logger.warning(f"Original ID {original_id} not found in findings list")
                 continue
-
-            if original_id not in original_to_duplicates:
-                original_to_duplicates[original_id] = []
-            original_to_duplicates[original_id].append(duplicate_id)
-
-        related_findings_groups = []
-        individual_findings_groups = []
-        processed_finding_ids = set()
-        group_of: dict[str, list[FindingDB]] = {}
-
-        # Process original findings with their duplicates
-        # This ensures each batch contains related findings that refer to the same vulnerability
-        for original_id, duplicate_ids in original_to_duplicates.items():
-            if original_id in processed_finding_ids:
-                # Chained relationship (A dup of B, B dup of C): fold into B's existing group so
-                # no finding is triaged twice.
-                group = group_of[original_id]
-                for dup_id in duplicate_ids:
-                    if dup_id not in processed_finding_ids:
-                        group.append(finding_map[dup_id])
-                        processed_finding_ids.add(dup_id)
-                        group_of[dup_id] = group
+            if duplicate_id == original_id:
                 continue
-            group = [finding_map[original_id]]
-            processed_finding_ids.add(original_id)
-            group_of[original_id] = group
+            linked.update((duplicate_id, original_id))
+            duplicate_root, original_root = root(duplicate_id), root(original_id)
+            if duplicate_root != original_root:
+                parent[duplicate_root] = original_root
 
-            for dup_id in duplicate_ids:
-                if dup_id not in processed_finding_ids:
-                    group.append(finding_map[dup_id])
-                    processed_finding_ids.add(dup_id)
-                    group_of[dup_id] = group
+        groups: dict[str, list[FindingDB]] = {}
+        for finding in findings:
+            if finding.str_id in linked:
+                groups.setdefault(root(finding.str_id), []).append(finding)
+        related_findings_groups = [
+            sorted(group, key=lambda f, r=root_id: f.str_id != r)  # stable: the root first
+            for root_id, group in groups.items()
+        ]
 
-            if group:
-                related_findings_groups.append(group)
-
-        # Process remaining findings (those without duplicates) individually or in small batches
-        remaining_findings = [f for f in findings if f.str_id not in processed_finding_ids]
-
-        # Batch remaining findings according to batch_size
-        for i in range(0, len(remaining_findings), self.batch_size):
-            batch = remaining_findings[i : i + self.batch_size]
-            if batch:
-                individual_findings_groups.append(batch)
+        remaining_findings = [f for f in findings if f.str_id not in linked]
+        individual_findings_groups = [
+            remaining_findings[i : i + self.batch_size]
+            for i in range(0, len(remaining_findings), self.batch_size)
+        ]
 
         logger.info(
             f"Created {len(related_findings_groups)} related findings groups and {len(individual_findings_groups)} individual findings groups from {len(findings)} findings"
@@ -196,9 +209,63 @@ class FindingEvaluator:
                 key, self._finding_json(representative), self._severity_str(representative.severity)
             )
         merged = await self._aggregate(group, task_cache)
+        return self._group_unit(key, group, merged)
+
+    def _group_unit(self, key: str, group: list[FindingDB], merged: FindingDB) -> TriageUnit:
+        """A duplicate group's unit: the merged finding plus the members' original reports."""
         finding = self._finding_json(merged)
-        finding["member_reports"] = [self._finding_json(f) for f in group]
+        finding["member_reports"], finding["member_reports_omitted"] = self._member_reports(group)
         return TriageUnit(key, finding, self._severity_str(merged.severity))
+
+    def _member_reports(self, group: list[FindingDB]) -> tuple[list[dict[str, Any]], int]:
+        """
+        The members' reports for the agents, shortened and capped in number and total size.
+
+        Returns ``(reports, omitted)``, where ``omitted`` counts the members left out.
+        """
+        reports: list[dict[str, Any]] = []
+        used = 0
+        for finding in group:
+            if len(reports) >= MAX_MEMBER_REPORTS:
+                break
+            report = _fit_description(self._finding_json(finding), MAX_MEMBER_REPORT_JSON_CHARS)
+            size = len(json_block(report))
+            if used + size > MAX_MEMBER_REPORTS_JSON_CHARS:
+                continue
+            reports.append(report)
+            used += size
+        return reports, len(group) - len(reports)
+
+    def _aggregation_payload(self, findings_batch: list[FindingDB]) -> list[dict[str, Any]]:
+        """
+        The group's findings for the aggregator, each shortened to its share of the budget.
+
+        A group too large for every member to get the minimum share is cut at the budget.
+        """
+        share = max(
+            MIN_AGGREGATION_MEMBER_JSON_CHARS, MAX_AGGREGATION_JSON_CHARS // len(findings_batch)
+        )
+        payload: list[dict[str, Any]] = []
+        used = 0
+        for finding in findings_batch:
+            report = _fit_description(self._finding_json(finding), share)
+            used += len(json_block(report))
+            if used > MAX_AGGREGATION_JSON_CHARS:
+                logger.warning(
+                    "Aggregating %d of %d duplicates; the rest exceed the prompt budget",
+                    len(payload),
+                    len(findings_batch),
+                )
+                break
+            payload.append(
+                {
+                    "title": report["title"],
+                    "description": report["description"],
+                    "severity": report["claimed_severity"],
+                    "file_paths": report["referenced_files"],
+                }
+            )
+        return payload
 
     async def _aggregate(self, findings_batch: list[FindingDB], task_cache: TaskCache) -> FindingDB:
         """
@@ -206,20 +273,13 @@ class FindingEvaluator:
 
         The returned object is a synthetic :class:`FindingDB` (a copy of the representative with
         merged title/description/severity/file_paths). A failed merge falls back to the
-        representative finding, so the triage always has a finding to judge.
+        representative finding, so the triage always has a finding to judge. Either way, the
+        file paths of every member are kept, including members left out of the merge prompt.
         """
         representative = findings_batch[0]
-        payload = [
-            {
-                "title": finding.title,
-                "description": finding.description,
-                "severity": self._severity_str(finding.severity),
-                "file_paths": list(finding.file_paths or []),
-            }
-            for finding in findings_batch
-        ]
+        all_paths = _union_paths(*(f.file_paths for f in findings_batch))
         merged = await self.aggregator.aggregate(
-            findings=payload,
+            findings=self._aggregation_payload(findings_batch),
             task_title=task_cache.title or "",
             task_description=task_cache.description or "",
             default_severity=self._severity_str(representative.severity),
@@ -229,13 +289,13 @@ class FindingEvaluator:
                 "Aggregation failed for a group of %d duplicates; falling back to the representative finding.",
                 len(findings_batch),
             )
-            return representative
+            return representative.model_copy(update={"file_paths": all_paths})
         return representative.model_copy(
             update={
                 "title": merged.title,
                 "description": merged.description,
                 "severity": self._normalize_severity(merged.severity),
-                "file_paths": merged.file_paths,
+                "file_paths": _union_paths(merged.file_paths, all_paths),
             }
         )
 
@@ -254,11 +314,20 @@ class FindingEvaluator:
         if not groups:
             return [], []
         keys = [f"u{i:03d}" for i in range(len(groups))]
-        sem = asyncio.Semaphore(self.triage.cfg.triage_max_parallel_agents)
+        # The triage's own limit, so merges and agents (of this run and of any concurrent one)
+        # never exceed TRIAGE_MAX_PARALLEL_AGENTS together.
+        sem = self.triage.semaphore
 
         async def build(key: str, group: list[FindingDB]) -> TriageUnit:
             async with sem:
-                return await self._build_unit(key, group, task_cache)
+                try:
+                    return await self._build_unit(key, group, task_cache)
+                except Exception:
+                    # Merging is an aid, not a requirement: judge the unmerged representative.
+                    logger.exception("building unit %s failed; triaging it unmerged", key)
+                    if len(group) == 1:
+                        raise
+                    return self._group_unit(key, group, group[0])
 
         units = await asyncio.gather(*(build(k, g) for k, g in zip(keys, groups, strict=True)))
         verdicts = await self.triage.run_task(task_cache, units, poc_enabled=poc_enabled)
@@ -384,7 +453,7 @@ class FindingEvaluator:
 
         logger.info(f"Starting triage evaluation of {len(findings)} findings")
         if poc_enabled is None:
-            poc_enabled = self.preflight()
+            poc_enabled = await asyncio.to_thread(self.preflight)
 
         # Group findings: each duplicate group is one unit; every other finding is its own unit.
         if duplicate_relationships:

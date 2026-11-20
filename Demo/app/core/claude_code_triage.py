@@ -43,7 +43,9 @@ from app.core.triage_prompts import (
 from app.core.triage_sandbox import (
     SandboxUnavailable,
     TriageWorkspace,
+    check_socket_paths,
     probe_bubblewrap,
+    prune_old_runs,
     resolve_work_dir,
 )
 from app.types import TaskCache
@@ -53,6 +55,26 @@ logger = logging.getLogger(__name__)
 # The service's own directory (Demo/ locally, /app in the image): agents may never read it.
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 MAX_COMMENT_CHARS = 2000
+# Wall-clock limits for one finding agent and for the build agent.
+AGENT_TIMEOUT_SECONDS = 1800
+BUILD_TIMEOUT_SECONDS = 2700
+# The only hosts the build agent's sandbox may reach; finding agents get no network. This is a
+# sandbox boundary, so it changes through code review, not configuration.
+BUILD_ALLOWED_DOMAINS = (
+    "github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "raw.githubusercontent.com",
+    "registry.npmjs.org",
+    "registry.yarnpkg.com",
+    "binaries.soliditylang.org",
+    "crates.io",
+    "index.crates.io",
+    "static.crates.io",
+    "static.rust-lang.org",
+)
+# Days a run's directory (its PoC evidence) is kept; older ones are deleted when a run starts.
+EVIDENCE_RETENTION_DAYS = 30
 _POC_LABEL = {
     "CONFIRMED_BY_POC": "confirmed by PoC",
     "REFUTED_BY_POC": "refuted by PoC",
@@ -107,6 +129,18 @@ class ClaudeCodeTriage:
         # One limit for the whole service, shared by concurrent runs (e.g. a manual trigger
         # while a scheduled run is in progress).
         self._sem: asyncio.Semaphore | None = None
+        # Run directories in use by this process, which evidence pruning must not touch.
+        self._active_runs: set[Path] = set()
+
+    @property
+    def semaphore(self) -> asyncio.Semaphore:
+        """
+        The service-wide limit on concurrent Claude Code runs, created on first use (inside the
+        event loop). The aggregator's merges take it too, so they count toward the same limit.
+        """
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self.cfg.triage_max_parallel_agents)
+        return self._sem
 
     # --- preflight -----------------------------------------------------------------------
     def secret_paths(self) -> list[Path]:
@@ -123,10 +157,15 @@ class ClaudeCodeTriage:
         Decide whether agents may run PoCs. Returns ``True`` when the command sandbox works.
 
         Raises :class:`SandboxUnavailable` when PoCs are required but the sandbox cannot run,
-        and ``ValueError`` when the work directory is misconfigured. Call it before touching
+        and ``ValueError`` when the API key or the work directory is misconfigured (including a
+        work directory too long for the sandbox's sockets). Call it before touching
         any finding so a broken host leaves the task unprocessed (and retryable).
         """
-        resolve_work_dir(self.cfg.triage_work_dir, self.secret_paths())
+        if not (self.cli.api_key or "").strip():
+            # The settings reject an empty CLAUDE_API_KEY; a blank one would only fail in every
+            # agent, after the repository download and the Gemini call.
+            raise ValueError("CLAUDE_API_KEY is blank")
+        work_dir = resolve_work_dir(self.cfg.triage_work_dir, self.secret_paths())
         if not shutil.which(self.cli.command):
             raise SandboxUnavailable(f"Claude Code CLI '{self.cli.command}' not found on PATH")
         mode = self.cfg.triage_poc_mode
@@ -134,6 +173,7 @@ class ClaudeCodeTriage:
             return False
         reason = probe_bubblewrap()
         if reason is None:
+            check_socket_paths(work_dir)
             return True
         if mode == "required":
             raise SandboxUnavailable(reason)
@@ -155,15 +195,22 @@ class ClaudeCodeTriage:
                 f"repository checkout unavailable ({task_cache.repoPath!r})"
             )
         work_dir = resolve_work_dir(self.cfg.triage_work_dir, self.secret_paths())
+        try:
+            await asyncio.to_thread(
+                prune_old_runs,
+                work_dir,
+                EVIDENCE_RETENTION_DAYS,
+                set(self._active_runs),
+            )
+        except OSError as exc:  # housekeeping only: never fail a run over it
+            logger.warning("could not prune old triage runs in %s: %s", work_dir, exc)
         ws = TriageWorkspace(
             work_dir,
             secret_paths=self.secret_paths(),
-            extra_read_paths=self.cfg.triage_extra_read,
-            keep_sandboxes=self.cfg.triage_keep_sandboxes,
+            keep_sandboxes=self.cfg.debug,
         )
-        if self._sem is None:
-            self._sem = asyncio.Semaphore(self.cfg.triage_max_parallel_agents)
-        run = _Run(ws=ws, poc_enabled=poc_enabled, sem=self._sem)
+        self._active_runs.add(ws.root)
+        run = _Run(ws=ws, poc_enabled=poc_enabled, sem=self.semaphore)
         logger.info(
             "triage run %s: %d unit(s), PoCs %s",
             ws.root.name,
@@ -187,7 +234,10 @@ class ClaudeCodeTriage:
                     outcome = self._error_verdict(unit, f"internal error: {type(outcome).__name__}")
                 verdicts[unit.key] = outcome
         finally:
-            await asyncio.to_thread(ws.cleanup)
+            try:
+                await asyncio.to_thread(ws.cleanup)
+            finally:
+                self._active_runs.discard(ws.root)
         logger.info(
             "triage run %s finished: %d agents (%d failed), total cost $%.2f; evidence in %s",
             ws.root.name,
@@ -213,10 +263,10 @@ class ClaudeCodeTriage:
                 tmpdir=sb.tmp,
                 tools=["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
                 settings=run.ws.settings_for(
-                    sb, allow_bash=True, allowed_domains=self.cfg.triage_build_domains
+                    sb, allow_bash=True, allowed_domains=BUILD_ALLOWED_DOMAINS
                 ),
                 json_schema=BUILD_SCHEMA,
-                timeout_s=self.cfg.triage_build_timeout_seconds,
+                timeout_s=BUILD_TIMEOUT_SECONDS,
                 max_budget_usd=self.cfg.triage_agent_max_budget_usd or None,
                 label=f"{run.ws.root.name}/build",
             )
@@ -263,28 +313,37 @@ class ClaudeCodeTriage:
             (analysis.get("poc") or {}).get("result"),
         )
 
-        verifiers = list(
-            await asyncio.gather(
-                self._role(
-                    run,
-                    unit,
-                    "refute",
-                    lambda note: refute_prompt(ctx, finding, analysis, note),
-                    VERIFY_SCHEMA,
-                    staged=["analyst"],
-                    retries=0,
-                ),
-                self._role(
-                    run,
-                    unit,
-                    "severity",
-                    lambda note: severity_prompt(ctx, finding, analysis, note),
-                    VERIFY_SCHEMA,
-                    staged=["analyst"],
-                    retries=0,
-                ),
-            )
+        # return_exceptions: a crashed verifier must neither leave the other one running
+        # unawaited nor deprive the unit of its judge, who checks a missing angle itself.
+        outcomes = await asyncio.gather(
+            self._role(
+                run,
+                unit,
+                "refute",
+                lambda note: refute_prompt(ctx, finding, analysis, note),
+                VERIFY_SCHEMA,
+                staged=["analyst"],
+                retries=0,
+            ),
+            self._role(
+                run,
+                unit,
+                "severity",
+                lambda note: severity_prompt(ctx, finding, analysis, note),
+                VERIFY_SCHEMA,
+                staged=["analyst"],
+                retries=0,
+            ),
+            return_exceptions=True,
         )
+        verifiers: list[dict[str, Any] | None] = []
+        for name, outcome in zip(("refute", "severity"), outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                logger.error("[%s] %s verifier crashed: %r", unit.key, name, outcome)
+                outcome = None
+            elif isinstance(outcome, BaseException):
+                raise outcome  # cancellation: stop the unit
+            verifiers.append(outcome)
         unanimous = all(
             v and v.get("agrees_with_verdict") and v.get("agrees_with_severity") for v in verifiers
         )
@@ -341,7 +400,7 @@ class ClaudeCodeTriage:
                         tools=tools,
                         settings=ws.settings_for(sb, allow_bash=bash, allowed_domains=[]),
                         json_schema=schema,
-                        timeout_s=self.cfg.triage_agent_timeout_seconds,
+                        timeout_s=AGENT_TIMEOUT_SECONDS,
                         max_budget_usd=self.cfg.triage_agent_max_budget_usd or None,
                         label=f"{ws.root.name}/{label}",
                     )
@@ -370,17 +429,15 @@ class ClaudeCodeTriage:
         Map the judge's ruling onto the database's valid/disputed + High/Medium/Low/Info.
 
         VALID / PARTIALLY_VALID count at the rated severity (Critical is stored as High);
-        INVALID is disputed; INFORMATIONAL follows ``triage_informational_policy``.
+        INVALID is disputed; INFORMATIONAL (true, but no security impact) counts as Info only
+        when the judge says a competent developer would change code because of it.
         """
         verdict = str(final.get("final_verdict", "")).upper()
         if verdict in ("VALID", "PARTIALLY_VALID"):
             is_valid = True
             severity = normalize_severity(str(final.get("final_severity", "")), "Info")
         elif verdict == "INFORMATIONAL":
-            policy = self.cfg.triage_informational_policy
-            is_valid = policy == "valid" or (
-                policy == "actionable" and final.get("actionable") is True
-            )
+            is_valid = final.get("actionable") is True
             severity = "Info"
         else:  # INVALID (or anything unexpected): not counted
             is_valid = False

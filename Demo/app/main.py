@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.backend_api import TaskNotFoundError, new_client
 from app.backend_findings import fetch_findings, post_results
@@ -28,6 +29,7 @@ from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
 from app.core.triage_sandbox import SandboxUnavailable, harden_service_process
 from app.models.finding_db import FindingDB, Status
+from app.task_runs import cancel_background_runs, release, start_in_background, try_claim
 from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
 from app.types import TaskCache
 
@@ -107,12 +109,15 @@ async def schedule_task_processing(task_id: str, start_time: datetime, deadline:
 async def process_task_scheduled(task_id: str):
     """
     Wrapper function for scheduled task processing.
-    Skips a task already marked processed in the backend's task metadata, and marks one whose run
-    completes.
+    Skips a task already marked processed in the backend's task metadata or being processed by a
+    manual run, and marks one whose run completes.
 
     Args:
         task_id: Task identifier
     """
+    if not try_claim(task_id):
+        logger.warning(f"Task {task_id} is already being processed; skipping the scheduled run")
+        return
     try:
         logger.info(f"Scheduled task processing triggered for task {task_id}")
 
@@ -134,6 +139,8 @@ async def process_task_scheduled(task_id: str):
 
     except Exception as e:
         logger.error(f"Error in scheduled task processing for task {task_id}: {str(e)}")
+    finally:
+        release(task_id)
 
 
 @asynccontextmanager
@@ -182,6 +189,9 @@ async def lifespan(_app: FastAPI):
                 pass  # Expected when cancelling
             except Exception as e:
                 logger.error(f"Error during background task shutdown: {str(e)}")
+
+        # Manual runs: cancelling one kills its agents; the task stays unmarked for a retry.
+        await cancel_background_runs()
 
         # Cancel scheduler
         try:
@@ -383,7 +393,7 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
         return None
 
 
-def triage_preflight(task_id: str) -> bool | None:
+async def triage_preflight(task_id: str) -> bool | None:
     """
     Check the evaluation host before a run downloads or judges anything.
 
@@ -392,7 +402,8 @@ def triage_preflight(task_id: str) -> bool | None:
     can be retried once the host is fixed.
     """
     try:
-        return evaluator.preflight()
+        # The bubblewrap probe runs subprocesses for up to 40 s; keep it off the event loop.
+        return await asyncio.to_thread(evaluator.preflight)
     except (SandboxUnavailable, ValueError) as e:
         logger.error(f"Triage preflight failed for task_id: {task_id}; not processing it: {e}")
         return None
@@ -454,7 +465,7 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
     _clear_verdicts(findings)
 
     # Make sure the triage can run before downloading the repository or calling any model.
-    poc_enabled = triage_preflight(task_id)
+    poc_enabled = await triage_preflight(task_id)
     if poc_enabled is None:
         return False
 
@@ -553,11 +564,33 @@ async def get_task_findings(task_id: str, x_api_key: str = Header(..., alias="X-
         raise HTTPException(status_code=500, detail="Error retrieving findings") from e
 
 
+async def _process_task_in_background(task_id: str) -> None:
+    """Run a manually triggered task to its end, and mark it processed if the run completes."""
+    try:
+        # A failed run leaves the task unmarked, so the endpoint can be called again.
+        if not await process_task(task_id):
+            logger.error(f"Manual processing of task {task_id} failed; not marking it processed")
+            return
+        await mark_task_processed(task_id, config, scheduled=False)
+        logger.info(f"Manual task processing completed for task: {task_id}")
+    except asyncio.CancelledError:
+        logger.warning(f"Manual processing of task {task_id} was cancelled; it stays unmarked")
+        raise
+    except Exception as e:
+        logger.error(f"Error during manual task processing for task {task_id}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+
 @app.post("/tasks/{task_id}/process")
 async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., alias="X-API-Key")):
     """
     Manually trigger task processing for all findings of a task.
     This endpoint allows immediate processing without waiting for the scheduled deadline.
+
+    A run takes hours, so it is started in the background and the answer is 202; the run posts
+    the verdicts and marks the task processed when it completes, and a failure only shows in the
+    arbiter's log (the task then stays unmarked, so it can be triggered again). A task already
+    being processed, manually or by its scheduled job, is a 409.
 
     Args:
         task_id: Task identifier for the task to process
@@ -570,56 +603,60 @@ async def trigger_task_processing(task_id: str, x_api_key: str = Header(..., ali
         if x_api_key != config.backend_api_key:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        try:
-            marker = await fetch_processed_marker(task_id, config)
-        except TaskNotFoundError as e:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found") from e
-
-        if marker:
-            logger.info(f"Task {task_id} was already processed at {marker.get('processed_at')}")
-            return {
-                "task_id": task_id,
-                "status": "already_processed",
-                "message": f"Task was already processed at {marker.get('processed_at')}",
-                "processed_at": marker.get("processed_at"),
-                "scheduled_processing": marker.get("scheduled_processing", False),
-            }
-
-        findings = await fetch_findings(task_id, config)
-
-        if findings is None:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-        if not findings:
-            return {
-                "task_id": task_id,
-                "status": "no_findings",
-                "message": "No findings found for this task",
-                "total_findings": 0,
-            }
-
-        logger.info(
-            f"Manual task processing triggered for task: {task_id} with {len(findings)} findings"
-        )
-
-        # A failed run leaves the task unmarked, so this endpoint can be called again.
-        if not await process_task(task_id):
+        if not try_claim(task_id):
             raise HTTPException(
-                status_code=502, detail=f"Processing task {task_id} failed; see the arbiter's log"
+                status_code=409, detail=f"Task {task_id} is already being processed"
             )
+        started = False
+        try:
+            try:
+                marker = await fetch_processed_marker(task_id, config)
+            except TaskNotFoundError as e:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found") from e
 
-        current_time = await mark_task_processed(task_id, config, scheduled=False)
+            if marker:
+                logger.info(f"Task {task_id} was already processed at {marker.get('processed_at')}")
+                return {
+                    "task_id": task_id,
+                    "status": "already_processed",
+                    "message": f"Task was already processed at {marker.get('processed_at')}",
+                    "processed_at": marker.get("processed_at"),
+                    "scheduled_processing": marker.get("scheduled_processing", False),
+                }
 
-        logger.info(f"Manual task processing completed for task: {task_id}")
+            findings = await fetch_findings(task_id, config)
 
-        return {
-            "task_id": task_id,
-            "status": "processed",
-            "message": "Task processing completed successfully",
-            "processed_at": current_time.isoformat(),
-            "total_findings": len(findings),
-            "manual_trigger": True,
-        }
+            if findings is None:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+            if not findings:
+                return {
+                    "task_id": task_id,
+                    "status": "no_findings",
+                    "message": "No findings found for this task",
+                    "total_findings": 0,
+                }
+
+            logger.info(
+                f"Manual task processing triggered for task: {task_id} with {len(findings)} findings"
+            )
+            start_in_background(task_id, _process_task_in_background(task_id))
+            started = True
+        finally:
+            # Once started, the background run holds the claim until it ends.
+            if not started:
+                release(task_id)
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "task_id": task_id,
+                "status": "accepted",
+                "message": "Task processing started; the verdicts are posted when it completes",
+                "total_findings": len(findings),
+                "manual_trigger": True,
+            },
+        )
 
     except HTTPException:
         raise

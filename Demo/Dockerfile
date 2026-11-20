@@ -102,7 +102,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/app \
     TZ=UTC \
     PATH="/opt/venv/bin:/opt/foundry/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    CLAUDE_CMD=claude \
     DISABLE_AUTOUPDATER=1 \
     TRIAGE_WORK_DIR=/var/lib/arbiter-triage
 

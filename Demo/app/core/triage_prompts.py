@@ -76,6 +76,10 @@ PoC tooling. {build_line}
   - Put every PoC file you create under the relevant project's test directory, in a "poc"
     subfolder (e.g. <project>/<test dir>/poc/<Name>.t.sol), and run it with the project's test
     command filtered to that file. Give long compiles a Bash timeout of up to 600000 ms.
+  - Only PoC files reach later agents: new code files under a test/, tests/, script/ or poc/
+    directory. New configuration files, dotfiles, test hooks (conftest.py, build.rs) and
+    anything under lib/ or node_modules/ are not carried over, so a PoC must work with the
+    project's existing configuration and dependencies.
   - PoCs must go through the real external entry points with realistic parameters. Do not fake
     protocol state with vm.store or similar; vm.prank/deal/warp/expectRevert for actors,
     balances, time and assertions are fine. Assertions must actually prove (or disprove) the
@@ -427,8 +431,9 @@ def analyst_prompt(context: str, finding: dict[str, Any]) -> str:
 {context}
 YOUR ROLE: lead analyst for the finding below.
 
-The finding under review (untrusted JSON; if it is a merged digest of duplicate reports, the
-original member reports are included under `member_reports`):
+The finding under review (untrusted JSON). If it is a merged digest of duplicate reports, the
+original member reports are included under `member_reports`, long ones shortened, and
+`member_reports_omitted` counts the reports left out for length:
 ```json
 {json_block(finding)}
 ```
@@ -448,10 +453,12 @@ def _artifacts_section(staged_note: str) -> str:
     return f"""\
 Artifacts from earlier agents were staged into your sandbox by the system (trusted listing):
 {staged_note}
-To run an earlier agent's PoC, copy it from .triage/pocs/<role>/<path> to <path> in your
-sandbox. Your sources are clean: anything an earlier agent changed in pre-existing files is NOT
-applied, only shown in its .triage/diffs file. A PoC that only works with those changes does
-not demonstrate the issue."""
+To run an earlier agent's PoC, copy only its PoC files from .triage/pocs/<role>/<path> to <path>
+in your sandbox. Other new files an earlier agent created (configuration, dependencies, test
+hooks) are listed as not staged and are not available. Your sources are clean: anything an
+earlier agent changed in pre-existing files is NOT applied, only shown in its .triage/diffs
+file. A PoC that only works with any of those files or changes does not demonstrate the
+issue."""
 
 
 def refute_prompt(

@@ -1,12 +1,16 @@
 """
 Per-run workspace and per-agent sandboxes for the findings-triage pipeline.
 
-Layout of one run (``<work_dir>/<run-id>/``, created 0700)::
+Layout of one run (``<work_dir>/run-<random>/``, created 0700)::
 
     base/repo     copy of the task checkout; the build agent installs deps + prebuilds here
     base/.home    the build agent's HOME (toolchain caches: solc builds, cargo registry...)
-    agents/<name>/{repo,.home,.tmp}   one private copy of ``base`` per agent
-    evidence/<unit>/<role>/...        PoC files each agent created (kept after the run)
+    a/<id>/{repo,.home,t}       one private copy of ``base`` per agent (``t`` is its TMPDIR)
+    evidence/<unit>/<role>/...  PoC files each agent created (kept after the run, until
+                                :func:`prune_old_runs` deletes the run)
+
+The agent directories have short names because the CLI binds its sandbox proxy sockets in
+TMPDIR, and a Unix socket path is limited to 107 bytes (see :func:`check_socket_paths`).
 
 Isolation model (see also app/core/claude_code_cli.py):
 
@@ -22,8 +26,9 @@ Isolation model (see also app/core/claude_code_cli.py):
   setuid so nested user namespaces are disabled; Claude Code's "weaker nested sandbox" mode is
   deliberately not supported (a nested user namespace can undo its write denies).
 * PoCs move between agents only through **Python**: after an agent exits (and any process it
-  left behind is killed), the files it *created* (regular files with plain names only, read
-  through directory handles that never follow a symlink, size-capped) are copied into
+  left behind is killed), the PoC files it *created* (new code files under a test, script or
+  poc directory, never configuration or dependencies; regular files with plain names only,
+  read through directory handles that never follow a symlink, size-capped) are copied into
   ``evidence/``, and the next agent gets them under ``.triage/pocs/<role>/`` in a *fresh*
   sandbox built from the clean base. Files an agent *modified* are never propagated; they are
   shown to later agents as a system-computed diff (``.triage/diffs/<role>.diff``). So a
@@ -45,6 +50,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +59,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TRIAGE_DIR = ".triage"
+AGENTS_DIR = "a"
+TMP_DIR = "t"
+RUN_PREFIX = "run-"
 # Directory basenames skipped when computing what an agent changed: build outputs and caches
 # (noise; never propagated) plus the system's own staging dir and VCS metadata.
 SKIP_DIFF_DIRS = frozenset(
@@ -76,10 +86,32 @@ MAX_STAGED_FILE_BYTES = 1_000_000
 MAX_STAGED_TOTAL_BYTES = 8_000_000
 MAX_DIFF_FILE_BYTES = 300_000
 MAX_DIFF_CHARS = 60_000
+MAX_NOT_STAGED_LISTED = 200
 MIN_BWRAP_VERSION = (0, 8, 0)
+# The CLI binds its sandbox proxy sockets at $TMPDIR/claude-{http,socks}-<16 hex>.sock, and
+# sun_path holds 108 bytes including the terminating NUL.
+_CLI_SOCKET_NAME = "claude-socks-" + "0" * 16 + ".sock"
+MAX_UNIX_SOCKET_PATH_BYTES = 107
+_RUN_NAME_LEN = len(RUN_PREFIX) + 8  # tempfile.mkdtemp adds 8 random characters
+_SANDBOX_ID_DIGITS = 6
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 # Path components of files that may be staged into other agents' prompts/sandboxes.
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.@+=-]{1,128}$", re.ASCII)
+# Only PoC files move between agents: new code files under one of these directories.
+POC_DIRS = frozenset({"test", "tests", "script", "poc"})
+POC_EXTENSIONS = frozenset(
+    (".sol", ".vy", ".huff", ".yul", ".rs", ".go", ".move", ".cairo", ".py")
+    + (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+)
+# Never staged, even inside a PoC directory: dependencies, and files that change how a project
+# builds or which code its tests load (configs, dotfiles, auto-loaded hooks). A PoC that passes
+# only because of one of them would not show anything about the project as configured.
+_NO_STAGE_DIRS = frozenset({"lib", "node_modules"})
+_NO_STAGE_NAMES = frozenset({"conftest.py", "build.rs", "setup.py"})
+_CONFIG_NAME = re.compile(r"(^|[.-])config\.[A-Za-z]+$")
+# What these name depends on the process that follows them (/proc/self/cwd, /dev/fd...): a link
+# through them can resolve harmlessly from the service and into another sandbox from an agent.
+_PROCESS_RELATIVE = (Path("/proc"), Path("/dev"))
 
 
 class SandboxUnavailable(RuntimeError):
@@ -238,6 +270,64 @@ def resolve_work_dir(configured: str, protected: Sequence[Path]) -> Path:
     return base
 
 
+def longest_socket_path(work_dir: Path) -> int:
+    """Bytes in the longest proxy socket path an agent's CLI binds under ``work_dir``."""
+    tmpdir = (
+        Path(work_dir) / ("r" * _RUN_NAME_LEN) / AGENTS_DIR / ("0" * _SANDBOX_ID_DIGITS) / TMP_DIR
+    )
+    return len(os.fsencode(tmpdir / _CLI_SOCKET_NAME))
+
+
+def check_socket_paths(work_dir: Path) -> None:
+    """
+    Raise ``ValueError`` when agents' proxy sockets under ``work_dir`` would exceed the Unix
+    socket path limit: the sandboxed agent could then not start.
+    """
+    longest = longest_socket_path(work_dir)
+    if longest > MAX_UNIX_SOCKET_PATH_BYTES:
+        allowed = MAX_UNIX_SOCKET_PATH_BYTES - (longest - len(os.fsencode(work_dir)))
+        raise ValueError(
+            f"TRIAGE_WORK_DIR {work_dir} is too long: agents' sandbox sockets would need "
+            f"{longest} bytes, over the {MAX_UNIX_SOCKET_PATH_BYTES} a Unix socket path allows; "
+            f"use a path of at most {allowed} bytes"
+        )
+
+
+def prune_old_runs(work_dir: Path, max_age_days: int, active: Iterable[Path] = ()) -> int:
+    """
+    Delete run directories (with their PoC evidence) last changed over ``max_age_days`` ago.
+
+    Only real ``run-*`` directories owned by this user are removed, never one in ``active``
+    (runs in progress). Returns how many were removed.
+    """
+    cutoff = time.time() - max_age_days * 86_400
+    keep = {Path(p).resolve() for p in active}
+    removed = 0
+    with os.scandir(work_dir) as entries:
+        for entry in entries:
+            if not entry.name.startswith(RUN_PREFIX):
+                continue
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            path = Path(entry.path)
+            if (
+                not stat.S_ISDIR(st.st_mode)
+                or st.st_uid != os.getuid()
+                or st.st_mtime >= cutoff
+                or path.resolve() in keep
+            ):
+                continue
+            _force_rmtree(path)
+            removed += 1
+    if removed:
+        logger.info(
+            "removed %d triage run(s) older than %d days from %s", removed, max_age_days, work_dir
+        )
+    return removed
+
+
 # ----------------------------------------------------------------------------------------
 # Safe file helpers (agent-produced trees are adversarial: symlinks, FIFOs, odd names, races)
 # ----------------------------------------------------------------------------------------
@@ -285,6 +375,19 @@ def _read_beneath(root: Path, rel: str, limit: int) -> bytes | None:
         return data if len(data) <= limit else None
     finally:
         os.close(ffd)
+
+
+def is_poc_file(rel: str) -> bool:
+    """Whether a file an agent created is staged for later agents (see ``POC_DIRS``)."""
+    *dirs, name = rel.split("/")
+    return (
+        any(d in POC_DIRS for d in dirs)
+        and not any(d in _NO_STAGE_DIRS or d.startswith(".") for d in dirs)
+        and not name.startswith(".")
+        and os.path.splitext(name)[1] in POC_EXTENSIONS
+        and name not in _NO_STAGE_NAMES
+        and not _CONFIG_NAME.search(name)
+    )
 
 
 def _walk_files(root: Path) -> Iterable[tuple[str, os.stat_result]]:
@@ -372,8 +475,8 @@ class Sandbox:
 
     @property
     def tmp(self) -> Path:
-        """The agent's private TMPDIR."""
-        return self.root / ".tmp"
+        """The agent's private TMPDIR (a short name, see :func:`check_socket_paths`)."""
+        return self.root / TMP_DIR
 
 
 @dataclass
@@ -394,20 +497,20 @@ class TriageWorkspace:
         work_dir: Path,
         *,
         secret_paths: Sequence[Path],
-        extra_read_paths: Sequence[str],
         keep_sandboxes: bool,
     ) -> None:
         self.work_dir = Path(work_dir).resolve()
-        self.root = Path(tempfile.mkdtemp(prefix="run-", dir=self.work_dir))  # 0700, unique per run
+        self.root = Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=self.work_dir))  # 0700, unique
         self.base = Sandbox("base", self.root / "base")
-        self.agents_dir = self.root / "agents"
+        self.agents_dir = self.root / AGENTS_DIR
         self.evidence_dir = self.root / "evidence"
         self.secret_paths = [
             p for p in dict.fromkeys(Path(s).resolve() for s in secret_paths) if p.exists()
         ]
-        self.extra_read = [str(Path(p).expanduser().resolve()) for p in extra_read_paths]
         self.keep_sandboxes = keep_sandboxes
         self._index: dict[str, tuple[int, int]] = {}
+        self._next_id = 0
+        self._id_lock = threading.Lock()  # sandboxes are made from worker threads
         for d in (self.base.root, self.agents_dir, self.evidence_dir):
             d.mkdir(mode=0o700)
 
@@ -435,21 +538,16 @@ class TriageWorkspace:
             capture_output=True,
         )
         removed = 0
-        base_root = self.base.root.resolve()
         for top in (self.base.repo, self.base.home):
             for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
                 for name in dirnames + filenames:
                     p = Path(dirpath) / name
-                    if not p.is_symlink():
-                        continue
-                    target = os.readlink(p)
-                    resolved = (Path(dirpath) / target).resolve()
-                    if os.path.isabs(target) or not _is_within(resolved, base_root):
+                    if p.is_symlink() and not self._link_may_stay(p):
                         p.unlink()
                         removed += 1
         if removed:
             logger.warning(
-                "removed %d symlink(s) pointing outside the sandbox from the base", removed
+                "removed %d symlink(s) that could escape a sandbox from the base", removed
             )
         # The build agent's own CLI state must not leak into the agents' HOME copies.
         for entry in self.base.home.glob(".claude*"):
@@ -457,12 +555,49 @@ class TriageWorkspace:
         _fresh_dir(self.base.repo / TRIAGE_DIR)
         self._index = {rel: (st.st_size, st.st_mtime_ns) for rel, st in _walk_files(self.base.repo)}
 
+    def _link_may_stay(self, link: Path) -> bool:
+        """
+        Whether a symlink in the base is kept when the base is sealed.
+
+        A relative link must point inside the base, so it points inside each agent's copy too (a
+        copy sits one level deeper, so a relative link leaving the base could reach something
+        else from there). Only its own target is checked, not a link that target may be: every
+        link in the base is checked on its own, so a virtualenv's ``python3 -> python`` stays
+        when ``python -> /usr/bin/python3`` does. An absolute link may name a system path, but
+        not lead into the work directory (other runs and agents, or the shared base instead of
+        the agent's own copy), a secret region or a process-relative path, and may not climb
+        with "..", which after a process-relative step leads somewhere else for each process.
+        """
+        target = Path(os.readlink(link))
+        if target.is_absolute():
+            if ".." in target.parts:
+                return False
+            forbidden = [self.work_dir, *self.secret_paths, *_PROCESS_RELATIVE]
+            return not any(
+                _is_within(path, region)
+                for path in (target, target.resolve())
+                for region in forbidden
+            )
+        full = link.parent / target
+        # The directory part may run through links and "..", so it is resolved; the last part
+        # is the target itself (unless it is "..", which names a directory to resolve too).
+        pointed = full.resolve() if full.name == ".." else full.parent.resolve() / full.name
+        return _is_within(pointed, self.base.root.resolve())
+
     # --- agent sandboxes -------------------------------------------------------------
     def make_sandbox(self, name: str) -> Sandbox:
-        """Create a private copy of the sealed base for one agent."""
+        """
+        Create a private copy of the sealed base for one agent. ``name`` labels it in logs; its
+        directory gets a short id instead.
+        """
         if not _SAFE_NAME.match(name):
             raise ValueError(f"unsafe sandbox name {name!r}")
-        sb = Sandbox(name, self.agents_dir / name)
+        with self._id_lock:
+            sandbox_id, self._next_id = self._next_id, self._next_id + 1
+        if sandbox_id >= 16**_SANDBOX_ID_DIGITS:
+            raise RuntimeError("too many sandboxes in one triage run")
+        sb = Sandbox(name, self.agents_dir / f"{sandbox_id:0{_SANDBOX_ID_DIGITS}x}")
+        logger.debug("sandbox %s is %s", name, sb.root)
         _force_rmtree(sb.root)
         sb.root.mkdir(mode=0o700)
         _copy_tree(self.base.root, sb.root)
@@ -540,10 +675,11 @@ class TriageWorkspace:
         self, sb: Sandbox, unit: str, role: str, changes: AgentChanges
     ) -> tuple[Path, list[str]]:
         """
-        Copy the files an agent created (its PoCs) into ``evidence/<unit>/<role>/`` and save the
+        Copy the PoC files an agent created (see :func:`is_poc_file`) into
+        ``evidence/<unit>/<role>/``, record its other new files as not staged, and save the
         system-computed diff of files it modified. Returns ``(evidence dir, staged files)``.
-        Files with names outside a plain-ASCII charset are not staged (they could smuggle text
-        into later prompts, or not even be valid UTF-8).
+        Files with names outside a plain-ASCII charset are neither staged nor listed (they could
+        smuggle text into later prompts, or not even be valid UTF-8).
         """
         if not (_SAFE_NAME.match(unit) and _SAFE_NAME.match(role)):
             raise ValueError(f"unsafe evidence key {unit!r}/{role!r}")
@@ -551,24 +687,37 @@ class TriageWorkspace:
         dest = self.evidence_dir / unit / role
         _fresh_dir(dest)  # a retry replaces the failed attempt's evidence
         staged: list[str] = []
+        not_staged: list[str] = []
         total = 0
+        capped = False
         for rel in changes.new_files:
-            if len(staged) >= MAX_STAGED_FILES:
-                logger.warning("[%s/%s] staging capped at %d files", unit, role, MAX_STAGED_FILES)
-                break
             if not _safe_rel(rel):
                 logger.warning("[%s/%s] not staging a file with an unsafe name", unit, role)
                 continue
+            if not is_poc_file(rel):
+                not_staged.append(rel)
+                continue
+            if len(staged) >= MAX_STAGED_FILES:
+                capped = True
+                not_staged.append(rel)
+                continue
             data = _read_beneath(sb.repo, rel, MAX_STAGED_FILE_BYTES)
             if data is None or total + len(data) > MAX_STAGED_TOTAL_BYTES:
+                not_staged.append(rel)
                 continue
             parent = _safe_mkdirs(dest, str(Path(rel).parent))
             if parent is None:
+                not_staged.append(rel)
                 continue
             (parent / Path(rel).name).write_bytes(data)
             staged.append(rel)
             total += len(data)
+        if capped:
+            logger.warning("[%s/%s] staging capped at %d files", unit, role, MAX_STAGED_FILES)
         (self.evidence_dir / unit / f"{role}.diff").write_text(changes.diff or "", errors="replace")
+        (self.evidence_dir / unit / f"{role}.not-staged.json").write_text(
+            json.dumps({"files": not_staged[:MAX_NOT_STAGED_LISTED], "count": len(not_staged)})
+        )
         return dest, staged
 
     def stage_into(self, sb: Sandbox, unit: str, roles: Sequence[str]) -> str:
@@ -602,11 +751,28 @@ class TriageWorkspace:
             (diffs_root / f"{role}.diff").write_text(diff)
             listed = json.dumps(sorted(files)[:30])
             lines.append(
-                f"  - {role}: files it created (copied to {TRIAGE_DIR}/pocs/{role}/<original path>): {listed}. "
+                f"  - {role}: PoC files it created (copied to {TRIAGE_DIR}/pocs/{role}/<original path>): {listed}. "
+                f"Other new files, not staged: {self._not_staged_note(unit, role)}. "
                 f"Pre-existing files it modified or deleted: "
                 f"{'see ' + TRIAGE_DIR + '/diffs/' + role + '.diff' if diff.strip() else 'none'}."
             )
         return "\n".join(lines) if lines else "  (none)"
+
+    def _not_staged_note(self, unit: str, role: str) -> str:
+        """The (JSON-escaped) new files of a role that collect_evidence did not stage."""
+        src = self.evidence_dir / unit / f"{role}.not-staged.json"
+        if not src.is_file():
+            return "none"
+        try:
+            record = json.loads(src.read_text())
+            files = sorted(f for f in record["files"] if isinstance(f, str) and _safe_rel(f))
+            count = int(record["count"])
+        except ValueError, KeyError, TypeError:
+            return "unknown"
+        if not count:
+            return "none"
+        listed = json.dumps(files[:30])
+        return listed if count <= 30 else f"{listed} and {count - 30} more"
 
     # --- Claude Code settings ----------------------------------------------------------
     def settings_for(
@@ -638,7 +804,7 @@ class TriageWorkspace:
                     # The whole work dir (every run, agent and piece of evidence) is denied;
                     # only this agent's own sandbox is re-allowed below.
                     "denyRead": [str(p) for p in self.secret_paths] + [str(self.work_dir)],
-                    "allowRead": [str(sb.root.resolve())] + self.extra_read,
+                    "allowRead": [str(sb.root.resolve())],
                 },
                 "network": {"allowedDomains": list(allowed_domains), "strictAllowlist": True},
             }
