@@ -8,18 +8,37 @@ services:
     environment:
       - MONGODB_URL=${MONGODB_URL}
       - CLAUDE_API_KEY=${CLAUDE_API_KEY}
-      - CLAUDE_MODEL=${CLAUDE_MODEL}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-5-5}
+      - CLAUDE_EFFORT=${CLAUDE_EFFORT:-high}
       - CLAUDE_CMD=${CLAUDE_CMD:-claude}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL}
       - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE}
       - GEMINI_MAX_TOKENS=${GEMINI_MAX_TOKENS}
       - DEBUG=${DEBUG}
+      # Findings-triage evaluation (see README "Final Evaluation")
+      - TRIAGE_POC_MODE=${TRIAGE_POC_MODE:-required}
+      - TRIAGE_MAX_PARALLEL_AGENTS=${TRIAGE_MAX_PARALLEL_AGENTS:-4}
+      - TRIAGE_AGENT_MAX_BUDGET_USD=${TRIAGE_AGENT_MAX_BUDGET_USD:-10}
+      - TRIAGE_INFORMATIONAL_POLICY=${TRIAGE_INFORMATIONAL_POLICY:-actionable}
     env_file:
       - .env
+    volumes:
+      # Disk-backed scratch space for per-agent sandboxes (full repo copies) and PoC evidence.
+      - triage-work:/var/lib/arbiter-triage
+    # The PoC sandbox is bubblewrap (>= 0.8.0, not setuid), which needs unprivileged user
+    # namespaces and a fresh /proc mount. Docker's default seccomp profile blocks the namespaces,
+    # so the preflight fails and (with TRIAGE_POC_MODE=required) tasks are left unprocessed
+    # instead of running PoCs unsandboxed. To enable PoCs, give this service a seccomp profile
+    # that allows unshare/clone with namespace flags (e.g. security_opt: [seccomp=./seccomp-userns.json])
+    # and verify on the target host that the preflight passes; see README. Claude Code's "weaker
+    # nested sandbox" mode is deliberately unsupported: it lets agents undo the write denies.
     networks:
       - app-network
     restart: unless-stopped
+
+volumes:
+  triage-work:
 
 networks:
   app-network:

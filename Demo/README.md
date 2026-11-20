@@ -22,24 +22,71 @@
 
 ## Final Evaluation
 
-- Remaining `PENDING` findings undergo evaluation driven by **Claude Code** (Anthropic's
-  `claude` CLI), run as a read-only subprocess **inside the task's repository checkout**
-  (`--permission-mode acceptEdits`). Rather than being handed a concatenated blob of source, the
-  agent explores the real files itself to verify each claim.
-- The evaluation uses a single **fixed prompt** (`app/core/evaluation_prompt.py`) and returns,
-  per finding, a verdict:
-    - Validity: `approved` (a genuine, reachable vulnerability) or `disapproved`
-    - Severity: the real impact re-assessed as `High`, `Medium`, `Low`, or `Info`
-    - Rationale: a short explanation citing the in-scope code that drove the decision
-- Duplicates (identified during deduplication) are judged once on their representative finding
-  and the same verdict is propagated across the group, so related reports stay consistent.
-- Results are applied as follows:
-    - `approved` findings keep their valid status, with `evaluated_severity` and
-      `evaluation_comment` set from the verdict
-    - `disapproved` findings → `Status.DISPUTED`, with `evaluated_severity` and
-      `evaluation_comment` set from the verdict
-- A failed or unparseable CLI run abstains to `disapproved` (keeping the claimed severity) so
-  an auth/config failure never silently passes a finding.
+Findings are evaluated with a port of the **findings-triage** Claude Code skill: every distinct
+issue gets an analyst who traces the code and writes a working PoC in its own sandbox, two
+adversarial verifiers who attack that conclusion, and a judge who weighs the evidence
+(`app/core/claude_code_triage.py`, prompts in `app/core/triage_prompts.py`).
+
+```
+per task:  build agent ─ installs deps + prebuilds a private copy of the checkout
+per unit:  Analyst ─ code trace + PoC in its own sandbox
+             ├─► Refute verifier   ─ tries to overturn it; re-runs and audits the PoC for rigging
+             └─► Severity verifier ─ hunts escalations and mitigations; proves changes with a PoC
+           Judge ─ weighs evidence, not votes; re-runs PoCs to settle factual disputes
+```
+
+- A **unit** is one finding, or one duplicate group: the group is merged into a digest by the
+  aggregator (`app/core/claude_code_aggregator.py`), the original reports are attached, and the
+  unit's verdict is applied to every member.
+- Verdicts and severities are the skill's own (`VALID` / `PARTIALLY_VALID` / `INFORMATIONAL` /
+  `INVALID`; Critical…Invalid rubric). The task's Q&A answers and additional docs are part of
+  every agent's context (they define the trust model).
+- Results: `VALID` / `PARTIALLY_VALID` keep their status, with `evaluated_severity` from the
+  rubric (Critical is stored as `High`) and `evaluation_comment` set; `INVALID` →
+  `Status.DISPUTED` with `evaluated_severity = Info`; `INFORMATIONAL` (true, no security impact)
+  follows `TRIAGE_INFORMATIONAL_POLICY`: by default it counts as valid `Info` only when the judge
+  says a developer would change code because of it, otherwise it is disputed.
+- No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
+  verdict: its findings go back to `PENDING`, nothing is posted, and the task is not marked
+  processed; verdicts for the other units are kept, so `POST /tasks/{task_id}/process`
+  re-evaluates only the leftovers. If the sandbox preflight fails, nothing is touched at all.
+- Cost: 4 agents per unit plus one build agent per task, each capped by
+  `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` run at once across the
+  whole service. Finding titles/descriptions are capped before they reach any prompt.
+
+### Isolation (agents execute untrusted code)
+
+The finding text is written by participants who want it approved, and the repository comes from
+the sponsor, so every agent is treated as potentially hostile:
+
+- Every run is `claude -p --bare --restricted --strict-mcp-config --permission-prompts none`:
+  no hooks, CLAUDE.md, MCP servers, plugins or settings from the repository or the service user
+  are loaded; only the tools a role needs are enabled; anything else is denied.
+- The child gets a private `HOME`/`TMPDIR` and only the Anthropic key in its environment
+  (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` also strips it from commands the agent runs).
+- Commands run in the Claude Code **bubblewrap sandbox** with `failIfUnavailable` and
+  `allowUnsandboxedCommands: false`: writes only inside the agent's own sandbox, no reads of the
+  service user's HOME, the service directory, task data or anything else in the triage work
+  directory (other agents, runs and evidence), no network for finding agents (package
+  registries only for the build agent, via `strictAllowlist`). bubblewrap must be >= 0.8.0
+  and not setuid (so nested user namespaces are disabled); Claude Code's "weaker nested
+  sandbox" mode is not supported because agents could undo its write denies.
+- Each agent works in its own full copy of the prebuilt checkout. PoCs move between agents only
+  through the service (new regular files with plain names only, read through directory handles
+  that never follow symlinks, size-capped), into a fresh copy with clean sources; edits to
+  existing files are shown as a diff, never applied. So every verifier re-runs a PoC against
+  unmodified code.
+- Wall-clock timeouts kill the agent's whole process group, and any process an agent leaves
+  running in its sandbox is killed before its files are read; the service process is marked
+  non-dumpable so agents cannot read its environment through `/proc`.
+- PoC evidence is kept under `TRIAGE_WORK_DIR/<run>/evidence/`; sandboxes are deleted.
+
+**Host requirements.** PoCs need bubblewrap + socat and unprivileged user namespaces. On Ubuntu
+24.04+ hosts, AppArmor blocks them unless bubblewrap's AppArmor profile is installed. Docker's
+default seccomp profile blocks them too (see `docker-compose.yml`). With
+`TRIAGE_POC_MODE=required` (default) a host that cannot sandbox leaves tasks unprocessed
+rather than running PoCs unsandboxed; `optional` falls back to static analysis.
+Use a dedicated, spend-limited Anthropic key for `CLAUDE_API_KEY`.
 
 ## Setup and Installation
 
@@ -47,8 +94,10 @@
 - Python 3.13+
 - MongoDB
 - Anthropic API key (`CLAUDE_API_KEY`)
-- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code`) — the Docker
-  image below bundles it
+- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code@2.1.328`) — the
+  Docker image below bundles it
+- For PoC execution: `bubblewrap`, `socat` and the project toolchains (e.g. Foundry) — see
+  "Host requirements" above
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
@@ -210,8 +259,20 @@ The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
-- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-4-8)
+- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-5-5)
+- `CLAUDE_EFFORT`: Effort passed to `claude --effort` (default: high)
 - `CLAUDE_CMD`: Claude Code CLI binary name/path (default: claude)
+- `TRIAGE_POC_MODE`: `required` (default), `optional` or `off` — see Final Evaluation
+- `TRIAGE_INFORMATIONAL_POLICY`: `actionable` (default), `valid` or `disputed` — how INFORMATIONAL
+  rulings are recorded (see Final Evaluation)
+- `TRIAGE_WORK_DIR`: sandboxes + PoC evidence; must be outside HOME, the service dir and task
+  data (default: `<system tmp>/arbiter-triage-<uid>`; the image uses `/var/lib/arbiter-triage`)
+- `TRIAGE_MAX_PARALLEL_AGENTS` (default 4), `TRIAGE_AGENT_TIMEOUT_SECONDS` (default 1800),
+  `TRIAGE_BUILD_TIMEOUT_SECONDS` (default 2700), `TRIAGE_AGENT_MAX_BUDGET_USD` (default 10, 0 = no cap)
+- `TRIAGE_BUILD_ALLOWED_DOMAINS`: comma-separated hosts the build agent may reach
+- `TRIAGE_EXTRA_READ_PATHS`: toolchain dirs inside the service user's HOME that sandboxed
+  commands may read (local runs, e.g. `~/.foundry`); never list directories with credentials
+- `TRIAGE_KEEP_SANDBOXES`: keep per-agent sandboxes after a run (debugging)
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
 - `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
 - `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)

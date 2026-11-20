@@ -102,7 +102,7 @@ class TestProcessTaskScheduled:
         # Mock async database methods properly
         mock_mongodb.get_metadata = AsyncMock(return_value=None)
         mock_mongodb.set_metadata = AsyncMock(return_value=True)
-        mock_process_task.return_value = None
+        mock_process_task.return_value = True
         
         await process_task_scheduled(task_id)
         

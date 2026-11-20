@@ -12,6 +12,17 @@ from app.models.finding_db import Status, Severity
 from app.types import TaskCache, Task
 
 
+@pytest.fixture(autouse=True)
+def no_triage_preflight():
+    """
+    Never probe the host (bubblewrap, claude CLI, work dir) from unit tests: evaluation runs as
+    if the PoC sandbox were unavailable-but-optional. Tests of the preflight itself call
+    ClaudeCodeTriage.preflight directly.
+    """
+    with patch("app.core.evaluation.FindingEvaluator.preflight", return_value=False):
+        yield
+
+
 @pytest.fixture
 def event_loop():
     """Create an instance of the default event loop for the test session."""

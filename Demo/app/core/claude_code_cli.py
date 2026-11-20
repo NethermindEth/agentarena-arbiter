@@ -1,32 +1,62 @@
 """
-Shared plumbing for driving Anthropic's Claude Code CLI as a subprocess.
+Shared plumbing for driving Anthropic's Claude Code CLI as a hardened subprocess.
 
-Both the finding *classifier* (:class:`app.core.claude_code_detector.ClaudeCodeDetector`)
-and the finding *aggregator* (:class:`app.core.claude_code_aggregator.ClaudeCodeAggregator`)
-run the same ``claude`` CLI in non-interactive print mode against a repository checkout, feed a
-rendered prompt on stdin, and read the answer from stdout. The only differences are the prompt,
-the permission mode, and how the stdout is parsed — so the process-launching, secret-free
-environment, and stderr-logging concerns live here and are shared, while each concrete service
-owns its own prompt/parse logic.
+Every Claude Code run in the arbiter (the triage agents in
+:mod:`app.core.claude_code_triage` and the duplicate aggregator in
+:mod:`app.core.claude_code_aggregator`) goes through :meth:`ClaudeCodeCLI.run_agent`, which
+owns the security-relevant launch decisions in one place:
+
+* **No ambient configuration.** ``--bare`` skips hooks, plugins, CLAUDE.md auto-discovery,
+  auto-memory and keychain/OAuth reads; ``--restricted`` ignores user/project/local settings
+  files (so a ``.claude/settings.json`` with hooks inside the untrusted repository is never
+  loaded), confines the file tools to the working directory and refuses bypassPermissions;
+  ``--strict-mcp-config`` loads no MCP servers; ``--disable-slash-commands`` loads no skills.
+  The only settings that apply are the ones passed with ``--settings``.
+* **Deny by default.** ``--permission-prompts none`` auto-denies anything that would prompt;
+  the caller's ``--settings`` grant exactly the tools each role needs, and ``--tools`` removes
+  every other built-in tool (WebFetch, WebSearch, subagents...).
+* **No secrets in the environment.** The child gets a minimal allowlisted environment, a
+  private ``HOME``/``TMPDIR`` (never the service user's real home), and only the Anthropic API
+  key. ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`` additionally scrubs credentials from the
+  environment of commands the agent runs.
+* **Bounded.** Wall-clock timeout (the whole process group is killed), optional
+  ``--max-budget-usd`` cap, no session persistence, no auto-updater, no non-essential traffic.
+* **Structured output.** ``--output-format json`` + ``--json-schema``: the answer is read from
+  the CLI's validated ``structured_output`` field, never scraped from free text.
+
+The command sandbox itself (bubblewrap: filesystem + network confinement for the agent's Bash
+commands) is configured by the caller through ``settings["sandbox"]``; see
+:mod:`app.core.triage_sandbox`.
 """
 
-
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
 import re
+import signal
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
-from app.config import config
+from typing import Any, Dict, Optional, Sequence
 
+from app.config import config
 
 logger = logging.getLogger(__name__)
 
 
 # The severity vocabulary the models may return (mirrors app.models.finding_input.Severity).
 VALID_SEVERITIES = ("High", "Medium", "Low", "Info")
+
+# Environment variables inherited from the service process. Everything else (MongoDB URL,
+# backend/Gemini keys, ...) is withheld from the agent. RUSTUP_HOME only locates a Rust
+# toolchain installed outside HOME; every other tool cache lives in the agent's private HOME.
+_ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "RUSTUP_HOME")
+
+# Grace period between SIGTERM and SIGKILL when a run times out.
+_KILL_GRACE_SECONDS = 10
 
 
 def json_block(obj) -> str:
@@ -58,14 +88,9 @@ def render_template(template: str, replacements: Dict[str, str]) -> str:
     return pattern.sub(lambda m: replacements[m.group(0)], template)
 
 
-def _stderr_tail(stderr: str, limit: int = 800) -> str:
-    """
-    Return the last ``limit`` chars of ``stderr`` for logging a CLI failure.
-
-    Errors are emitted at the end of the stream (after any startup banner), so we keep the
-    tail rather than the head; a leading ellipsis marks truncation.
-    """
-    text = (stderr or "").strip()
+def _tail(text: str, limit: int = 800) -> str:
+    """Return the last ``limit`` chars of ``text`` (errors are printed last)."""
+    text = (text or "").strip()
     if not text:
         return "(empty)"
     return text if len(text) <= limit else "..." + text[-limit:]
@@ -85,91 +110,188 @@ def normalize_severity(value: str, default: str = "Info") -> str:
     return default
 
 
+@dataclass(frozen=True)
+class AgentResult:
+    """Outcome of one Claude Code run."""
+
+    ok: bool
+    structured: Optional[Dict[str, Any]]  # schema-validated output (when a schema was given)
+    text: str  # the CLI's final ``result`` text
+    cost_usd: float
+    duration_s: float
+    error: str = ""  # why the run is not ``ok`` (timeout, exit code, CLI error, no output)
+
+
 class ClaudeCodeCLI:
-    """
-    Base class that launches the ``claude`` CLI in non-interactive print mode.
-
-    The subprocess is fed untrusted third-party code, so its environment is stripped of this
-    process's secrets (see :meth:`_child_env`); only the Anthropic API key is passed through.
-    Concrete subclasses implement :meth:`argv` (choosing their permission mode via
-    :meth:`_argv`) and their own prompt rendering / output parsing.
-
-    NOTE: exact flags can vary by CLI version; override the binary via ``CLAUDE_CMD``.
-    """
+    """Launches hardened, non-interactive Claude Code runs. See the module docstring."""
 
     def __init__(
         self,
         model: Optional[str] = None,
         command: Optional[str] = None,
         api_key: Optional[str] = None,
+        effort: Optional[str] = None,
     ) -> None:
         self.model = model if model is not None else config.claude_model
         self.command = command if command is not None else config.claude_command
         self.api_key = api_key if api_key is not None else config.claude_api_key
+        self.effort = effort if effort is not None else config.claude_effort
 
-    # --- CLI setup ---------------------------------------------------------------------
-    def argv(self) -> List[str]:
-        """Return the command + flags used to run the CLI. Implemented by subclasses."""
-        raise NotImplementedError
-
-    def _argv(self, permission_mode: str) -> List[str]:
-        """
-        Build the common non-interactive print-mode argv with the given ``permission_mode``.
-
-        ``permission_mode`` selects how the agent may act (e.g. ``acceptEdits`` to let it write
-        a scratch file, ``plan`` for a strictly read-only pass).
-        """
-        argv = [self.command, "-p", "--output-format", "text", "--permission-mode", permission_mode]
+    # --- launch ------------------------------------------------------------------------
+    def build_argv(
+        self,
+        *,
+        tools: Sequence[str],
+        settings: Dict[str, Any],
+        json_schema: Optional[Dict[str, Any]] = None,
+        max_budget_usd: Optional[float] = None,
+    ) -> list:
+        """Return the full argv for one run (the prompt is fed on stdin)."""
+        argv = [
+            self.command,
+            "-p",
+            "--bare",
+            "--restricted",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--permission-prompts", "none",
+            "--output-format", "json",
+            # "" means no built-in tools at all.
+            "--tools", ",".join(tools),
+            "--settings", json.dumps(settings, separators=(",", ":")),
+        ]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
+        if json_schema is not None:
+            argv += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
+        if max_budget_usd:
+            argv += ["--max-budget-usd", f"{max_budget_usd:g}"]
         return argv
 
-    def env(self) -> dict:
-        """Return the extra environment (the API key) for the subprocess."""
-        return {"ANTHROPIC_API_KEY": self.api_key or ""}
+    def child_env(self, home: Path, tmpdir: Path) -> Dict[str, str]:
+        """
+        Build the *minimal* environment for the subprocess.
 
-    # --- process execution -------------------------------------------------------------
-    async def _run(self, rendered_prompt: str, repo_path: Path) -> str:
-        """Run the CLI with the prompt on stdin, inside the repo checkout; return stdout."""
-        environ = self._child_env()
-        argv = self.argv()
-        logger.debug("running %s (cwd=%s)", " ".join(argv), repo_path)
+        The agent runs over untrusted repository code, so it must not inherit this process's
+        secrets or the service user's real HOME (credentials, CLI config, plugins, memory).
+        """
+        env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+        env.update(
+            {
+                "HOME": str(home),
+                "TMPDIR": str(tmpdir),
+                "XDG_CONFIG_HOME": str(home / ".config"),
+                "XDG_CACHE_HOME": str(home / ".cache"),
+                "SHELL": "/bin/bash",
+                "ANTHROPIC_API_KEY": self.api_key or "",
+                # Strip credentials from the environment of every command the agent runs.
+                "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+                "DISABLE_AUTOUPDATER": "1",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            }
+        )
+        return env
+
+    async def run_agent(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        home: Path,
+        tmpdir: Path,
+        tools: Sequence[str],
+        settings: Dict[str, Any],
+        json_schema: Optional[Dict[str, Any]] = None,
+        timeout_s: float,
+        max_budget_usd: Optional[float] = None,
+        label: str = "agent",
+    ) -> AgentResult:
+        """Run one agent with ``prompt`` on stdin inside ``cwd`` and parse its JSON result."""
+        argv = self.build_argv(
+            tools=tools, settings=settings, json_schema=json_schema, max_budget_usd=max_budget_usd
+        )
+        logger.debug("[%s] launching claude (cwd=%s, tools=%s)", label, cwd, ",".join(tools) or "none")
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            cwd=str(repo_path),
+            cwd=str(cwd),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=environ,
+            env=self.child_env(home, tmpdir),
+            # Own process group, so a timeout kills the agent *and* every command it spawned.
+            start_new_session=True,
         )
-        stdout_b, stderr_b = await proc.communicate(rendered_prompt.encode("utf-8"))
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(prompt.encode("utf-8")), timeout=timeout_s
+            )
+        except asyncio.TimeoutError:
+            await self._kill_group(proc)
+            logger.warning("[%s] claude timed out after %ss; process group killed", label, timeout_s)
+            return AgentResult(False, None, "", 0.0, time.monotonic() - started, f"timeout after {timeout_s}s")
+        except BaseException:
+            # Cancellation (shutdown) or anything unexpected: never leave an agent running.
+            await self._kill_group(proc)
+            raise
+        finally:
+            # A finished CLI may still have stray descendants in its group; clean them up.
+            self._signal_group(proc, signal.SIGKILL)
+
+        duration = time.monotonic() - started
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
-        # A non-zero exit (or empty stdout) usually means auth/config failure; the caller can
-        # only see an unparseable response, so log the cause here where it's still visible. We
-        # surface the *tail* of stderr, not the head, so a leading session banner can't hide
-        # the real error.
-        if proc.returncode != 0:
-            logger.warning(
-                "claude CLI exited %s; stderr (tail): %s",
-                proc.returncode, _stderr_tail(stderr),
-            )
-        elif not stdout.strip():
-            logger.warning("claude CLI produced empty stdout; stderr (tail): %s", _stderr_tail(stderr))
-        return stdout
+        return self._parse(label, proc.returncode, stdout, stderr, duration, json_schema is not None)
 
-    def _child_env(self) -> dict:
-        """
-        Build a *minimal* environment for the subprocess.
+    # --- result parsing ----------------------------------------------------------------
+    @staticmethod
+    def _parse(
+        label: str, returncode: Optional[int], stdout: str, stderr: str, duration: float, want_structured: bool
+    ) -> AgentResult:
+        data: Any = None
+        try:
+            data = json.loads(stdout) if stdout.strip() else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict) or data.get("type") != "result":
+            # e.g. the sandbox refused to start (sandbox.failIfUnavailable) or auth failed:
+            # the CLI prints the reason on stderr and nothing parseable on stdout.
+            error = f"exit {returncode}; stderr: {_tail(stderr)}"
+            logger.warning("[%s] claude produced no result: %s", label, error)
+            return AgentResult(False, None, "", 0.0, duration, error)
 
-        The subprocess runs an autonomous agent over untrusted, third-party repository code,
-        so it must not inherit this process's secrets. We pass only a small allowlist needed
-        to run the CLI (PATH, HOME for its own auth/config, locale) plus the Anthropic API key.
-        """
-        passthrough = (
-            "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
-            "TMPDIR", "USER", "SHELL", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-        )
-        env = {k: os.environ[k] for k in passthrough if k in os.environ}
-        env.update(self.env())  # only the Anthropic API key
-        return env
+        cost = float(data.get("total_cost_usd") or 0.0)
+        text = str(data.get("result") or "")
+        structured = data.get("structured_output")
+        if data.get("is_error") or returncode != 0:
+            error = f"exit {returncode}; {data.get('subtype') or 'error'}: {_tail(text, 400)}"
+            logger.warning("[%s] claude run failed: %s", label, error)
+            return AgentResult(False, None, text, cost, duration, error)
+        if want_structured and not isinstance(structured, dict):
+            logger.warning("[%s] claude returned no structured output", label)
+            return AgentResult(False, None, text, cost, duration, "no structured output")
+        logger.info("[%s] claude finished in %.0fs (cost $%.2f)", label, duration, cost)
+        return AgentResult(True, structured if isinstance(structured, dict) else None, text, cost, duration)
+
+    # --- process cleanup ---------------------------------------------------------------
+    @staticmethod
+    def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    async def _kill_group(self, proc: asyncio.subprocess.Process) -> None:
+        self._signal_group(proc, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        self._signal_group(proc, signal.SIGKILL)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error("claude process %s did not exit after SIGKILL", proc.pid)

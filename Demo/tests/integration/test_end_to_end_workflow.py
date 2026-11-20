@@ -73,19 +73,24 @@ class TestCompleteWorkflow:
         )
         
         # Step 2: Mock evaluation results
+        # evaluate_groups returns one evaluation per member finding (a group's verdict is
+        # applied to every member).
         expected_evaluations = [
             FindingEvaluation(
-                finding_id=workflow_findings[0].str_id,
+                finding_id=workflow_findings[i].str_id,
                 is_valid=True,
                 severity=Severity.HIGH,
                 comment="Valid reentrancy vulnerability with high impact potential"
-            ),
+            )
+            for i in (0, 1)
+        ] + [
             FindingEvaluation(
-                finding_id=workflow_findings[2].str_id,
+                finding_id=workflow_findings[i].str_id,
                 is_valid=True,
                 severity=Severity.MEDIUM,
                 comment="Missing access control could allow unauthorized operations"
             )
+            for i in (2,)
         ]
         
         # Step 3: Run deduplication
@@ -108,10 +113,12 @@ class TestCompleteWorkflow:
             duplicate_relationships = dedup_result["deduplication"]["duplicate_relationships"]
         
         # Step 4: Run evaluation with grouping
-        with patch.object(FindingEvaluator, 'evaluate_findings_batch') as mock_evaluate_batch:
+        with patch.object(FindingEvaluator, 'evaluate_groups') as mock_evaluate_batch:
             # Mock batch evaluation to return expected results
             mock_evaluate_batch.return_value = expected_evaluations
             
+            # evaluate_groups returns (evaluations, findings that could not be evaluated)
+            mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
             evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
             eval_result = await evaluator.evaluate_all_findings(
                 "test-task",
@@ -121,12 +128,14 @@ class TestCompleteWorkflow:
             )
             
             # Verify evaluation results
-            assert eval_result["application_results"]["valid_count"] == 4
+            assert eval_result["application_results"]["valid_count"] == 3
             assert eval_result["application_results"]["disputed_count"] == 0
             assert eval_result["application_results"]["failed_count"] == 0
             
-            # Verify that findings were grouped correctly for evaluation
-            assert mock_evaluate_batch.call_count == 2
+            # One triage call per task, with the duplicate pair as one group and the rest alone
+            assert mock_evaluate_batch.call_count == 1
+            groups = mock_evaluate_batch.call_args[0][0]
+            assert sorted(len(g) for g in groups) == [1, 2]
 
     @pytest.mark.asyncio
     async def test_workflow_with_all_duplicates(self, workflow_findings, sample_task_cache, mock_mongodb):
@@ -156,7 +165,7 @@ class TestCompleteWorkflow:
             assert dedup_result["summary"]["duplicates_found"] == len(workflow_findings) - 1
             
             # Run evaluation - should only evaluate one group (all findings together)
-            with patch.object(FindingEvaluator, 'evaluate_findings_batch') as mock_evaluate_batch:
+            with patch.object(FindingEvaluator, 'evaluate_groups') as mock_evaluate_batch:
                 mock_evaluate_batch.return_value = [
                     FindingEvaluation(
                         finding_id=workflow_findings[0].str_id,
@@ -166,6 +175,8 @@ class TestCompleteWorkflow:
                     )
                 ]
                 
+                # evaluate_groups returns (evaluations, findings that could not be evaluated)
+                mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
                 evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
                 
                 # Get duplicate relationships from deduplication result
@@ -178,13 +189,11 @@ class TestCompleteWorkflow:
                     sample_task_cache
                 )
                 
-                # Should have called batch evaluation only once (all findings in one group)
+                # One triage call, with every finding in a single duplicate group
                 assert mock_evaluate_batch.call_count == 1
-                
-                # Should have evaluated all findings in the single batch
-                batch_call_args = mock_evaluate_batch.call_args[0]
-                evaluated_findings = batch_call_args[0]  # First argument is the findings list
-                assert len(evaluated_findings) == len(workflow_findings)
+                groups = mock_evaluate_batch.call_args[0][0]
+                assert len(groups) == 1
+                assert len(groups[0]) == len(workflow_findings)
 
     @pytest.mark.asyncio
     async def test_workflow_with_no_duplicates(self, workflow_findings, sample_task_cache, mock_mongodb):
@@ -207,7 +216,7 @@ class TestCompleteWorkflow:
             assert len(dedup_result["deduplication"]["duplicate_relationships"]) == 0
             
             # Run evaluation
-            with patch.object(FindingEvaluator, 'evaluate_findings_batch') as mock_evaluate_batch:
+            with patch.object(FindingEvaluator, 'evaluate_groups') as mock_evaluate_batch:
                 # Mock all findings as valid
                 mock_evaluations = [
                     FindingEvaluation(
@@ -219,6 +228,8 @@ class TestCompleteWorkflow:
                 ]
                 mock_evaluate_batch.return_value = mock_evaluations
                 
+                # evaluate_groups returns (evaluations, findings that could not be evaluated)
+                mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
                 evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
                 eval_result = await evaluator.evaluate_all_findings(
                     "test-task",
@@ -274,9 +285,11 @@ class TestCompleteWorkflow:
             )
             
             # Evaluation fails
-            with patch.object(FindingEvaluator, 'evaluate_findings_batch') as mock_evaluate_batch:
+            with patch.object(FindingEvaluator, 'evaluate_groups') as mock_evaluate_batch:
                 mock_evaluate_batch.side_effect = Exception("Evaluation API error")
                 
+                # evaluate_groups returns (evaluations, findings that could not be evaluated)
+                mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
                 evaluator = FindingEvaluator(batch_size=10, mongodb_client=mock_mongodb)
                 
                 with pytest.raises(Exception, match="Evaluation API error"):

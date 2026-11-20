@@ -24,6 +24,7 @@ from app.models.finding_input import FindingInput
 from app.database.mongodb_handler import mongodb
 from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
+from app.core.triage_sandbox import SandboxUnavailable, harden_service_process
 from app.task_utils import download_repository, read_and_concatenate_files
 import logging
 from app.types import TaskCache
@@ -120,15 +121,18 @@ async def process_task_scheduled(task_id: str):
             return
         
         # Process the task findings
-        await process_task(task_id)
-        
+        if not await process_task(task_id):
+            # Not marked as processed, so it can be retried via /tasks/{task_id}/process.
+            logger.error(f"Scheduled processing of task {task_id} did not complete; not marking it processed")
+            return
+
         # Mark this task as processed
         current_time = datetime.now(timezone.utc)
         await mongodb.set_metadata(processed_key, {
             "processed_at": current_time,
             "scheduled_processing": True
         })
-        
+
         logger.info(f"Marked task {task_id} as processed via scheduled job")
         
     except Exception as e:
@@ -139,6 +143,10 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
     # Startup
     try:
+        # Triage agents run untrusted code as this user; keep our /proc (environment with the
+        # MongoDB URL and API keys) unreadable to them.
+        harden_service_process()
+
         await mongodb.connect()
         logger.info("✅ Connected to MongoDB")
         
@@ -382,33 +390,79 @@ def format_finding(finding: FindingDB) -> Dict[str, Any]:
         "created_at": finding.created_at.isoformat()
     }
 
-async def process_task(task_id: str):
+async def revert_to_pending(task_id: str, findings: List[FindingDB]) -> None:
+    """
+    Make findings retryable after their evaluation could not run: deduplication already moved
+    them off PENDING, so put them back (and drop the dedup grouping, which the retry redoes).
+    """
+    now = datetime.now(timezone.utc)
+    for finding in findings:
+        try:
+            await mongodb.update_finding(task_id, finding.str_id, {
+                "status": Status.PENDING,
+                "duplicateOf": None,
+                "deduplication_comment": None,
+                "evaluated_severity": None,
+                "evaluation_comment": None,
+                "updated_at": now,
+            })
+        except Exception as e:
+            logger.error(f"Could not reset finding {finding.str_id} of task {task_id} to PENDING: {e}")
+    if findings:
+        logger.warning(f"Reset {len(findings)} finding(s) of task {task_id} to PENDING for a retry")
+
+
+def triage_preflight(task_id: str) -> Optional[bool]:
+    """
+    Check the evaluation host before any finding is modified.
+
+    Returns whether triage agents may run PoCs, or ``None`` when the task must not be processed
+    now (PoC sandbox required but unavailable, or misconfiguration): the findings then stay
+    PENDING and the task can be retried once the host is fixed.
+    """
+    try:
+        return evaluator.preflight()
+    except (SandboxUnavailable, ValueError) as e:
+        logger.error(f"Triage preflight failed for task_id: {task_id}; not processing it: {e}")
+        return None
+
+
+async def process_task(task_id: str) -> bool:
     """
     Process all findings for a task that has ended.
     This function is called automatically when a task deadline passes.
-    Uses the Gemini-based deduplication and batch evaluation system.
-    
+    Uses the Gemini-based deduplication and the findings-triage evaluation.
+
     Args:
         task_id: Task identifier for the ended task
+
+    Returns:
+        True when the task was fully processed (or had nothing to process); False when it
+        should be retried.
     """
     try:
         logger.info(f"Processing task findings for task_id: {task_id}")
-        
+
         # Get all pending task findings for this task
         pending_findings = await mongodb.get_findings(task_id=task_id, status=Status.PENDING)
-        
+
         if not pending_findings:
             logger.info(f"No pending task findings found for task_id: {task_id}")
-            return
-        
+            return True
+
         logger.info(f"Found {len(pending_findings)} pending findings for task_id: {task_id}")
-        
+
         # Fetch task data with repository download
         task_cache = await fetch_task_data(task_id)
         if not task_cache:
             logger.error(f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
-            return
-        
+            return False
+
+        # Step 0: make sure the triage can run *before* deduplication changes any status.
+        poc_enabled = triage_preflight(task_id)
+        if poc_enabled is None:
+            return False
+
         # Step 1: Identify duplicates
         logger.info(f"Starting deduplication for task_id: {task_id}")
 
@@ -421,19 +475,38 @@ async def process_task(task_id: str):
             f"{dedup_results['summary']['duplicates_found']} duplicates"
         )
 
-        # Step 2: Re-fetch pending findings after deduplication to get updated statuses
-        deduplicated_findings = await mongodb.get_findings(task_id=task_id)
+        # Step 2: Re-fetch this run's findings after deduplication to get updated statuses
+        # (only the ones that were pending: on a retry, already-judged findings stay as they are)
+        pending_ids = {f.str_id for f in pending_findings}
+        deduplicated_findings = [f for f in await mongodb.get_findings(task_id=task_id) if f.str_id in pending_ids]
         logger.info(f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}")
         
-        # Step 3: Evaluate findings in batches, keeping duplicates together
-        logger.info(f"Starting batch evaluation for task_id: {task_id}")
+        # Step 3: Evaluate findings with the triage pipeline, keeping duplicates together
+        logger.info(f"Starting triage evaluation for task_id: {task_id}")
 
-        evaluation_results = await evaluator.evaluate_all_findings(
-            task_id,
-            deduplicated_findings,
-            duplicate_relationships,
-            task_cache
-        )
+        try:
+            evaluation_results = await evaluator.evaluate_all_findings(
+                task_id,
+                deduplicated_findings,
+                duplicate_relationships,
+                task_cache,
+                poc_enabled=poc_enabled,
+            )
+        except Exception as e:
+            logger.error(f"Evaluation could not run for task_id: {task_id}; no verdicts applied or posted: {e}")
+            await revert_to_pending(task_id, pending_findings)
+            return False
+
+        failed_findings = evaluation_results.get("failed_findings") or []
+        if failed_findings:
+            # Verdicts for the other findings are kept; these are retried later. Nothing is
+            # posted until the whole task has been evaluated.
+            await revert_to_pending(task_id, failed_findings)
+            logger.error(
+                f"{len(failed_findings)} finding(s) of task_id: {task_id} could not be evaluated; "
+                f"task left unprocessed for a retry (POST /tasks/{task_id}/process)"
+            )
+            return False
 
         logger.info(
             f"Evaluation completed for task_id: {task_id}: "
@@ -483,14 +556,17 @@ async def process_task(task_id: str):
                         f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
                         f"Failed: {evaluation_results['application_results']['failed_count']}, "
                         f"Total: {len(pending_findings)}")
-            
+
         except Exception as post_error:
             logger.error(f"Error posting results to backend for task_id: {task_id}: {str(post_error)}")
-            
+        # Verdicts are in the database; a failed post can be redone via /tasks/{task_id}/post.
+        return True
+
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"Error during task processing for task_id: {task_id}: {str(e)}")
         logger.error(f"Traceback for task_id: {task_id}: {error_trace}")
+        return False
 
 async def process_task_for_agent(task_id: str, agent_id: str):
     """
@@ -515,6 +591,11 @@ async def process_task_for_agent(task_id: str, agent_id: str):
             logger.error(f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context.")
             return
 
+        # Make sure the triage can run before deduplication changes any status.
+        poc_enabled = triage_preflight(task_id)
+        if poc_enabled is None:
+            return
+
         # Deduplicate only this agent's pending findings
         logger.info(f"Starting deduplication for task_id: {task_id}, agent_id: {agent_id}")
         dedup_results = await deduplicator.process_findings(task_id, pending_findings, task_cache)
@@ -525,20 +606,37 @@ async def process_task_for_agent(task_id: str, agent_id: str):
             f"{dedup_results['summary']['duplicates_found']} duplicates"
         )
 
-        # Re-fetch findings for this agent after deduplication
-        deduplicated_findings = await get_latest_findings(task_id, agent_id)
+        # Re-fetch this run's findings for this agent after deduplication
+        pending_ids = {f.str_id for f in pending_findings}
+        deduplicated_findings = [f for f in await get_latest_findings(task_id, agent_id) if f.str_id in pending_ids]
         logger.info(
             f"Re-fetched {len(deduplicated_findings)} deduplicated findings for task_id: {task_id}, agent_id: {agent_id}"
         )
 
         # Evaluate only this agent's findings
         logger.info(f"Starting evaluation for task_id: {task_id}, agent_id: {agent_id}")
-        evaluation_results = await evaluator.evaluate_all_findings(
-            task_id,
-            deduplicated_findings,
-            duplicate_relationships,
-            task_cache
-        )
+        try:
+            evaluation_results = await evaluator.evaluate_all_findings(
+                task_id,
+                deduplicated_findings,
+                duplicate_relationships,
+                task_cache,
+                poc_enabled=poc_enabled,
+            )
+        except Exception as e:
+            logger.error(
+                f"Evaluation could not run for task_id: {task_id}, agent_id: {agent_id}; no verdicts applied: {e}"
+            )
+            await revert_to_pending(task_id, pending_findings)
+            return
+        failed_findings = evaluation_results.get("failed_findings") or []
+        if failed_findings:
+            await revert_to_pending(task_id, failed_findings)
+            logger.error(
+                f"{len(failed_findings)} finding(s) of task_id: {task_id}, agent_id: {agent_id} could not be "
+                "evaluated and were reset to PENDING; nothing posted"
+            )
+            return
         logger.info(
             f"Evaluation completed for task_id: {task_id}, agent_id: {agent_id}: "
             f"{evaluation_results['application_results']['valid_count']} valid, "
@@ -923,10 +1021,14 @@ async def trigger_task_processing(
             }
         
         logger.info(f"Manual task processing triggered for task: {task_id} with {len(pending_findings)} pending findings")
-        
+
         # Process the task findings
-        await process_task(task_id)
-        
+        if not await process_task(task_id):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Task {task_id} could not be processed (see server logs); it was not marked processed and can be retried",
+            )
+
         # Mark this task as processed
         current_time = datetime.now(timezone.utc)
         await mongodb.set_metadata(processed_key, {

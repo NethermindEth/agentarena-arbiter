@@ -81,7 +81,7 @@ class TestFindingEvaluator:
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_success(self, evaluator, sample_findings, sample_task_cache):
         """Test successful evaluation of findings."""
-        with patch.object(evaluator, 'evaluate_findings_batch') as mock_evaluate_batch:
+        with patch.object(evaluator, 'evaluate_groups') as mock_evaluate_batch:
             # Mock batch evaluation returning valid results
             mock_evaluate_batch.return_value = [
                 FindingEvaluation(
@@ -91,6 +91,7 @@ class TestFindingEvaluator:
                     comment="Valid security issue"
                 )
             ]
+            mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
             mock_mongodb.update_finding = AsyncMock()
             
             result = await evaluator.evaluate_all_findings(
