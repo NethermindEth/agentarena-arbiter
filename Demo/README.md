@@ -1,9 +1,8 @@
 # Workflow
 ## Submission Process
 
-- When a new finding is submitted, the system adds these additional fields:
-    - **status** (initialized as `Status.PENDING`)
-    - **evaluation_comment** (initially empty)
+- Agents submit findings to the AgentArena backend, not to the arbiter. The backend stores each one
+  as `Status.PENDING`, and the arbiter reads them from the backend at the task's deadline.
 
 ## Self-Deduplication Process
 
@@ -47,9 +46,9 @@ per unit:  Analyst ─ code trace + PoC in its own sandbox
   follows `TRIAGE_INFORMATIONAL_POLICY`: by default it counts as valid `Info` only when the judge
   says a developer would change code because of it, otherwise it is disputed.
 - No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
-  verdict: its findings go back to `PENDING`, nothing is posted, and the task is not marked
-  processed; verdicts for the other units are kept, so `POST /tasks/{task_id}/process`
-  re-evaluates only the leftovers. If the sandbox preflight fails, nothing is touched at all.
+  verdict; the run then posts nothing and leaves the task unmarked, so the backend is unchanged
+  and `POST /tasks/{task_id}/process` judges the whole task again. If the sandbox preflight
+  fails, the run stops before downloading the repository or calling any model.
 - Cost: 4 agents per unit plus one build agent per task, each capped by
   `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` run at once across the
   whole service. Finding titles/descriptions are capped before they reach any prompt.
@@ -91,54 +90,65 @@ Use a dedicated, spend-limited Anthropic key for `CLAUDE_API_KEY`.
 ## Setup and Installation
 
 ### Prerequisites
-- Python 3.13+
-- MongoDB
-- Anthropic API key (`CLAUDE_API_KEY`)
-- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code@2.1.328`) — the
-  Docker image below bundles it
-- For PoC execution: `bubblewrap`, `socat` and the project toolchains (e.g. Foundry) — see
+- [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
+- Anthropic (`CLAUDE_API_KEY`) and Gemini API keys
+- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code@2.1.328`); the
+  Docker image bundles it
+- For PoC execution: `bubblewrap`, `socat` and the project toolchains (e.g. Foundry); see
   "Host requirements" above
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
 2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
-3. Configure MongoDB connection string (defaults to localhost if not specified)
+3. Set the `BACKEND_*` values to the AgentArena backend the arbiter judges for
 4. Set desired similarity threshold (default: 0.8)
 
 ### Installation
 
 #### Local Setup
 ```bash
-# Navigate to Demo directory and activate virtual environment
+# Navigate to Demo directory and install the locked dependencies into Demo/.venv
 cd Demo
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-python -m pip install -r requirements.txt
+uv sync
 
 # Start Application
-python -m app.main
+uv run python -m app.main
 ```
+
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`; after
+changing a dependency, run `uv lock` and commit both files. The test tools, Ruff
+and Pyright are in the `dev` group, which `uv sync` installs as well.
+
+## Development checks
+
+Ruff and Pyright run in CI (`.github/workflows/ci-tests.yaml`, jobs `lint` and
+`typecheck`) with the versions locked in `uv.lock`; `pyproject.toml` holds their
+settings. Run them locally the same way:
+
+```bash
+uv run ruff check .          # lint; add --fix to apply the safe fixes
+uv run ruff format .         # format at 100 columns
+uv run pyright               # type check (downloads Node on first run if absent)
+```
+
+`.pre-commit-config.yaml` at the repository root runs the same three on commit;
+its header has the one-time setup.
 
 ## Running Tests
 
 ### 🚀 Running Tests
 
 ```bash
-# Install test dependencies
-pip install -r requirements-test.txt
-
-# Run all tests
-python -m pytest
+# Run all tests (uv sync already installed the test tools)
+uv run pytest
 
 # Run with coverage report
-python -m pytest tests/ --cov=app --cov-report=term-missing
+uv run pytest --cov=app --cov-report=term-missing
 ```
 
-### Prerequisites for Testing
-- MongoDB connection (local or Atlas)
-- Gemini API key (for deduplication tests)
-- Claude API key (for evaluation tests)
+Settings are read at import time, so the required variables must be set;
+placeholders do, since the LLM and backend calls are mocked.
+`.github/workflows/ci-tests.yaml` lists them.
 
 ### 🧪 Writing Tests
 
@@ -148,7 +158,7 @@ Test individual components in isolation with mocks:
 ```python
 @pytest.mark.asyncio
 async def test_process_findings_no_duplicates(deduplicator, sample_findings):
-    with patch('app.core.deduplication.find_duplicates_structured') as mock:
+    with patch("app.core.deduplication.find_duplicates_structured") as mock:
         mock.return_value = []
         result = await deduplicator.process_findings("task", sample_findings, cache)
         assert result["summary"]["duplicates_found"] == 0
@@ -158,8 +168,8 @@ async def test_process_findings_no_duplicates(deduplicator, sample_findings):
 Test components working together:
 
 ```python
-def test_api_endpoint_success(client):
-    response = client.post("/process_findings", headers={"X-API-Key": "test"}, json=data)
+def test_get_task_findings_success(client):
+    response = client.get("/tasks/task-1/findings", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
 ```
 
@@ -167,16 +177,16 @@ def test_api_endpoint_success(client):
 
 ```bash
 # Run specific test
-python -m pytest tests/unit/test_models.py::TestFindingDB::test_creation
+uv run pytest tests/unit/test_models.py::TestFindingDB::test_creation
 
 # Stop on first failure  
-python -m pytest -x
+uv run pytest -x
 
 # Drop to debugger on failure
-python -m pytest --pdb
+uv run pytest --pdb
 
 # Show full traceback
-python -m pytest --tb=long
+uv run pytest --tb=long
 ```
 
 #### Docker Setup
@@ -194,32 +204,12 @@ docker-compose logs -f
 
 The API will be available at http://localhost:8004.
 
-**Note:** When running with Docker, you need to configure the MongoDB connection string in your `.env` file. This allows you to use either a local MongoDB instance or a MongoDB Atlas cluster.
-
 ### Stopping Docker Services
 ```bash
 docker-compose down
 ```
 
 ## API Usage
-
-### Submit Findings
-```bash
-curl -X POST http://localhost:8004/process_findings \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
-  -d '{
-    "task_id": "test-task-1",
-    "findings": [
-      {
-        "title": "Integer Overflow",
-        "description": "Function X is vulnerable to integer overflow",
-        "severity": "HIGH",
-        "file_paths": ["contracts/Contract.sol", "contracts/Token.sol"]
-      }
-    ]
-  }'
-```
 
 ### Retrieve Findings
 ```bash
@@ -228,17 +218,13 @@ curl http://localhost:8004/tasks/test-task-1/findings | python -m json.tool
 
 ## Data Models
 
-### Finding Input Format
+### Finding
 ```python
 class Finding(BaseModel):
     title: str
     description: str
     severity: Severity  # Enum: HIGH, MEDIUM, LOW, or INFO
     file_paths: List[str]
-
-class FindingInput(BaseModel):
-    task_id: str
-    findings: List[Finding]
 ```
 
 ### Finding in Database
@@ -257,13 +243,12 @@ class FindingDB(Finding):
 ## Configuration
 The application requires the following environment variables:
 
-- `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
 - `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-5-5)
 - `CLAUDE_EFFORT`: Effort passed to `claude --effort` (default: high)
 - `CLAUDE_CMD`: Claude Code CLI binary name/path (default: claude)
-- `TRIAGE_POC_MODE`: `required` (default), `optional` or `off` — see Final Evaluation
-- `TRIAGE_INFORMATIONAL_POLICY`: `actionable` (default), `valid` or `disputed` — how INFORMATIONAL
+- `TRIAGE_POC_MODE`: `required` (default), `optional` or `off`; see Final Evaluation
+- `TRIAGE_INFORMATIONAL_POLICY`: `actionable` (default), `valid` or `disputed`: how INFORMATIONAL
   rulings are recorded (see Final Evaluation)
 - `TRIAGE_WORK_DIR`: sandboxes + PoC evidence; must be outside HOME, the service dir and task
   data (default: `<system tmp>/arbiter-triage-<uid>`; the image uses `/var/lib/arbiter-triage`)
@@ -274,17 +259,18 @@ The application requires the following environment variables:
   commands may read (local runs, e.g. `~/.foundry`); never list directories with credentials
 - `TRIAGE_KEEP_SANDBOXES`: keep per-agent sandboxes after a run (debugging)
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
-- `GEMINI_MODEL`: Gemini model version to use (default: gemini-2.5-pro)
-- `GEMINI_TEMPERATURE`: Temperature for Gemini AI model (0.0-1.0, default: 0.0)
-- `GEMINI_MAX_TOKENS`: Maximum tokens for Gemini AI model (default: 20000)
+- `GEMINI_MODEL`: Gemini model version to use (default: `gemini-3.5-flash`)
+- `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
+- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`). Used only for thinking models (e.g. `gemini-3.5-flash`); ignored with a warning for other Gemini models.
+- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (e.g. `gemini-3.5-flash`).
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
-- `BACKEND_FINDINGS_ENDPOINT`: Endpoint for posting findings to AgentArena backend
-- `BACKEND_SUBMISSIONS_ENDPOINT`: Endpoint for posting submissions to AgentArena backend
+- `BACKEND_FINDINGS_ENDPOINT`: The backend's `/api/insert-findings` endpoint. A run's only write: once deduplication and evaluation have decided every finding in memory, the arbiter posts all of the task's findings with their verdicts in one request, so a run that fails earlier leaves the backend unchanged and a retry judges all the findings again
 - `BACKEND_TASK_REPOSITORY_ENDPOINT`: Endpoint for retrieving task repositories from AgentArena backend
+- `BACKEND_APPROVED_TASKS_ENDPOINT`: The backend's `/api/arbiter/approved-tasks` endpoint, which lists the approved tasks to schedule; called with `X-API-Key: BACKEND_API_KEY`
+- `BACKEND_TASKS_ENDPOINT`: The backend's `/api/arbiter/tasks` endpoint, called with the same `X-API-Key` header. The arbiter reads one task at `/{task_id}` and reads its findings at `GET /{task_id}/findings` (query filters `agent_id`, `since_timestamp`). It keeps its processed-task marker in the task's metadata, read with `GET /{task_id}/metadata` and replaced with `PUT /{task_id}/metadata`; the arbiter has no database of its own.
 
 ## API Endpoints
 
-- `POST /process_findings`: Submit batch of findings for processing, deduplication, and evaluation
 - `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task

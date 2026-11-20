@@ -1,39 +1,40 @@
 """
 Unit tests for evaluation logic.
 """
-import pytest
-from unittest.mock import AsyncMock, patch
 
-from tests.conftest import mock_mongodb
-from app.core.evaluation import FindingEvaluation
-from app.models.finding_db import Severity
+from unittest.mock import patch
+
+import pytest
+
+from app.core.evaluation import FindingEvaluation, FindingEvaluator
 from app.core.gemini_model import DuplicateFinding
-from app.core.evaluation import FindingEvaluator
-from app.models.finding_db import Status
+from app.models.finding_db import Severity, Status
 
 
 class TestFindingEvaluator:
     """Test FindingEvaluator class."""
-    
+
     @pytest.fixture
     def evaluator(self):
-        """Create FindingEvaluator instance.""" 
-        return FindingEvaluator(batch_size=5, mongodb_client=mock_mongodb)
-    
+        """Create FindingEvaluator instance."""
+        return FindingEvaluator(batch_size=5)
+
     def test_initialization(self, evaluator):
         """Test evaluator initializes with correct batch size."""
         assert evaluator.batch_size == 5
-    
+
     def test_group_findings_for_evaluation_no_duplicates(self, evaluator, sample_findings):
         """Test grouping findings when there are no duplicates."""
         duplicate_relationships = []
-        
-        related_groups, individual_groups = evaluator.group_findings_for_evaluation(sample_findings, duplicate_relationships)
-        
+
+        related_groups, individual_groups = evaluator.group_findings_for_evaluation(
+            sample_findings, duplicate_relationships
+        )
+
         # With no duplicates, all findings should have been batched together in an individual group
         assert len(individual_groups) == 1
         assert len(individual_groups[0]) == len(sample_findings)
-    
+
     def test_group_findings_for_evaluation_with_duplicates(self, evaluator, sample_findings):
         """Test grouping findings when there are duplicates."""
         # Mock duplicate relationships (findings 0 and 1 are duplicates)
@@ -41,11 +42,13 @@ class TestFindingEvaluator:
             DuplicateFinding(
                 findingId=sample_findings[1].str_id,
                 duplicateOf=sample_findings[0].str_id,
-                explanation="Both are reentrancy issues"
+                explanation="Both are reentrancy issues",
             )
         ]
-        
-        related_groups, individual_groups = evaluator.group_findings_for_evaluation(sample_findings, duplicate_relationships)
+
+        related_groups, individual_groups = evaluator.group_findings_for_evaluation(
+            sample_findings, duplicate_relationships
+        )
 
         # Should have at least one group with multiple findings (the duplicates)
         has_group_with_multiple = any(len(group) > 1 for group in related_groups)
@@ -61,49 +64,89 @@ class TestFindingEvaluator:
         assert len(individual_groups) == 1
         assert len(individual_groups[0]) == 1
         assert individual_groups[0][0] == sample_findings[2]
-    
+
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_empty_list(self, evaluator, sample_task_cache):
         """Test evaluating empty findings list."""
-        result = await evaluator.evaluate_all_findings(
-            "test-task",
-            [],
-            [],
-            sample_task_cache
-        )
-        
+        result = await evaluator.evaluate_all_findings([], [], sample_task_cache)
+
         assert result is not None
         assert "application_results" in result
         assert result["application_results"]["valid_count"] == 0
         assert result["application_results"]["disputed_count"] == 0
         assert result["application_results"]["failed_count"] == 0
-    
+
     @pytest.mark.asyncio
-    async def test_evaluate_all_findings_success(self, evaluator, sample_findings, sample_task_cache):
+    async def test_evaluate_all_findings_success(
+        self, evaluator, sample_findings, sample_task_cache
+    ):
         """Test successful evaluation of findings."""
-        with patch.object(evaluator, 'evaluate_groups') as mock_evaluate_batch:
-            # Mock batch evaluation returning valid results
-            mock_evaluate_batch.return_value = [
-                FindingEvaluation(
-                    finding_id=sample_findings[0].str_id,
-                    is_valid=True,
-                    severity=Severity.HIGH,
-                    comment="Valid security issue"
-                )
-            ]
-            mock_evaluate_batch.return_value = (mock_evaluate_batch.return_value, [])
-            mock_mongodb.update_finding = AsyncMock()
-            
+        with patch.object(evaluator, "evaluate_groups") as mock_evaluate_groups:
+            # The triage returns (evaluations, findings that could not be evaluated)
+            mock_evaluate_groups.return_value = (
+                [
+                    FindingEvaluation(
+                        finding_id=sample_findings[0].str_id,
+                        is_valid=True,
+                        severity=Severity.HIGH,
+                        comment="Valid security issue",
+                    )
+                ],
+                [],
+            )
+
             result = await evaluator.evaluate_all_findings(
-                "test-task",
                 sample_findings[:1],  # Just test with one finding
                 [],
-                sample_task_cache
+                sample_task_cache,
             )
-            
+
             assert result["application_results"]["valid_count"] == 1
             assert result["application_results"]["disputed_count"] == 0
             assert result["application_results"]["failed_count"] == 0
-            
-            # Verify database update was called
-            mock_mongodb.update_finding.assert_called()
+            assert result["failed_findings"] == []
+
+            # The verdict is set on the finding itself
+            assert sample_findings[0].evaluated_severity == Severity.HIGH
+            assert sample_findings[0].evaluation_comment == "Valid security issue"
+
+    def test_apply_evaluation_results_disputes_invalid_findings(self, evaluator, sample_findings):
+        """An invalid verdict disputes the finding and keeps its comment and severity."""
+        finding = sample_findings[0]
+        finding.status = Status.UNIQUE_VALID
+
+        result = evaluator.apply_evaluation_results(
+            [finding],
+            [
+                FindingEvaluation(
+                    finding_id=finding.str_id,
+                    is_valid=False,
+                    severity=Severity.LOW,
+                    comment="Not exploitable",
+                )
+            ],
+        )
+
+        assert result["disputed_count"] == 1
+        assert finding.status == Status.DISPUTED
+        assert finding.evaluated_severity == Severity.LOW
+        assert finding.evaluation_comment == "Not exploitable"
+
+    def test_apply_evaluation_results_unknown_finding_is_failed(self, evaluator, sample_findings):
+        """A verdict for a finding that was not evaluated changes nothing and counts as failed."""
+        sample_findings[0].evaluation_comment = None
+
+        result = evaluator.apply_evaluation_results(
+            sample_findings[:1],
+            [
+                FindingEvaluation(
+                    finding_id="000000000000000000000000",
+                    is_valid=False,
+                    severity=Severity.LOW,
+                    comment="?",
+                )
+            ],
+        )
+
+        assert result["failed_count"] == 1
+        assert sample_findings[0].evaluation_comment is None

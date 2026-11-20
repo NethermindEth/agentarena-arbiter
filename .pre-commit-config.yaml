@@ -1,0 +1,45 @@
+# Git pre-commit hooks. One-time setup per clone:
+#   install pre-commit once per machine, any of:
+#     brew install pre-commit      (macOS)
+#     pipx install pre-commit      (any OS)
+#     uv tool install pre-commit   (any OS)
+#   pre-commit install
+#   (cd Demo && uv sync)
+#
+# Hooks use the tool versions pinned in Demo/uv.lock, so they agree with CI. The
+# Ruff hooks run only on staged files and fix what they can; when they change a
+# file the commit stops so the fix can be reviewed and re-staged. pyright checks
+# the whole application and changes no file.
+repos:
+  - repo: local
+    hooks:
+      # Ruff finds Demo/pyproject.toml by walking up from each staged path, so the
+      # root-relative paths pre-commit passes need no adjusting.
+      - id: ruff
+        name: Ruff
+        entry: uv run --project Demo --locked ruff check --fix
+        language: system
+        files: ^Demo/.*\.py$
+        # Ruff parallelises itself; concurrent batches would also race to
+        # create Demo/.venv on a fresh checkout.
+        require_serial: true
+
+      # After ruff, so the lines its fixes write are formatted too.
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --project Demo --locked ruff format
+        language: system
+        files: ^Demo/.*\.py$
+        require_serial: true
+
+      # Pyright checks the whole application, not the staged files: a change in
+      # one file can break a caller in another, and a change to its settings or
+      # to a locked package can break any file. It finds [tool.pyright] by
+      # walking up from its working directory, not from the checked files, so it
+      # runs in Demo/ rather than with --project like Ruff.
+      - id: pyright
+        name: Pyright
+        entry: uv run --directory Demo --locked pyright
+        language: system
+        files: ^Demo/(.*\.py|pyproject\.toml|uv\.lock)$
+        pass_filenames: false

@@ -1,0 +1,30 @@
+name: Build and Push Prod Images
+
+on:
+  workflow_call:
+    inputs:
+      version_tag:
+        description: "Version tag for the release (e.g., v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+  contents: read
+
+jobs:
+  build-and-push-arbiter-prod:
+    name: Build and Push Arbiter Image
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-jfrog.yaml@ac05603195977b43df9e6826fe1fabc5d5c18d6c # v5.3.0
+    with:
+      repo_name: kyoto-oci-local-prod
+      image_name: agentarena-arbiter
+      platforms: "linux/amd64"
+      context: ./Demo
+      dockerfile_path: ./Demo/Dockerfile
+      cache_from: type=gha,scope=agentarena-arbiter
+      cache_to: type=gha,scope=agentarena-arbiter,mode=max
+      additional_tags: ${{ inputs.version_tag }}
+      push: true

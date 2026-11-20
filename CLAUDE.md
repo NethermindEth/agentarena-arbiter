@@ -1,0 +1,115 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this
+repository.
+
+## Project Overview
+
+The AgentArena arbiter is the competition's judge. Agents submit their findings to the AgentArena
+backend, which stores them; at each task's deadline the arbiter groups duplicates with Gemini,
+judges validity and severity with Claude, and writes the verdicts back to the backend. It reads
+tasks and findings from, and writes verdicts and its own per-task metadata through, the
+backend's `/api/arbiter` routes; it has no database of its own, takes no agent traffic and never
+reads the backend's database. The service lives in `Demo/app/`; the repository root holds the
+docs and CI.
+`Demo/README.md` documents the endpoints, the data model and the configuration; the root
+`README.md` is older and partly describes a design that does not exist.
+
+## Development Commands
+
+```bash
+cd Demo
+uv sync                  # .venv from uv.lock; after editing pyproject.toml: uv lock, commit both
+cp .env.example .env     # then fill in values
+uv run python -m app.main          # serves on :8004 with reload
+uv run pytest                      # needs the required settings, placeholders are enough
+uv run ruff check .      # lint (add --fix to autofix)
+uv run ruff format .     # format
+uv run pyright           # type check; needs Node, downloaded on first run if absent
+pre-commit install       # once per clone, from the repository root; runs the same locked tools
+```
+
+Settings are read when `app.config` is imported and the required ones have no defaults, so the
+tests need the four `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`, `CLAUDE_API_KEY` and
+`GEMINI_API_KEY` set; placeholders do, since every outbound call is mocked. See the `tests` job
+in `.github/workflows/ci-tests.yaml`.
+
+## Architecture
+
+- **`app/main.py`**: the HTTP surface (the backend-key endpoints under `/tasks/{task_id}/...`
+  and `/schedule-task/{task_id}`), the APScheduler job per approved task, and the deadline
+  processing that downloads the repository, runs both LLM stages and posts the verdicts.
+- **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
+  groups findings that describe the same bug.
+- **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
+  batch for validity and severity.
+- **`app/backend_tasks.py`**: reads tasks from the backend's `/api/arbiter/approved-tasks` and
+  `/api/arbiter/tasks/{task_id}`.
+- **`app/backend_metadata.py`**: reads and replaces the arbiter's free-form per-task metadata at
+  `/api/arbiter/tasks/{task_id}/metadata`, which holds the processed-task marker; a task is
+  marked only when its run completes.
+- **`app/backend_findings.py`**: reads a task's findings through the backend's
+  `GET /api/arbiter/tasks/{task_id}/findings` (filtered by `agent_id`, `since_timestamp`) and
+  posts the judged findings in one request to `BACKEND_FINDINGS_ENDPOINT`. Both LLM stages set
+  verdicts on the in-memory findings only; that post is the run's only write, so a failed run
+  leaves the backend unchanged. `app/backend_api.py` holds the URL, header and client pieces the
+  backend clients share.
+- **`app/task_utils.py`**: downloads and extracts the task repository from the backend.
+- **`app/config.py`**: pydantic-settings; `BACKEND_API_KEY` is the shared secret in both
+  directions.
+
+## Deployment
+
+CI/CD via GitHub Actions; the cluster side (ArgoCD tracking `latest` by digest) is outside this
+repository.
+- Required checks on `staging`: `tests`, `lint`, `typecheck` (`ci-tests.yaml`) and
+  `build-arbiter-staging / Build and publish Docker image` (`push-jfrog-staging.yaml`). On `main`:
+  `build-arbiter-prod / Build and publish Docker image`. A workflow job only blocks merges once it
+  is also listed in the branch rulesets in the repository settings; that step is manual.
+- The image builds from `Demo/Dockerfile` through the shared `docker-build-push-jfrog` workflow
+  (v5.1.1) for `linux/amd64`: a uv-built environment on the official Python image, copied onto a
+  distroless runtime with no shell. An image push is gated by a JFrog Xray scan (watch
+  `iac-all-repos`): a Critical vulnerability or a malicious package fails the job before the push.
+  Pull requests and the build-only `main` run push nothing, so they are not scanned. A waiver is an
+  Xray ignore rule scoped to `xray-scan-agentarena-arbiter`, owned by the platform team.
+- Push to `staging` → builds and pushes `kyoto-oci-local-staging/agentarena-arbiter`.
+- Push to `main` → release-please opens or updates the release PR; merging it tags the release and
+  pushes the prod image as `vX.Y.Z` and `latest`. The version also lands in `Demo/app/main.py`. To
+  rebuild a release, re-run its `Build and Push images on jfrog prod` run from the Actions tab; the
+  re-run scans against today's Xray data, so a newly reported Critical needs a waiver or a new
+  release.
+- `staging` is the default branch and `main` is the release branch. `staging` merges by squash with
+  the PR title as the commit title, so PR titles are Conventional Commits; `main` takes merge
+  commits only (the `staging` to `main` promotion and the release PR). Dependabot opens version and
+  security PRs against `staging`; see `.github/dependabot.yml`.
+- AI code review (`.github/workflows/code-review.yaml`, advisory) runs on a member's PR comment:
+  `/review` runs both Qodo PR-Agent (shared `ai-review-command` workflow from
+  `NethermindEth/github-workflows`) and Claude Code; `/improve`, `/describe` and `/ask "..."` run
+  PR-Agent alone, `@review-pls` Claude alone. Both reach the org LiteLLM gateway over Tailscale
+  with a key from Infisical (`INFISICAL_IDENTITY_ID`, `INFISICAL_PROJECT_ID` secrets). Comment
+  runs use staging's copy of the workflow, and the Tailscale identities accept only those runs,
+  so a change to the workflow is tried with `/review` after it merges.
+- `Demo/pyproject.toml` keeps `version = "0.0.0"` on purpose: uv.lock records it, and a release
+  tool bumping it without `uv lock` would break every `uv sync --locked`.
+
+## Notes on expected good practices
+
+- Ruff checks the Python files against the rules in `Demo/pyproject.toml`. `ruff format` formats
+  them at 100 columns and owns code wrapping and quotes; do not re-flow code by hand. `E501` is off
+  because the formatter cannot wrap strings, URLs and comments; wrap those at 100 yourself.
+- A deliberate exception to a Ruff rule is a `# noqa: CODE  reason` on the reported line, naming
+  the constraint that makes the rule not apply there.
+- Pyright checks the application in `standard` mode (`[tool.pyright]` in `Demo/pyproject.toml`);
+  `tests/` is not type-checked. Fix a type error by narrowing the value or declaring the type the
+  code relies on. A `# pyright: ignore[rule]  reason` is only for a third-party package whose types
+  are incomplete; a bare `# type: ignore` is never used.
+- Keep files from growing too big: split by separation of concerns, so that what a file holds is
+  meaningful only for it; `Demo/app/main.py` is already the file most in need of this.
+- Public functions must have a docstring explaining their purpose. Keep comments to the non-obvious
+  "why", describing the final state rather than how it was reached. Punctuate comments with commas,
+  semicolons and periods; avoid em dashes.
+- Every `uses:` in a workflow is pinned to a full commit SHA with the version as a trailing comment;
+  Dependabot's `github-actions-all` group keeps the SHAs current. The exception is
+  `ai-review-command.yaml` in `code-review.yaml`, called at `@main`: its Tailscale identity accepts
+  that workflow from `main` only. Checkouts set `persist-credentials: false`.
+- When needed, update the README files accordingly.

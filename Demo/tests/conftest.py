@@ -1,15 +1,16 @@
 """
 Pytest configuration and shared fixtures.
 """
-import pytest
+
 import asyncio
-from datetime import datetime, timezone
-from typing import List
-from unittest.mock import Mock, AsyncMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 from bson import ObjectId
 
-from app.models.finding_db import Status, Severity
-from app.types import TaskCache, Task
+from app.models.finding_db import Severity, Status
+from app.types import Task, TaskCache
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +34,11 @@ def event_loop():
 
 def create_sample_task(
     task_id: str = "test-task-123",
-    title: str = "Test Task", 
+    title: str = "Test Task",
     description: str = "A task for testing",
     start_time: str = "1735689600",  # 2025-01-01 00:00:00 UTC
-    deadline: str = "1893456000",   # 2030-01-01 00:00:00 UTC
-    commit_sha: str = "abc123"
+    deadline: str = "1893456000",  # 2030-01-01 00:00:00 UTC
+    commit_sha: str = "abc123",
 ) -> Task:
     """Create a sample task for testing with customizable parameters."""
     return Task(
@@ -55,7 +56,7 @@ def create_sample_task(
         additionalLinks=[],
         additionalDocs=None,
         qaResponses=[],
-        commitSha=commit_sha
+        commitSha=commit_sha,
     )
 
 
@@ -70,23 +71,24 @@ def sample_task_cache() -> TaskCache:
     """Create a sample task cache for testing."""
     return TaskCache(
         taskId="test-task-123",
-        startTime=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
-        deadline=datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        startTime=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
+        deadline=datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC),
         selectedFilesContent="contract Test { function withdraw() {} }",
         selectedDocsContent="Documentation for the test contract",
         additionalLinks=[],
         additionalDocs="",
-        qaResponses=[]
+        qaResponses=[],
     )
 
 
 @pytest.fixture
-def sample_findings() -> List[Mock]:
+def sample_findings() -> list[Mock]:
     """Create mock findings for testing (avoiding database initialization)."""
-    base_time = datetime.now(timezone.utc)
-    
-    def create_mock_finding(title: str, description: str, severity: Severity, 
-                           file_paths: List[str], agent_id: str) -> Mock:
+    base_time = datetime.now(UTC)
+
+    def create_mock_finding(
+        title: str, description: str, severity: Severity, file_paths: list[str], agent_id: str
+    ) -> Mock:
         """Helper function to create a mock finding with standard initialization."""
         finding = Mock()
         finding._id = ObjectId()
@@ -108,10 +110,10 @@ def sample_findings() -> List[Mock]:
             "agent_id": finding.agent_id,
             "status": finding.status.value,
             "created_at": finding.created_at.isoformat(),
-            "updated_at": finding.updated_at.isoformat()
+            "updated_at": finding.updated_at.isoformat(),
         }
         return finding
-    
+
     # Create mock findings with different data
     findings = [
         create_mock_finding(
@@ -119,40 +121,25 @@ def sample_findings() -> List[Mock]:
             description="The withdraw function allows external calls before updating balances",
             severity=Severity.HIGH,
             file_paths=["contracts/Vault.sol"],
-            agent_id="agent_alice"
+            agent_id="agent_alice",
         ),
         create_mock_finding(
             title="Reentrancy in withdrawal method",
             description="External call made before balance reduction in withdraw",
             severity=Severity.HIGH,
             file_paths=["contracts/Vault.sol"],
-            agent_id="agent_bob"
+            agent_id="agent_bob",
         ),
         create_mock_finding(
             title="Missing access control",
             description="Admin function lacks proper authorization",
             severity=Severity.MEDIUM,
             file_paths=["contracts/Access.sol"],
-            agent_id="agent_alice"
-        )
+            agent_id="agent_alice",
+        ),
     ]
-    
+
     return findings
-
-
-@pytest.fixture
-def mock_mongodb():
-    """Mock MongoDB handler."""
-    mock = AsyncMock()
-    mock.connect = AsyncMock()
-    mock.close = AsyncMock()
-    mock.create_finding = AsyncMock()
-    mock.get_findings = AsyncMock()
-    mock.update_finding = AsyncMock()
-    mock.delete_agent_findings = AsyncMock(return_value=0)
-    mock.get_metadata = AsyncMock(return_value=None)
-    mock.set_metadata = AsyncMock()
-    return mock
 
 
 @pytest.fixture
@@ -167,18 +154,34 @@ def mock_httpx_client():
 
 
 @pytest.fixture
-def client(mock_mongodb):
-    """Create FastAPI test client with mocked dependencies."""
+def client():
+    """Create FastAPI test client with the backend calls mocked."""
     # Import here to avoid circular imports and initialization issues
     from fastapi.testclient import TestClient
+
     from app.main import app
-    
-    # Mock the database and other dependencies before creating the client
-    with patch('app.main.mongodb', mock_mongodb):
-        # Create client without triggering lifespan events that need real DB
+
+    with (
+        patch("app.main.fetch_task", new_callable=AsyncMock) as mock_fetch_task,
+        patch(
+            "app.main.fetch_findings", new_callable=AsyncMock, return_value=[]
+        ) as mock_fetch_findings,
+        patch(
+            "app.main.fetch_processed_marker", new_callable=AsyncMock, return_value=None
+        ) as mock_fetch_marker,
+        patch(
+            "app.main.mark_task_processed",
+            new_callable=AsyncMock,
+            return_value=datetime(2026, 1, 2, tzinfo=UTC),
+        ) as mock_mark_processed,
+    ):
+        # Created without its lifespan, so no scheduler starts
         client = TestClient(app, base_url="http://testserver")
-        
-        # Attach the mock_mongodb to the client so tests can access it if needed
-        client.mock_db = mock_mongodb
-        
+
+        # Attach the mocks to the client so tests can configure them
+        client.mock_fetch_task = mock_fetch_task
+        client.mock_fetch_findings = mock_fetch_findings
+        client.mock_fetch_marker = mock_fetch_marker
+        client.mock_mark_processed = mock_mark_processed
+
         yield client
