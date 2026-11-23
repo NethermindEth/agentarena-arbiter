@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 
 from app.core.claude_code_aggregator import ClaudeCodeAggregator
 from app.core.claude_code_cli import json_block
-from app.core.claude_code_triage import ClaudeCodeTriage, TriageUnit, TriageVerdict
+from app.core.claude_code_triage import (
+    ClaudeCodeTriage,
+    TriageInfrastructureError,
+    TriageUnit,
+    TriageVerdict,
+)
 from app.core.gemini_model import DuplicateFinding
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Severity
@@ -37,6 +42,10 @@ MAX_MEMBER_REPORTS_JSON_CHARS = 60_000
 MAX_AGGREGATION_JSON_CHARS = 200_000
 MIN_AGGREGATION_MEMBER_JSON_CHARS = 2_000
 _TRUNCATED = " ...(truncated by the arbiter)"
+# A unit whose agents keep failing is left pending for manual review, so one finding (possibly
+# written to make its agents time out) cannot hold back every other verdict. Many failures at
+# once point to an outage instead: past this share of the units, the run posts nothing.
+MAX_PENDING_UNIT_SHARE = 0.1
 _SEVERITY_RANK = {Severity.INFO: 0, Severity.LOW: 1, Severity.MEDIUM: 2, Severity.HIGH: 3}
 
 
@@ -365,9 +374,10 @@ class FindingEvaluator:
         Triage every group (one unit per group).
 
         Returns ``(evaluations, failed)``: one evaluation per member of every group that was
-        judged, and every member of each group that could not be evaluated (no verdict is
-        recorded for them). Raises ``TriageInfrastructureError`` when no unit could be
-        evaluated at all.
+        judged, and every member of each group that could not be evaluated, set to pending with
+        a comment saying why (no verdict). Raises ``TriageInfrastructureError`` when more units
+        failed than ``MAX_PENDING_UNIT_SHARE`` allows (at least one may fail), including when
+        none could be evaluated.
         """
         groups = [g for g in groups if g]
         if not groups:
@@ -392,22 +402,44 @@ class FindingEvaluator:
         units = await asyncio.gather(*(build(k, g) for k, g in zip(keys, groups, strict=True)))
         verdicts = await self.triage.run_task(task_cache, units)
 
+        failed_keys = [key for key in keys if verdicts[key].error]
+        tolerated = max(1, int(len(keys) * MAX_PENDING_UNIT_SHARE))
+        if len(failed_keys) > tolerated:
+            raise TriageInfrastructureError(
+                f"{len(failed_keys)} of {len(keys)} units could not be evaluated (at most "
+                f"{tolerated} may be left pending); treating it as an outage"
+            )
+
         results: list[FindingEvaluation] = []
         failed: list[FindingDB] = []
         for key, group in zip(keys, groups, strict=True):
             verdict: TriageVerdict = verdicts[key]
             if verdict.error:
                 logger.warning(
-                    "unit %s could not be evaluated (%s); its %d finding(s) get no verdict",
+                    "unit %s could not be evaluated; its %d finding(s) are left pending: %s",
                     key,
-                    verdict.comment,
                     len(group),
+                    verdict.comment,
                 )
+                self._leave_pending(group, verdict.comment)
                 failed.extend(group)
                 continue
             for finding in group:
                 results.append(self._to_evaluation(finding, verdict))
         return results, failed
+
+    @staticmethod
+    def _leave_pending(group: list[FindingDB], comment: str) -> None:
+        """
+        Set a group that could not be evaluated back to pending, with no verdict and ``comment``
+        for the reviewer. Its duplicate links stay, so the reviewer sees the grouping.
+        """
+        now = datetime.now(UTC)
+        for finding in group:
+            finding.status = Status.PENDING
+            finding.evaluated_severity = None
+            finding.evaluation_comment = comment
+            finding.updated_at = now
 
     def _to_evaluation(self, finding: FindingDB, verdict: TriageVerdict) -> FindingEvaluation:
         """Map a triage verdict onto a :class:`FindingEvaluation` for one finding."""
@@ -491,10 +523,11 @@ class FindingEvaluator:
 
         Returns:
             Summary of evaluation results. ``failed_findings`` lists findings that could not be
-            evaluated (they carry no verdict); the caller must not post the run's results then.
+            evaluated: they are set to pending with no verdict, for manual review.
 
         Raises:
-            TriageInfrastructureError when nothing could be evaluated; no verdict is set then.
+            TriageInfrastructureError when too many units could not be evaluated (see
+            :meth:`evaluate_groups`); the caller must not post anything then.
         """
         if not findings:
             return {

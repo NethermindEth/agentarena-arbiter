@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from bson import ObjectId
 
 from app.core.claude_code_cli import AgentResult, ClaudeCodeCLI
 from app.core.claude_code_triage import (
@@ -35,6 +36,7 @@ from app.core.triage_sandbox import (
     TriageWorkspace,
     resolve_work_dir,
 )
+from app.models.finding_db import Status
 from app.types import TaskCache
 
 
@@ -628,7 +630,8 @@ class TestPipeline:
                 "judge": [_final("VALID", "Critical")],
             }
         )
-        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [_unit()]))["u000"]
+        unit = _unit(severity="High")  # a Low claim would cap it: see TestClaimCapsStaticUnits
+        v = (await self._triage(tmp_path, cli).run_task(_task_cache(tmp_path), [unit]))["u000"]
         assert v.is_valid and v.severity == "High"
 
     @pytest.mark.asyncio
@@ -661,7 +664,7 @@ class TestPipeline:
             _task_cache(tmp_path), [_unit("u000"), _unit("u001")]
         )
         assert verdicts["u000"].error and not verdicts["u000"].is_valid
-        assert verdicts["u000"].comment.startswith("EVALUATION_ERROR")
+        assert verdicts["u000"].comment.startswith("Not evaluated: the judge agent failed")
         assert not verdicts["u001"].error and verdicts["u001"].is_valid
 
     @pytest.mark.asyncio
@@ -952,9 +955,44 @@ class TestUnevaluatedUnits:
 
         ev.triage.run_task = run_task
         group = sample_findings[:2]
+        group[1].duplicateOf = group[0].str_id
         results, failed = await ev.evaluate_groups([group, [sample_findings[2]]], sample_task_cache)
         assert [f.str_id for f in failed] == [f.str_id for f in group]  # the whole duplicate group
         assert [r.finding_id for r in results] == [sample_findings[2].str_id]
+        # Left for a human: pending, no severity, the reason, and the duplicate link kept.
+        assert all(f.status == Status.PENDING and f.evaluated_severity is None for f in group)
+        assert all(f.evaluation_comment == "EVALUATION_ERROR: x" for f in group)
+        assert group[1].duplicateOf == group[0].str_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "units,failing,outage",
+        [(2, 1, False), (10, 1, False), (10, 2, True), (20, 2, False), (20, 3, True)],
+    )
+    async def test_many_failed_units_are_an_outage(
+        self, sample_findings, sample_task_cache, units, failing, outage
+    ):
+        from app.core.claude_code_triage import TriageVerdict
+        from app.core.evaluation import FindingEvaluator
+
+        ev = FindingEvaluator()
+
+        async def run_task(task_cache, built):
+            return {
+                u.key: TriageVerdict(False, "Low", "x", error=True)
+                if i < failing
+                else TriageVerdict(True, "Low", "ok")
+                for i, u in enumerate(built)
+            }
+
+        ev.triage.run_task = run_task
+        groups = [[_db_finding(i)] for i in range(units)]
+        if outage:
+            with pytest.raises(TriageInfrastructureError, match="treating it as an outage"):
+                await ev.evaluate_groups(groups, sample_task_cache)
+        else:
+            _, failed = await ev.evaluate_groups(groups, sample_task_cache)
+            assert len(failed) == failing
 
     def test_finding_text_is_capped(self):
         from unittest.mock import Mock
@@ -1053,7 +1091,6 @@ MERGED = {
 
 
 def _db_finding(i: int):
-    from bson import ObjectId
 
     from app.models.finding_db import FindingDB, Severity
 
@@ -1681,3 +1718,56 @@ class TestSandboxErrors:
         assert [r for r, _ in calls].count("analyst") == 2
         # build, 2 analysts, 2 verifiers and the judge, $0.10 each; the lost analyst is a failure.
         assert "6 agents (1 failed), total cost $0.60" in caplog.text
+
+
+class TestClaimCapsStaticUnits:
+    """A unit judged without PoCs is never rated above the severity its reports claimed."""
+
+    def _triage(self, tmp_path, cli, scope="high_medium"):
+        t = ClaudeCodeTriage(cli=cli, settings=_cfg(tmp_path, triage_poc_scope=scope))
+        (tmp_path / "secret").mkdir(exist_ok=True)
+        t.secret_paths = lambda: [tmp_path / "secret"]
+        return t
+
+    @staticmethod
+    def _cli(severity):
+        return _fake_cli(
+            {
+                "build": [{"build_succeeded": True, "projects": []}],
+                "analyst": [ANALYSIS],
+                "refute": [AGREE],
+                "severity": [AGREE],
+                "judge": [_final("VALID", severity)],
+            }
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "claim,judged,scope,expected,capped",
+        [
+            ("Low", "High", "high_medium", "Low", True),  # static: capped at the claim
+            ("Info", "Medium", "high_medium", "Info", True),
+            ("Low", "Low", "high_medium", "Low", False),
+            ("Low", "Info", "high_medium", "Info", False),  # lower than claimed stays lower
+            ("Medium", "High", "high_medium", "High", False),  # PoCs ran: the judge decides
+            ("Low", "High", "all", "High", False),
+        ],
+    )
+    async def test_severity_without_pocs_is_capped_at_the_claim(
+        self, tmp_path, claim, judged, scope, expected, capped
+    ):
+        cli, _ = self._cli(judged)
+        verdicts = await self._triage(tmp_path, cli, scope).run_task(
+            _task_cache(tmp_path), [_unit(severity=claim)]
+        )
+        v = verdicts["u000"]
+        assert v.is_valid and v.severity == expected
+        note = f"rated {judged} without a PoC, capped at the claimed {claim}]"
+        assert v.comment.endswith(note) is capped
+
+    def test_the_cap_note_survives_a_long_comment(self, tmp_path):
+        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+        final = dict(_final("VALID", "High"), summary="s" * 5000)
+        v = triage._to_verdict(final, cap="Low")
+        assert v.severity == "Low" and len(v.comment) <= 2000
+        assert v.comment.endswith("capped at the claimed Low]")

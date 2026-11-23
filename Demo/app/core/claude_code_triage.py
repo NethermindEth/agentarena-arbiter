@@ -81,6 +81,7 @@ BUILD_ALLOWED_DOMAINS = (
 EVIDENCE_RETENTION_DAYS = 30
 # Claimed severities that get PoCs under TRIAGE_POC_SCOPE=high_medium.
 POC_SEVERITIES = ("High", "Medium")
+_SEVERITY_RANK = {"Info": 0, "Low": 1, "Medium": 2, "High": 3}
 _POC_LABEL = {
     "CONFIRMED_BY_POC": "confirmed by PoC",
     "REFUTED_BY_POC": "refuted by PoC",
@@ -399,7 +400,12 @@ class ClaudeCodeTriage:
             final.get("final_severity"),
             "unanimous verifiers" if unanimous else "contested",
         )
-        return self._to_verdict(final)
+        # Without PoCs the claim caps the severity: the claim decides whether a unit gets PoCs, so
+        # rating above it statically would pay a participant for claiming low to avoid them.
+        cap = (
+            None if unit.key in run.poc_units else normalize_severity(unit.claimed_severity, "High")
+        )
+        return self._to_verdict(final, cap=cap)
 
     async def _role(
         self,
@@ -494,7 +500,7 @@ class ClaudeCodeTriage:
             run.failures += 1
 
     # --- mapping ---------------------------------------------------------------------------
-    def _to_verdict(self, final: dict[str, Any]) -> TriageVerdict:
+    def _to_verdict(self, final: dict[str, Any], cap: str | None = None) -> TriageVerdict:
         """
         Map the judge's ruling onto the database's valid/disputed + High/Medium/Low/Info.
 
@@ -503,7 +509,8 @@ class ClaudeCodeTriage:
         when the judge says a competent developer would change code because of it. The schema
         lets the verdict and the severity disagree, so a ruling rated Invalid is disputed
         whatever its verdict, and a VALID / PARTIALLY_VALID one rated Informational follows the
-        INFORMATIONAL rule: the actionable check cannot be bypassed.
+        INFORMATIONAL rule: the actionable check cannot be bypassed. A severity above ``cap``
+        is lowered to it, and the comment says so.
         """
         verdict = str(final.get("final_verdict", "")).upper()
         rated = str(final.get("final_severity", "")).upper()
@@ -525,8 +532,12 @@ class ClaudeCodeTriage:
         prefix = {"PARTIALLY_VALID": "Partially valid: ", "INFORMATIONAL": "Informational: "}.get(
             verdict, ""
         )
+        capped = ""
+        if cap is not None and _SEVERITY_RANK[severity] > _SEVERITY_RANK[cap]:
+            capped = f"; rated {severity} without a PoC, capped at the claimed {cap}"
+            severity = cap
         comment = f"{prefix}{final.get('one_line', '')} {final.get('summary', '')}".strip()
-        suffix = f" [{poc}; confidence: {confidence or 'n/a'}]"
+        suffix = f" [{poc}; confidence: {confidence or 'n/a'}{capped}]"
         if len(comment) + len(suffix) > MAX_COMMENT_CHARS:
             comment = comment[: MAX_COMMENT_CHARS - len(suffix) - 3].rstrip() + "..."
         return TriageVerdict(
@@ -539,13 +550,14 @@ class ClaudeCodeTriage:
 
     @staticmethod
     def _error_verdict(unit: TriageUnit, reason: str) -> TriageVerdict:
-        # A unit with this verdict gets no verdict at all: evaluate_groups returns its findings
-        # as failed, and the run then posts nothing. is_valid=False and the comment only keep the
-        # value safe and explicit should it ever be applied.
+        # A unit with this verdict gets no verdict at all: evaluate_groups leaves its findings
+        # pending for manual review, with this comment. is_valid=False only keeps the value safe
+        # should it ever be applied as a verdict.
         return TriageVerdict(
             is_valid=False,
             severity=unit.claimed_severity,
-            comment=f"EVALUATION_ERROR: {reason}; no judgment on the merits was made (abstained).",
+            comment=f"Not evaluated: {reason}; no judgment on the merits was made. Left pending "
+            "for manual review.",
             error=True,
         )
 

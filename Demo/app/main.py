@@ -503,15 +503,14 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
         findings, duplicate_relationships, task_cache
     )
 
-    failed_findings = evaluation_results["failed_findings"]
-    if failed_findings:
-        # Those findings carry no verdict, and the post closes the task, so nothing is posted;
-        # the retry judges the whole task again.
+    pending = evaluation_results["failed_findings"]
+    if pending:
+        # Few enough to be the findings' own doing, not an outage (the evaluation raises then):
+        # they are posted as pending for a human reviewer, and everyone else gets a verdict.
         logger.error(
-            f"{len(failed_findings)} finding(s) of task_id: {task_id} could not be evaluated; "
-            "nothing posted, the task stays unmarked for a retry"
+            f"{len(pending)} finding(s) of task_id: {task_id} could not be evaluated and are "
+            f"posted as pending for manual review: {', '.join(f.str_id for f in pending)}"
         )
-        return False
 
     logger.info(
         f"Evaluation completed for task_id: {task_id}: "
@@ -532,6 +531,7 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
         f"Processing summary: "
         f"Duplicates: {dedup_results['summary']['duplicates_found']}, "
         f"Disputed: {evaluation_results['application_results']['disputed_count']}, "
+        f"Pending (not evaluated): {len(pending)}, "
         f"Unmatched evaluations: {evaluation_results['application_results']['failed_count']}, "
         f"Total: {len(findings)}"
     )

@@ -47,15 +47,19 @@ per unit:  Analyst ─ code trace + PoC in its own sandbox
   otherwise it is disputed. Any ruling rated Invalid is disputed, and a `VALID` /
   `PARTIALLY_VALID` one rated Informational follows the `INFORMATIONAL` rule.
 - No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
-  verdict; the run then posts nothing and leaves the task unmarked, so the backend is unchanged
-  and `POST /tasks/{task_id}/process` judges the whole task again. If the sandbox preflight
-  fails, the run stops before downloading the repository or calling any model. If
-  deduplication fails, it stops before the evaluation: without the grouping every finding would
-  be triaged on its own and posted as unique.
+  verdict: its findings are posted as `pending`, with a comment saying why, for a human to
+  review, and every other finding gets its verdict. So one finding, even one written to make
+  its agents time out, cannot hold back the rest. When more than 10% of the units fail (one is
+  always allowed), the run treats it as an outage instead: it posts nothing and leaves the task
+  unmarked, so the backend is unchanged and `POST /tasks/{task_id}/process` judges the whole
+  task again. If the sandbox preflight fails, the run stops before downloading the repository
+  or calling any model. If deduplication fails, it stops before the evaluation: without the
+  grouping every finding would be triaged on its own and posted as unique.
 - PoCs: with `TRIAGE_POC_SCOPE=high_medium` (default), only units whose reports claim High or
   Medium get Bash and write PoCs; a duplicate group counts at the highest severity any member
   claims, so the merge cannot talk it out of them. Other units are analysed statically, and
-  their agents are told why. `all` gives every unit PoCs.
+  their agents are told why. Their severity is capped at the claim (the comment says when), so
+  claiming Low cannot avoid the PoCs and still be paid as High. `all` gives every unit PoCs.
 - Cost: 4 agents per unit (the analyst and the judge are retried once), one merge per duplicate
   group (retried once), and one build agent per task when any unit gets PoCs, each run capped
   by `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` of these Claude Code

@@ -179,15 +179,20 @@ class TestProcessTaskWrites:
         assert await app_main.process_task("task-1") is False
         post.assert_not_called()
 
-    async def test_unevaluated_unit_posts_nothing(self, run):
-        """A unit the triage could not judge leaves the whole task unposted and unmarked."""
+    async def test_unevaluated_unit_does_not_hold_back_the_rest(self, run):
+        """Findings the triage could not judge go out pending; the others get their verdicts."""
         from app import main as app_main
 
         findings, _, post, evaluate = run
-        evaluate.return_value = ([], findings)
+        judged = FindingEvaluation(
+            finding_id=findings[0].str_id, is_valid=True, severity=Severity.MEDIUM, comment="ok"
+        )
+        evaluate.return_value = ([judged], [findings[1]])
 
-        assert await app_main.process_task("task-1") is False
-        post.assert_not_called()
+        assert await app_main.process_task("task-1") is True
+        post.assert_called_once()
+        assert post.call_args.args[:2] == ("task-1", findings)
+        assert findings[0].evaluated_severity == Severity.MEDIUM
 
     async def test_failed_post_is_a_failure(self, run):
         """A refused post is not reported as completed, so the task is not marked processed."""
