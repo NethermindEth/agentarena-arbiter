@@ -44,22 +44,25 @@ per unit:  Analyst ─ code trace + PoC in its own sandbox
   rubric (Critical is stored as `High`) and `evaluation_comment` set; `INVALID` →
   `Status.DISPUTED` with `evaluated_severity = Info`; `INFORMATIONAL` (true, no security impact)
   counts as valid `Info` only when the judge says a developer would change code because of it,
-  otherwise it is disputed.
+  otherwise it is disputed. A `VALID` / `PARTIALLY_VALID` ruling rated Informational follows
+  the `INFORMATIONAL` rule, and one rated Invalid is disputed.
 - No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
   verdict; the run then posts nothing and leaves the task unmarked, so the backend is unchanged
   and `POST /tasks/{task_id}/process` judges the whole task again. If the sandbox preflight
-  fails, the run stops before downloading the repository or calling any model.
+  fails, the run stops before downloading the repository or calling any model. If
+  deduplication fails, it stops before the evaluation: without the grouping every finding would
+  be triaged on its own and posted as unique.
 - PoCs: with `TRIAGE_POC_SCOPE=high_medium` (default), only units whose reports claim High or
   Medium get Bash and write PoCs; a duplicate group counts at the highest severity any member
   claims, so the merge cannot talk it out of them. Other units are analysed statically, and
   their agents are told why. `all` gives every unit PoCs.
-- Cost: 4 agents per unit, one merge per duplicate group, and one build agent per task when any
-  unit gets PoCs,
-  each capped by `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` of these
-  Claude Code runs (merges included) go at once across the whole service. Finding
-  titles/descriptions are capped before they reach any prompt, and so are a duplicate group's
-  member reports (at most 10, about 60k characters in all; the prompt says how many were left
-  out).
+- Cost: 4 agents per unit (the analyst and the judge are retried once), one merge per duplicate
+  group (retried once), and one build agent per task when any unit gets PoCs, each run capped
+  by `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` of these Claude Code
+  runs (merges included) go at once across the whole service. The task's description, Q&A and
+  additional docs and the findings' titles/descriptions are capped before they reach any
+  prompt, and so are a duplicate group's member reports (at most 10, about 60k characters in
+  all; the prompt says how many were left out).
 
 ### Isolation (agents execute untrusted code)
 
@@ -87,6 +90,12 @@ the sponsor, so every agent is treated as potentially hostile:
   Other new files are listed to later agents as not staged, and edits to existing files are
   shown as a diff, never applied. So every verifier re-runs a PoC against unmodified code and
   the project's own configuration.
+- That code is the sponsor's: when the build agent finishes, every file of the checkout it
+  modified or deleted is put back (its version is kept in `evidence/build-restored.diff`, and
+  the agents are told which files). What it added stays as the shared build environment:
+  dependencies it fetched, build output and its HOME (toolchains, caches and any dotfile it
+  wrote). The checkout has no `.git`, so a submodule it clones may not be at the sponsor's
+  commit; its build report lists every dependency fetched without a pin.
 - Wall-clock timeouts kill the agent's whole process group, and any process an agent leaves
   running in its sandbox is killed before its files are read; the service process is marked
   non-dumpable so agents cannot read its environment through `/proc`.

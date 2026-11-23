@@ -118,7 +118,7 @@ class AgentResult:
     ok: bool
     structured: dict[str, Any] | None  # schema-validated output (when a schema was given)
     text: str  # the CLI's final ``result`` text
-    cost_usd: float
+    cost_usd: float | None  # None when the CLI reported none (killed, or it printed no result)
     duration_s: float
     error: str = ""  # why the run is not ``ok`` (timeout, exit code, CLI error, no output)
 
@@ -245,7 +245,7 @@ class ClaudeCodeCLI:
                 "[%s] claude timed out after %ss; process group killed", label, timeout_s
             )
             return AgentResult(
-                False, None, "", 0.0, time.monotonic() - started, f"timeout after {timeout_s}s"
+                False, None, "", None, time.monotonic() - started, f"timeout after {timeout_s}s"
             )
         except BaseException:
             # Cancellation (shutdown) or anything unexpected: never leave an agent running.
@@ -282,7 +282,7 @@ class ClaudeCodeCLI:
             # the CLI prints the reason on stderr and nothing parseable on stdout.
             error = f"exit {returncode}; stderr: {_tail(stderr)}"
             logger.warning("[%s] claude produced no result: %s", label, error)
-            return AgentResult(False, None, "", 0.0, duration, error)
+            return AgentResult(False, None, "", None, duration, error)
 
         cost = float(data.get("total_cost_usd") or 0.0)
         text = str(data.get("result") or "")

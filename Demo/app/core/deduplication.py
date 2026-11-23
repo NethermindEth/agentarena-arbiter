@@ -337,15 +337,26 @@ class FindingDeduplication:
             task_cache: Task context containing smart contract files and documentation
 
         Returns:
-            Complete processing results with detailed status information
+            Complete processing results with detailed status information. An ``error`` key means
+            a step failed: the grouping and the statuses are then not to be trusted, and the
+            caller must not evaluate or post anything.
         """
         logger.info(f"Processing {len(findings)} findings for task {task_id}")
 
         # Step 1: Deduplicate findings
         dedup_results = await self.deduplicate_findings(findings, task_cache)
 
-        # Step 2: Apply comprehensive status management
-        status_results = self.apply_finding_statuses(findings, dedup_results)
+        # Step 2: Apply comprehensive status management, unless step 1 failed: its fallback has
+        # no duplicates, so every finding would be marked unique.
+        if "error" in dedup_results:
+            status_results: dict[str, Any] = {
+                "total_processed": 0,
+                "updated_count": 0,
+                "status_distribution": {},
+                "duplicate_relationships_count": 0,
+            }
+        else:
+            status_results = self.apply_finding_statuses(findings, dedup_results)
 
         # Combine results
         combined_results = {
@@ -365,6 +376,11 @@ class FindingDeduplication:
                 "duplicates_found": len(dedup_results["duplicate_relationships"]),
             },
         }
+
+        if "error" in dedup_results:
+            combined_results["error"] = f"deduplication failed: {dedup_results['error']}"
+        elif "error" in status_results:
+            combined_results["error"] = f"applying statuses failed: {status_results['error']}"
 
         logger.info(f"Processing completed for task {task_id}: {combined_results['summary']}")
         return combined_results

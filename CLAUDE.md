@@ -78,10 +78,11 @@ repository.
 - The image builds from `Demo/Dockerfile` through the shared `docker-build-push-jfrog` workflow
   (v5.1.1) for `linux/amd64`: a uv-built environment on the official Python image, copied onto a
   `debian:trixie-slim` runtime with what the findings-triage agents need (Node.js and the pinned
-  Claude Code CLI, bubblewrap, socat, git, a compiler toolchain, Foundry). An image push is gated by a JFrog Xray scan (watch
-  `iac-all-repos`): a Critical vulnerability or a malicious package fails the job before the push.
-  Pull requests and the build-only `main` run push nothing, so they are not scanned. A waiver is an
-  Xray ignore rule scoped to `xray-scan-agentarena-arbiter`, owned by the platform team.
+  Claude Code CLI, bubblewrap, socat, git, a compiler toolchain, Foundry). An image push is
+  gated by a JFrog Xray scan (watch `iac-all-repos`): a Critical vulnerability or a malicious
+  package fails the job before the push. Pull requests and the build-only `main` run push
+  nothing, so they are not scanned. A waiver is an Xray ignore rule scoped to
+  `xray-scan-agentarena-arbiter`, owned by the platform team.
 - Push to `staging` → builds and pushes `kyoto-oci-local-staging/agentarena-arbiter`.
 - Push to `main` → release-please opens or updates the release PR; merging it tags the release and
   pushes the prod image as `vX.Y.Z` and `latest`. The version also lands in `Demo/app/main.py`. To

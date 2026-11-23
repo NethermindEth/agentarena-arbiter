@@ -111,3 +111,31 @@ class TestFindingDeduplication:
             await deduplicator.process_findings("test-task", sample_findings, sample_task_cache)
 
         client_class.assert_not_called()
+
+
+class TestDeduplicationFailure:
+    """A failed step is reported, so the run does not go on without a grouping."""
+
+    async def test_a_successful_run_reports_no_error(self, sample_findings, sample_task_cache):
+        with patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates:
+            mock_find_duplicates.return_value = DeduplicationResult(results=[])
+            result = await FindingDeduplication().process_findings(
+                "test-task", sample_findings, sample_task_cache
+            )
+        assert "error" not in result
+
+    async def test_a_failed_status_application_is_reported(
+        self, sample_findings, sample_task_cache
+    ):
+        deduplicator = FindingDeduplication()
+        with (
+            patch("app.core.deduplication.find_duplicates_structured") as mock_find_duplicates,
+            patch.object(
+                deduplicator, "determine_finding_status", side_effect=RuntimeError("boom")
+            ),
+        ):
+            mock_find_duplicates.return_value = DeduplicationResult(results=[])
+            result = await deduplicator.process_findings(
+                "test-task", sample_findings, sample_task_cache
+            )
+        assert result["error"] == "applying statuses failed: boom"

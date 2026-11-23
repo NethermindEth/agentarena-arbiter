@@ -980,6 +980,28 @@ class TestUnevaluatedUnits:
         dedup.assert_not_called()
         post.assert_not_called()
 
+    async def test_failed_deduplication_evaluates_and_posts_nothing(
+        self, sample_findings, sample_task_cache
+    ):
+        """Without a grouping every finding would get its own agents; the run stops instead."""
+        from app import main as app_main
+
+        with (
+            patch.object(app_main, "fetch_findings", AsyncMock(return_value=sample_findings)),
+            patch.object(app_main, "triage_preflight", return_value=True),
+            patch.object(app_main, "fetch_task_data", AsyncMock(return_value=sample_task_cache)),
+            patch.object(
+                app_main.deduplicator,
+                "process_findings",
+                AsyncMock(return_value={"error": "deduplication failed: quota exceeded"}),
+            ),
+            patch.object(app_main.evaluator, "evaluate_all_findings", AsyncMock()) as evaluate,
+            patch.object(app_main, "post_results", AsyncMock()) as post,
+        ):
+            assert await app_main.process_task("t1") is False
+        evaluate.assert_not_called()
+        post.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_infrastructure_error_posts_nothing(self, sample_findings, sample_task_cache):
         """When no unit could be judged at all, the run fails and the backend stays unchanged."""
@@ -1392,3 +1414,147 @@ class TestPocScope:
         )
         assert calls[0][0] == "build"
         assert all("Bash" in tools for _, tools, _ in calls)
+
+
+class TestBuildChangesArePutBack:
+    """The base holds the sponsor's code whatever the build agent did to the checkout."""
+
+    def test_seal_puts_back_modified_deleted_and_replaced_files(self, tmp_path):
+        (tmp_path / "secret").mkdir()
+        repo = _make_repo(tmp_path)
+        (repo / "foundry.toml").write_text("[profile.default]\nsolc = '0.8.20'\n")
+        os.utime(repo / "src" / "Vault.sol", (1_000_000_000, 1_000_000_000))
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(repo)
+        base = ws.base.repo
+        # What a build agent fighting a compile error might do, plus what a build adds.
+        (base / "src" / "Vault.sol").write_text("contract Vault { function withdraw() {} }\n")
+        (base / "foundry.toml").unlink()
+        shutil.rmtree(base / "test")
+        (base / "test").symlink_to("src")
+        (base / "lib" / "forge-std").mkdir(parents=True)
+        (base / "lib" / "forge-std" / "Test.sol").write_text("contract Test {}\n")
+        (base / "out").mkdir()
+        (base / "out" / "Vault.json").write_text("{}")
+
+        restored = ws.seal_base()
+
+        assert restored == ["foundry.toml", "src/Vault.sol", "test/Vault.t.sol"]
+        for rel in restored:
+            assert (base / rel).read_bytes() == (repo / rel).read_bytes()
+        assert not (base / "test").is_symlink()
+        # A fresh mtime, so mtime-based build caches recompile the original.
+        assert (base / "src" / "Vault.sol").stat().st_mtime > 1_000_000_001
+        assert (base / "lib" / "forge-std" / "Test.sol").exists()  # added files stay
+        assert (base / "out" / "Vault.json").exists()
+        diff = (ws.evidence_dir / "build-restored.diff").read_text()
+        assert "+contract Vault { function withdraw() {} }" in diff
+        assert "--- a/foundry.toml\n+++ /dev/null\n(file deleted)" in diff
+        # The index is taken after the restore: an agent's untouched copy shows no change.
+        sb = ws.make_sandbox("u000-analyst")
+        changes = ws.changes(sb)
+        assert not changes.modified_files and not changes.deleted_files
+
+    def test_untouched_checkout_restores_nothing(self, tmp_path):
+        (tmp_path / "secret").mkdir()
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(_make_repo(tmp_path))
+        assert ws.seal_base() == []
+        assert not (ws.evidence_dir / "build-restored.diff").exists()
+
+    def test_agents_are_told_which_files_were_put_back(self, tmp_path):
+        task = ClaudeCodeTriage._task_json(_task_cache(tmp_path))
+        files = [f"src/F{i}.sol" for i in range(60)]
+        ctx = build_context(task, None, poc_enabled=True, restored=files)
+        assert "modified or deleted 60 file(s)" in ctx
+        assert "src/F49.sol" in ctx and "src/F50.sol" not in ctx and "and 10 more" in ctx
+        assert "put them back" not in build_context(task, None, poc_enabled=True)
+
+
+class TestVerdictSeverityConsistency:
+    """The judge's verdict and severity can disagree; the stricter reading wins."""
+
+    @pytest.mark.parametrize("verdict", ["VALID", "PARTIALLY_VALID"])
+    @pytest.mark.parametrize(
+        "severity,actionable,valid",
+        [
+            ("Informational", False, False),
+            ("Informational", None, False),
+            ("Informational", True, True),
+            ("Invalid", True, False),
+            ("Low", False, True),
+        ],
+    )
+    def test_rated_severity_routes_the_verdict(
+        self, tmp_path, verdict, severity, actionable, valid
+    ):
+        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+        v = triage._to_verdict(dict(_final(verdict, severity), actionable=actionable))
+        assert v.is_valid is valid
+        assert v.severity == ("Low" if severity == "Low" else "Info")
+        if severity == "Informational":
+            assert v.comment.startswith("Informational:")
+
+
+class TestUnknownCost:
+    def test_runs_without_a_result_have_unknown_cost(self):
+        res = ClaudeCodeCLI._parse("t", 1, "", "boom", 1.0, True)
+        assert res.cost_usd is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_costs_are_counted_not_added(self, tmp_path):
+        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+        run = SimpleNamespace(agents=0, failures=0, cost_usd=0.0, unknown_cost=0)
+        run.lock = asyncio.Lock()
+        await triage._account(run, AgentResult(True, {}, "", 1.5, 1.0))
+        await triage._account(run, AgentResult(False, None, "", None, 1.0, "timeout after 1s"))
+        assert (run.agents, run.failures, run.cost_usd, run.unknown_cost) == (2, 1, 1.5, 1)
+
+
+class TestTaskTextCaps:
+    def test_sponsor_text_fits_its_budgets(self, tmp_path):
+        from app.core.claude_code_cli import json_block
+        from app.core.evaluation import (
+            MAX_QA_JSON_CHARS,
+            MAX_TASK_DESCRIPTION_JSON_CHARS,
+            MAX_TASK_DOCS_JSON_CHARS,
+            _capped_task,
+        )
+
+        task = TaskCache.model_validate(
+            _task_cache(tmp_path).model_dump()
+            | {
+                "title": "t" * 5000,
+                # Non-ASCII text: json_block escapes each character to six.
+                "description": "é" * MAX_TASK_DESCRIPTION_JSON_CHARS,
+                "additionalDocs": "d" * (MAX_TASK_DOCS_JSON_CHARS * 3),
+                "qaResponses": [{"question": "q?", "answer": "a" * 4000} for _ in range(20)],
+            }
+        )
+        capped = _capped_task(task)
+
+        assert len(capped.title or "") < 600
+        assert len(json_block(capped.description)) <= MAX_TASK_DESCRIPTION_JSON_CHARS
+        assert capped.description.endswith("(truncated by the arbiter)")
+        # Non-ASCII text is shortened to what fits, not dropped by the escape overhead.
+        assert capped.description.count("é") > MAX_TASK_DESCRIPTION_JSON_CHARS // 6 - 50
+        assert len(json_block(capped.additionalDocs)) <= MAX_TASK_DOCS_JSON_CHARS
+        qa = capped.qaResponses or []
+        kept, note = qa[:-1], qa[-1]
+        assert sum(len(json_block(p.model_dump())) for p in kept) <= MAX_QA_JSON_CHARS
+        assert note.answer == f"{20 - len(kept)} more Q&A pair(s) were left out for length."
+        assert capped.repoPath == task.repoPath and task.description == "é" * 20_000
+
+    def test_non_ascii_member_report_keeps_its_share(self):
+        from app.core.claude_code_cli import json_block
+        from app.core.evaluation import _fit_description
+
+        fitted = _fit_description({"title": "t", "description": "漏洞" * 20_000}, 8_000)
+        assert len(json_block(fitted)) <= 8_000
+        assert fitted["description"].count("漏洞") > 8_000 // 12 - 30
+
+    def test_short_task_is_unchanged(self, tmp_path):
+        from app.core.evaluation import _capped_task
+
+        task = _task_cache(tmp_path).model_copy(update={"description": None})
+        assert _capped_task(task) == task

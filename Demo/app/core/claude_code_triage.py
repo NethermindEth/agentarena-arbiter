@@ -117,6 +117,7 @@ class _Run:
     poc_units: frozenset[str] = frozenset()  # keys of the units that get PoCs (and Bash)
     contexts: dict[bool, str] = field(default_factory=dict)  # by "gets PoCs"
     cost_usd: float = 0.0
+    unknown_cost: int = 0  # runs that reported no cost (killed at the timeout, or no result)
     agents: int = 0
     failures: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -231,9 +232,10 @@ class ClaudeCodeTriage:
             await asyncio.to_thread(ws.init_base, repo)
             task = self._task_json(task_cache)
             build_report = await self._build(run, task) if run.poc_units else None
-            await asyncio.to_thread(ws.seal_base)
+            restored = await asyncio.to_thread(ws.seal_base)
             run.contexts = {
-                poc: build_context(task, build_report, poc_enabled=poc) for poc in (True, False)
+                poc: build_context(task, build_report, poc_enabled=poc, restored=restored)
+                for poc in (True, False)
             }
 
             outcomes = await asyncio.gather(
@@ -250,12 +252,20 @@ class ClaudeCodeTriage:
                 await asyncio.to_thread(ws.cleanup)
             finally:
                 self._active_runs.discard(ws.root)
+        cap = self.cfg.triage_agent_max_budget_usd
+        unknown = (
+            f" plus {run.unknown_cost} run(s) of unknown cost (killed or without a result"
+            + (f", at most ${cap:g} each)" if cap else ")")
+            if run.unknown_cost
+            else ""
+        )
         logger.info(
-            "triage run %s finished: %d agents (%d failed), total cost $%.2f; evidence in %s",
+            "triage run %s finished: %d agents (%d failed), total cost $%.2f%s; evidence in %s",
             ws.root.name,
             run.agents,
             run.failures,
             run.cost_usd,
+            unknown,
             ws.evidence_dir,
         )
         if all(v.error for v in verdicts.values()):
@@ -431,7 +441,10 @@ class ClaudeCodeTriage:
     async def _account(self, run: _Run, res) -> None:
         async with run.lock:
             run.agents += 1
-            run.cost_usd += res.cost_usd
+            if res.cost_usd is None:
+                run.unknown_cost += 1
+            else:
+                run.cost_usd += res.cost_usd
             if not res.ok:
                 run.failures += 1
 
@@ -442,9 +455,15 @@ class ClaudeCodeTriage:
 
         VALID / PARTIALLY_VALID count at the rated severity (Critical is stored as High);
         INVALID is disputed; INFORMATIONAL (true, but no security impact) counts as Info only
-        when the judge says a competent developer would change code because of it.
+        when the judge says a competent developer would change code because of it. The schema
+        lets the verdict and the severity disagree, so a VALID / PARTIALLY_VALID ruling rated
+        Informational or Invalid is handled as that verdict: the actionable rule cannot be
+        bypassed, and a finding rated Invalid never counts.
         """
         verdict = str(final.get("final_verdict", "")).upper()
+        rated = str(final.get("final_severity", "")).upper()
+        if verdict in ("VALID", "PARTIALLY_VALID") and rated in ("INFORMATIONAL", "INVALID"):
+            verdict = rated
         if verdict in ("VALID", "PARTIALLY_VALID"):
             is_valid = True
             severity = normalize_severity(str(final.get("final_severity", "")), "Info")

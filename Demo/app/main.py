@@ -480,6 +480,14 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
     logger.info(f"Starting deduplication for task_id: {task_id}")
 
     dedup_results = await deduplicator.process_findings(task_id, findings, task_cache)
+    if "error" in dedup_results:
+        # Without the grouping every finding would be triaged on its own (many more agents and
+        # PoCs) and posted as unique; the retry deduplicates again.
+        logger.error(
+            f"{dedup_results['error'].capitalize()} for task_id: {task_id}; not evaluating, "
+            "nothing posted, the task stays unmarked for a retry"
+        )
+        return False
     duplicate_relationships = dedup_results["deduplication"]["duplicate_relationships"]
 
     logger.info(

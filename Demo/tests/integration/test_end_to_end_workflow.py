@@ -244,6 +244,7 @@ class TestCompleteWorkflow:
             patch("app.core.deduplication.logger") as mock_logger,
         ):
             mock_find_duplicates.side_effect = Exception("Deduplication API error")
+            statuses_before = [f.status for f in workflow_findings]
 
             deduplicator = FindingDeduplication()
 
@@ -252,16 +253,14 @@ class TestCompleteWorkflow:
             )
 
             # Verify error was logged during deduplication
-            mock_logger.error.assert_called_with(
-                "Error during deduplication: Deduplication API error"
-            )
+            mock_logger.error.assert_any_call("Error during deduplication: Deduplication API error")
 
-            # When deduplication fails, it should fallback to treating all findings as originals
+            # The failure is reported, so the run stops instead of treating every finding as an
+            # original (each triaged alone, all posted as unique).
+            assert result["error"] == "deduplication failed: Deduplication API error"
             assert result["summary"]["duplicates_found"] == 0
-            assert result["summary"]["originals_found"] == len(workflow_findings)
-
-            # Every finding is set UNIQUE_VALID in the fallback
-            assert all(f.status == Status.UNIQUE_VALID for f in workflow_findings)
+            assert [f.status for f in workflow_findings] == statuses_before
+            assert result["summary"]["successfully_updated"] == 0
 
     @pytest.mark.asyncio
     async def test_workflow_error_handling_evaluation_failure(

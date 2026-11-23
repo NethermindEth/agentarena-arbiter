@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,7 +12,7 @@ from app.core.claude_code_triage import ClaudeCodeTriage, TriageUnit, TriageVerd
 from app.core.gemini_model import DuplicateFinding
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Severity
-from app.types import TaskCache
+from app.types import QAPair, TaskCache
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 # otherwise make every agent of a unit fail).
 MAX_TITLE_CHARS = 500
 MAX_DESCRIPTION_CHARS = 30_000
+# So is the task's own text: it goes into every agent prompt of every unit and into each merge,
+# and an oversized task would fail on every retry. Sizes are of the JSON the prompt embeds.
+MAX_TASK_DESCRIPTION_JSON_CHARS = 20_000
+MAX_TASK_DOCS_JSON_CHARS = 40_000
+MAX_QA_QUESTION_JSON_CHARS = 1_000
+MAX_QA_ANSWER_JSON_CHARS = 5_000
+MAX_QA_JSON_CHARS = 20_000
 # A duplicate group's original reports go into every agent prompt next to the merged digest, so
 # they get a tighter budget. Sizes are those of the JSON the prompt embeds (json_block escapes
 # every non-ASCII character, so one character can take six).
@@ -42,13 +50,80 @@ def _fit_description(finding: dict[str, Any], limit: int) -> dict[str, Any]:
 
     A finding whose other fields alone exceed the limit keeps only the truncation marker.
     """
-    size = len(json_block(finding))
+    if len(json_block(finding)) <= limit:
+        return finding
     description = str(finding.get("description", "")).removesuffix(_TRUNCATED)
-    while size > limit and description:
-        description = description[: max(0, len(description) - (size - limit) - len(_TRUNCATED))]
-        finding = {**finding, "description": description + _TRUNCATED}
-        size = len(json_block(finding))
-    return finding
+    kept = _longest_fitting_prefix(
+        description,
+        lambda prefix: len(json_block({**finding, "description": prefix + _TRUNCATED})) <= limit,
+    )
+    return {**finding, "description": kept + _TRUNCATED}
+
+
+def _fit_text(text: str, limit: int) -> str:
+    """``text``, shortened (with the truncation marker) until its JSON form fits in ``limit``."""
+    if len(json_block(text)) <= limit:
+        return text
+    kept = _longest_fitting_prefix(
+        text, lambda prefix: len(json_block(prefix + _TRUNCATED)) <= limit
+    )
+    return kept + _TRUNCATED
+
+
+def _longest_fitting_prefix(text: str, fits: Callable[[str], bool]) -> str:
+    """
+    The longest prefix of ``text`` that ``fits`` accepts (``fits`` must accept every prefix of
+    an accepted one). Searched rather than computed from the overflow: json_block spends one to
+    six characters on each character, so the overflow does not say how much text to drop.
+    """
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(text[:mid]):
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
+def _capped_task(task_cache: TaskCache) -> TaskCache:
+    """
+    A copy of the task whose sponsor-written text fits the budgets above. Q&A pairs are kept
+    in order while they fit; a final pair says how many were left out.
+    """
+    pairs = task_cache.qaResponses or []
+    qa: list[QAPair] = []
+    used = 0
+    for pair in pairs:
+        fitted = QAPair(
+            question=_fit_text(pair.question, MAX_QA_QUESTION_JSON_CHARS),
+            answer=_fit_text(pair.answer, MAX_QA_ANSWER_JSON_CHARS),
+        )
+        size = len(json_block(fitted.model_dump()))
+        if used + size > MAX_QA_JSON_CHARS:
+            break
+        qa.append(fitted)
+        used += size
+    if omitted := len(pairs) - len(qa):
+        qa.append(
+            QAPair(
+                question="(note from the arbiter)",
+                answer=f"{omitted} more Q&A pair(s) were left out for length.",
+            )
+        )
+    title, description, docs = task_cache.title, task_cache.description, task_cache.additionalDocs
+    return task_cache.model_copy(
+        update={
+            "title": _cap(title, MAX_TITLE_CHARS) if title else title,
+            "description": (
+                _fit_text(description, MAX_TASK_DESCRIPTION_JSON_CHARS)
+                if description
+                else description
+            ),
+            "additionalDocs": _fit_text(docs, MAX_TASK_DOCS_JSON_CHARS) if docs else docs,
+            "qaResponses": qa,
+        }
+    )
 
 
 def _union_paths(*path_lists: list[str] | None) -> list[str]:
@@ -318,6 +393,7 @@ class FindingEvaluator:
         groups = [g for g in groups if g]
         if not groups:
             return [], []
+        task_cache = _capped_task(task_cache)
         keys = [f"u{i:03d}" for i in range(len(groups))]
         # The triage's own limit, so merges and agents (of this run and of any concurrent one)
         # never exceed TRIAGE_MAX_PARALLEL_AGENTS together.

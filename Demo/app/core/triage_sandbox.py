@@ -34,6 +34,12 @@ Isolation model (see also app/core/claude_code_cli.py):
   shown to later agents as a system-computed diff (``.triage/diffs/<role>.diff``). So a
   verifier always re-runs a PoC against unmodified sources: a PoC that only passes because its
   author rigged the sources or the test libraries does not reproduce.
+* The base itself holds the sponsor's code: when it is sealed, every file of the task checkout
+  the build agent modified or deleted is put back (``evidence/build-restored.diff`` keeps its
+  version, and the agents are told which files). What the build agent *added* stays:
+  dependencies it fetched, build output, and its HOME (toolchains and caches, but also any
+  dotfile it wrote). That build environment is the same for every agent of every finding, and
+  the build agent never sees a finding.
 """
 
 from __future__ import annotations
@@ -337,11 +343,12 @@ def _safe_rel(rel: str) -> bool:
     return bool(parts) and all(_SAFE_COMPONENT.match(p) and p not in (".", "..") for p in parts)
 
 
-def _read_beneath(root: Path, rel: str, limit: int) -> bytes | None:
+def _open_beneath(root: Path, rel: str) -> int | None:
     """
-    Read a regular file ``root/rel`` of at most ``limit`` bytes, opening every path component
-    relative to its parent's directory handle with ``O_NOFOLLOW``: a component swapped for a
-    symlink (even concurrently) makes the read fail instead of escaping ``root``.
+    Open the regular file ``root/rel`` for reading, opening every path component relative to
+    its parent's directory handle with ``O_NOFOLLOW``: a component swapped for a symlink (even
+    concurrently) makes the open fail instead of escaping ``root``. Returns the descriptor, or
+    None when the file cannot be opened that way or is not a regular file.
     """
     parts = rel.split("/")
     if any(p in ("", ".", "..") for p in parts):
@@ -361,9 +368,37 @@ def _read_beneath(root: Path, rel: str, limit: int) -> bytes | None:
         os.close(fd)
         return None
     os.close(fd)
+    if not stat.S_ISREG(os.fstat(ffd).st_mode):
+        os.close(ffd)
+        return None
+    return ffd
+
+
+def _same_as(root: Path, rel: str, original: Path) -> bool:
+    """Whether ``root/rel`` (opened as :func:`_open_beneath` does) has ``original``'s bytes."""
+    fd = _open_beneath(root, rel)
+    if fd is None:
+        return False
+    with os.fdopen(fd, "rb") as copy, open(original, "rb") as source:
+        if os.fstat(copy.fileno()).st_size != os.fstat(source.fileno()).st_size:
+            return False
+        while True:
+            a, b = copy.read(1 << 20), source.read(1 << 20)
+            if a != b:
+                return False
+            if not a:
+                return True
+
+
+def _read_beneath(root: Path, rel: str, limit: int) -> bytes | None:
+    """
+    Read a regular file ``root/rel`` of at most ``limit`` bytes, opened as
+    :func:`_open_beneath` does, so a symlinked component cannot lead the read out of ``root``.
+    """
+    ffd = _open_beneath(root, rel)
+    if ffd is None:
+        return None
     try:
-        if not stat.S_ISREG(os.fstat(ffd).st_mode):
-            return None
         chunks, remaining = [], limit + 1
         while remaining > 0:
             chunk = os.read(ffd, min(remaining, 1 << 20))
@@ -509,6 +544,7 @@ class TriageWorkspace:
         ]
         self.keep_sandboxes = keep_sandboxes
         self._index: dict[str, tuple[int, int]] = {}
+        self._source: Path | None = None
         self._next_id = 0
         self._id_lock = threading.Lock()  # sandboxes are made from worker threads
         for d in (self.base.root, self.agents_dir, self.evidence_dir):
@@ -519,13 +555,16 @@ class TriageWorkspace:
         """Copy the task checkout into ``base/repo`` and create the base HOME/TMP."""
         for d in (self.base.repo, self.base.home, self.base.tmp):
             d.mkdir(mode=0o755)
-        _copy_tree(Path(source_repo), self.base.repo)
+        self._source = Path(source_repo)
+        _copy_tree(self._source, self.base.repo)
 
-    def seal_base(self) -> None:
+    def seal_base(self) -> list[str]:
         """
         Freeze the base after the build agent ran: kill anything it left running, verify the
-        layout, drop symlinks that could point out of a sandbox, and index file metadata for
-        later change detection.
+        layout, put back the checkout's files it modified or deleted, drop symlinks that could
+        point out of a sandbox, and index file metadata for later change detection.
+
+        Returns the checkout files that were put back (paths relative to the repository).
         """
         kill_processes_under(self.base.root)
         for d in (self.base.repo, self.base.home):
@@ -537,6 +576,7 @@ class TriageWorkspace:
             ["chmod", "-R", "u+rwX", "--", str(self.base.repo), str(self.base.home)],  # noqa: S607  see above
             capture_output=True,
         )
+        restored = self._restore_checkout()
         removed = 0
         for top in (self.base.repo, self.base.home):
             for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
@@ -554,6 +594,63 @@ class TriageWorkspace:
             _force_rmtree(entry)
         _fresh_dir(self.base.repo / TRIAGE_DIR)
         self._index = {rel: (st.st_size, st.st_mtime_ns) for rel, st in _walk_files(self.base.repo)}
+        return restored
+
+    def _restore_checkout(self) -> list[str]:
+        """
+        Put back every file of the task checkout that the build agent modified, deleted or
+        replaced, so all agents judge the sponsor's code. Files it added stay (dependencies,
+        build output); so do files under ``SKIP_DIFF_DIRS`` (build output and installed
+        packages, which a build legitimately rewrites). The build agent's version is saved as
+        ``evidence/build-restored.diff``. Call only once nothing runs in the base any more.
+        """
+        if self._source is None:
+            return []
+        restored: list[str] = []
+        chunks: list[str] = []
+        for rel, _ in _walk_files(self._source):
+            original = self._source / rel
+            if _same_as(self.base.repo, rel, original):
+                continue
+            changed = _read_beneath(self.base.repo, rel, MAX_DIFF_FILE_BYTES)
+            if changed is None and not os.path.lexists(self.base.repo / rel):
+                chunks.append(f"--- a/{rel}\n+++ /dev/null\n(file deleted)\n")
+            else:
+                before = _read_beneath(self._source, rel, MAX_DIFF_FILE_BYTES)
+                chunks.append(self._diff_one(rel, before, changed))
+            self._put_back(rel, original)
+            restored.append(rel)
+        if restored:
+            diff = "".join(chunks)
+            if len(diff) > MAX_DIFF_CHARS:
+                diff = diff[:MAX_DIFF_CHARS] + "\n... (diff truncated)\n"
+            (self.evidence_dir / "build-restored.diff").write_text(diff, encoding="utf-8")
+            logger.warning(
+                "the build agent modified or deleted %d file(s) of the checkout; put back: %s",
+                len(restored),
+                ", ".join(restored[:20]) + (" ..." if len(restored) > 20 else ""),
+            )
+        return sorted(restored)
+
+    def _put_back(self, rel: str, original: Path) -> None:
+        """Replace whatever is at ``base/repo/rel`` with a copy of ``original``."""
+        *dirs, name = rel.split("/")
+        cur = self.base.repo
+        for part in dirs:
+            cur = cur / part
+            try:
+                if stat.S_ISDIR(os.lstat(cur).st_mode):
+                    continue
+                _force_rmtree(cur)  # a file or symlink where the checkout has a directory
+            except FileNotFoundError:
+                pass
+            os.mkdir(cur, 0o755)
+        target = cur / name
+        _force_rmtree(target)
+        # A fresh mtime: tools that compare mtimes (cargo, make) would otherwise keep what the
+        # build compiled from the agent's version.
+        shutil.copyfile(original, target)
+        shutil.copymode(original, target)
 
     def _link_may_stay(self, link: Path) -> bool:
         """
