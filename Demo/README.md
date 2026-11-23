@@ -21,21 +21,120 @@
 
 ## Final Evaluation
 
-- Remaining `PENDING` findings undergo evaluation using the Claude AI model
-- The evaluation assesses:
-    - Validity: determines if the finding is a genuine smart contract vulnerability
-    - Category: assigns a standard smart contract vulnerability category
-    - Severity: evaluates severity as `High`, `Medium`, `Low`, or `Info`
-- Results are applied as follows:
-    - Valid findings → `Status.UNIQUE_VALID` with assigned category, category_id, and evaluated_severity
-    - Invalid findings → `Status.DISPUTED` with category, category_id, and evaluated_severity set to `None`
-- Each unique category receives a distinct **category_id** for tracking similar issues
+Findings are evaluated with a port of the **findings-triage** Claude Code skill: every distinct
+issue gets an analyst who traces the code and writes a working PoC in its own sandbox, two
+adversarial verifiers who attack that conclusion, and a judge who weighs the evidence
+(`app/core/claude_code_triage.py`, prompts in `app/core/triage_prompts.py`).
+
+```
+per task:  build agent ─ installs deps + prebuilds a private copy of the checkout
+per unit:  Analyst ─ code trace + PoC in its own sandbox
+             ├─► Refute verifier   ─ tries to overturn it; re-runs and audits the PoC for rigging
+             └─► Severity verifier ─ hunts escalations and mitigations; proves changes with a PoC
+           Judge ─ weighs evidence, not votes; re-runs PoCs to settle factual disputes
+```
+
+- A **unit** is one finding, or one duplicate group: the group is merged into a digest by the
+  aggregator (`app/core/claude_code_aggregator.py`), the original reports are attached, and the
+  unit's verdict is applied to every member.
+- Verdicts and severities are the skill's own (`VALID` / `PARTIALLY_VALID` / `INFORMATIONAL` /
+  `INVALID`; Critical…Invalid rubric). The task's Q&A answers and additional docs are part of
+  every agent's context (they define the trust model).
+- Results: `VALID` / `PARTIALLY_VALID` keep their status, with `evaluated_severity` from the
+  rubric (Critical is stored as `High`) and `evaluation_comment` set; `INVALID` →
+  `Status.DISPUTED` with `evaluated_severity = Info`; `INFORMATIONAL` (true, no security impact)
+  counts as valid `Info` only when the judge says a developer would change code because of it,
+  otherwise it is disputed. Any ruling rated Invalid is disputed, and a `VALID` /
+  `PARTIALLY_VALID` one rated Informational follows the `INFORMATIONAL` rule.
+- No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
+  verdict: its findings are posted as `pending`, with a comment saying why, for a human to
+  review, and every other finding gets its verdict. So one finding, even one written to make
+  its agents time out, cannot hold back the rest. When more than 10% of the units fail (one is
+  always allowed), the run treats it as an outage instead: it posts nothing and leaves the task
+  unmarked, so the backend is unchanged and `POST /tasks/{task_id}/process` judges the whole
+  task again. If the sandbox preflight fails, the run stops before downloading the repository
+  or calling any model. If deduplication fails, it stops before the evaluation: without the
+  grouping every finding would be triaged on its own and posted as unique.
+- PoCs: with `TRIAGE_POC_SCOPE=high_medium` (default), only units whose reports claim High or
+  Medium get Bash and write PoCs; a duplicate group counts at the highest severity any member
+  claims, so the merge cannot talk it out of them. Other units are analysed statically, and
+  their agents are told why. Their severity is capped at the claim (the comment says when), so
+  claiming Low cannot avoid the PoCs and still be paid as High. `all` gives every unit PoCs.
+- Cost: 4 agents per unit (the analyst and the judge are retried once), one merge per duplicate
+  group (retried once), and one build agent per task when any unit gets PoCs, each run capped
+  by `TRIAGE_AGENT_MAX_BUDGET_USD`; at most `TRIAGE_MAX_PARALLEL_AGENTS` of these Claude Code
+  runs (merges included) go at once across the whole service. The task's description, Q&A and
+  additional docs and the findings' titles/descriptions are capped before they reach any
+  prompt, and so are a duplicate group's member reports (at most 10, about 60k characters in
+  all; the prompt says how many were left out).
+
+### Isolation (agents execute untrusted code)
+
+The finding text is written by participants who want it approved, and the repository comes from
+the sponsor, so every agent is treated as potentially hostile:
+
+- Every run is `claude -p --bare --restricted --strict-mcp-config --permission-prompts none`:
+  no hooks, CLAUDE.md, MCP servers, plugins or settings from the repository or the service user
+  are loaded; only the tools a role needs are enabled; anything else is denied.
+- The child gets a private `HOME`/`TMPDIR` and only the Anthropic key in its environment
+  (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, set for agents with Bash, also strips it from the
+  commands they run).
+- Commands run in the Claude Code **bubblewrap sandbox** with `failIfUnavailable` and
+  `allowUnsandboxedCommands: false`: writes only inside the agent's own sandbox, no reads of the
+  service user's HOME, the service directory, task data (repositories are also downloaded and
+  extracted there, not in the readable system temp dir), the container credential mounts
+  (`/var/run/secrets`, `/run/secrets`) or anything else in the triage work directory (other
+  agents, runs and evidence), no network for finding agents (package
+  registries only for the build agent, via `strictAllowlist`). bubblewrap must be >= 0.8.0
+  and not setuid (so nested user namespaces are disabled); Claude Code's "weaker nested
+  sandbox" mode is not supported because agents could undo its write denies.
+- Each agent works in its own full copy of the prebuilt checkout. PoCs move between agents only
+  through the service, into a fresh copy with clean sources: only new code files under `test/`,
+  `tests/`, `script/` or `poc/` directories, never configuration, dotfiles, test hooks
+  (`conftest.py`, `build.rs`) or anything under `lib/` or `node_modules/`; regular files with
+  plain names only, read through directory handles that never follow symlinks, size-capped.
+  Other new files are listed to later agents as not staged, and edits to existing files are
+  shown as a diff, never applied. So every verifier re-runs a PoC against unmodified code and
+  the project's own configuration.
+- That code is the sponsor's: when the build agent finishes, every file of the checkout it
+  modified or deleted is put back (its version is kept in `evidence/build-restored.diff`, and
+  the agents are told which files). What it added stays as the shared build environment:
+  dependencies it fetched, build output and its HOME (toolchains, caches and any dotfile it
+  wrote). The checkout has no `.git`, so a submodule it clones may not be at the sponsor's
+  commit; its build report lists every dependency fetched without a pin.
+- Wall-clock timeouts kill the agent's whole process group, and any process an agent leaves
+  running in its sandbox is killed before its files are read; the service process is marked
+  non-dumpable so agents cannot read its environment through `/proc`, and the `cp`, `chmod`
+  and bubblewrap processes it starts get only `PATH`, so they carry no API key either.
+- PoC evidence is kept under `TRIAGE_WORK_DIR/run-*/evidence/` for 30 days (older runs are
+  deleted when a run starts); sandboxes are deleted after each run unless `DEBUG` is set. A
+  run in progress holds a lock on its directory, so when a run's process dies (a restart, an
+  OOM kill), the next run to start deletes the sandboxes it left behind; a run another process
+  is working on is never touched.
+
+**Host requirements.** PoCs need bubblewrap + socat and unprivileged user namespaces. On Ubuntu
+24.04+ hosts, AppArmor blocks them unless bubblewrap's AppArmor profile is installed. Docker's
+default seccomp profile blocks them too (see `docker-compose.yml`). The sandbox is always
+required, whatever `TRIAGE_POC_SCOPE` says: a host that cannot sandbox leaves tasks unprocessed
+rather than running PoCs unsandboxed or falling back to static analysis.
+`TRIAGE_WORK_DIR` must be at most 48 bytes long: the CLI binds the sandbox's proxy sockets in
+each agent's TMPDIR under it, and a Unix socket path is limited to 107 bytes (the preflight
+checks it).
+Use a dedicated, spend-limited Anthropic key for `CLAUDE_API_KEY`.
+On Kubernetes, set `automountServiceAccountToken: false` on the pod: the arbiter never calls
+the cluster API, and agents run untrusted code (the sandbox also denies reads of
+`/var/run/secrets` and `/run/secrets`, but a token that is not mounted cannot leak).
 
 ## Setup and Installation
 
 ### Prerequisites
 - [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
-- Claude and Gemini API keys
+- Anthropic (`CLAUDE_API_KEY`) and Gemini API keys
+- The Claude Code CLI on your `PATH` (`npm install -g @anthropic-ai/claude-code@2.1.328`); the
+  Docker image bundles it
+- For PoC execution: `bubblewrap`, `socat` and the project toolchains (e.g. Foundry) installed
+  outside your HOME, which sandboxed commands cannot read (the Docker image puts Foundry in
+  `/opt/foundry`); see "Host requirements" above
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
@@ -181,18 +280,29 @@ class FindingDB(Finding):
 ```
 
 ## Configuration
-The application requires the following environment variables:
+The application requires the following environment variables. The triage's timeouts, the
+build agent's network allowlist and the evidence retention are constants in
+`app/core/claude_code_triage.py`: the allowlist is a sandbox boundary, so it changes through
+code review.
 
-- `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
-- `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
-- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
-- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (e.g. `claude-opus-4-7`).
+- `CLAUDE_API_KEY`: Anthropic API key (passed to the `claude` subprocess as `ANTHROPIC_API_KEY`)
+- `CLAUDE_MODEL`: Model id passed to `claude --model` (default: claude-opus-5-5)
+- `CLAUDE_EFFORT`: Effort passed to `claude --effort` (default: high)
+- `TRIAGE_POC_SCOPE`: which units get PoCs, `high_medium` (default) or `all`; see Final
+  Evaluation
+- `TRIAGE_WORK_DIR`: sandboxes + PoC evidence; must be outside HOME, the service dir and task
+  data, and at most 48 bytes long (default: `<system tmp>/arbiter-triage-<uid>`; the image uses
+  `/var/lib/arbiter-triage`)
+- `TRIAGE_MAX_PARALLEL_AGENTS`: Claude Code runs at once across the service, merges included
+  (default 4)
+- `TRIAGE_AGENT_MAX_BUDGET_USD`: spend cap per `claude` run (default 10, 0 = no cap)
 - `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
 - `GEMINI_MODEL`: Gemini model version to use (default: `gemini-3.5-flash`)
 - `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
 - `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`). Used only for thinking models (e.g. `gemini-3.5-flash`); ignored with a warning for other Gemini models.
 - `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (e.g. `gemini-3.5-flash`).
-- `DEBUG`: Enable debug mode (default: true)
+- `DEBUG`: keep each triage agent's sandbox after a run, for debugging (default: false; each is a
+  full repository copy, so this fills the disk quickly)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
 - `BACKEND_FINDINGS_ENDPOINT`: The backend's `/api/insert-findings` endpoint. A run's only write: once deduplication and evaluation have decided every finding in memory, the arbiter posts all of the task's findings with their verdicts in one request, so a run that fails earlier leaves the backend unchanged and a retry judges all the findings again
@@ -202,4 +312,15 @@ The application requires the following environment variables:
 
 ## API Endpoints
 
+All endpoints except `/` need `X-API-Key: BACKEND_API_KEY`.
+
 - `GET /tasks/{task_id}/findings`: Retrieve all findings for a specific task
+- `POST /tasks/{task_id}/process`: Process a task now instead of at its deadline. A run takes
+  hours, so it starts in the background and the answer is `202` with `"status": "accepted"`;
+  the run posts the verdicts and marks the task processed when it completes. A failed run only
+  shows in the arbiter's log and leaves the task unmarked, so it can be triggered again. Other
+  answers: `200` with `"status": "already_processed"` or `"no_findings"`, `404` for a task the
+  backend does not know, and `409` while the task is being processed, by an earlier trigger or
+  its scheduled job (the scheduled job likewise skips a task a manual run is processing).
+  Shutting the service down cancels the runs in progress, and their tasks stay unmarked.
+- `POST /schedule-task/{task_id}`: Schedule a task's processing at its deadline

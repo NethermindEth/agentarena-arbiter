@@ -34,8 +34,15 @@ class TaskCache(BaseModel):
     """Model representing the task cache structure."""
 
     taskId: str | None = None
+    title: str | None = None
+    description: str | None = None
     startTime: datetime | None = None
     deadline: datetime | None = None
+    # Task checkout; the triage copies it into each run's sandboxes and never modifies it.
+    repoPath: str | None = None
+    # Audit scope: the files the task restricted the review to (empty means the whole repo).
+    selectedFiles: list[str] | None = []
+    selectedDocs: list[str] | None = []
     selectedFilesContent: str | None = None
     selectedDocsContent: str | None = None
     additionalLinks: list[str] | None = []

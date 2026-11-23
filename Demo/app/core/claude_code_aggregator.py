@@ -1,0 +1,167 @@
+"""
+Claude Code aggregator — merge a group of duplicate findings into a single digest finding.
+
+When deduplication groups several findings as the same underlying issue, evaluating each in turn
+is wasteful and loses information: each reviewer typically emphasized a different consequence or
+affected asset. This service asks Claude (through the same hardened ``claude`` CLI plumbing the
+triage agents use) to fold the whole group into ONE consolidated finding — a shared root cause
+with the distinct consequences unioned together — which the evaluator then triages as a unit.
+
+The merge reasons purely over the finding texts in the prompt, so it runs with **no tools at
+all**, in an empty temporary directory (never inside the untrusted repository checkout).
+"""
+
+from __future__ import annotations
+
+import logging
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from app.config import config
+from app.core.aggregation_prompt import AGGREGATION_PROMPT
+from app.core.claude_code_cli import (
+    VALID_SEVERITIES,
+    ClaudeCodeCLI,
+    json_block,
+    normalize_severity,
+    render_template,
+)
+
+logger = logging.getLogger(__name__)
+
+AGGREGATION_TIMEOUT_SECONDS = 600
+
+AGGREGATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "severity": {"type": "string", "enum": list(VALID_SEVERITIES)},
+        "file_paths": {"type": "array", "items": {"type": "string"}},
+        "description": {"type": "string"},
+        "rationale": {"type": "string"},
+    },
+    "required": ["title", "severity", "file_paths", "description", "rationale"],
+}
+
+
+def _str_list(value: object) -> list[str]:
+    """The non-blank items of a list or tuple as stripped strings; empty for anything else."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [text for item in value if (text := str(item).strip())]
+
+
+@dataclass(frozen=True)
+class AggregatedFinding:
+    """The consolidated finding produced by merging a group of duplicates."""
+
+    title: str
+    description: str
+    severity: str
+    file_paths: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+
+class ClaudeCodeAggregator:
+    """Drives the ``claude`` CLI to merge a group of duplicate findings into one digest finding."""
+
+    def __init__(
+        self, cli: ClaudeCodeCLI | None = None, max_budget_usd: float | None = None
+    ) -> None:
+        self.cli = cli or ClaudeCodeCLI()
+        # The same per-run spend cap as the triage agents (TRIAGE_AGENT_MAX_BUDGET_USD; 0 = none).
+        self.max_budget_usd = (
+            max_budget_usd if max_budget_usd is not None else config.triage_agent_max_budget_usd
+        )
+
+    async def aggregate(
+        self,
+        *,
+        findings: list[dict[str, object]],
+        task_title: str,
+        task_description: str,
+        default_severity: str,
+    ) -> AggregatedFinding | None:
+        """
+        Merge ``findings`` into one finding. Each is a dict of ``title``, ``claimed_severity``,
+        ``referenced_files`` and ``description``, already capped: it goes into the prompt as is.
+
+        Retries once; returns ``None`` if no valid merge comes back so the caller can fall back
+        to the representative finding. The result's file paths are the model's only: the caller
+        adds every member's full paths, which the prompt shows capped.
+        """
+        rendered = self.render_prompt(
+            findings=findings, task_title=task_title, task_description=task_description
+        )
+        for attempt in range(2):
+            with tempfile.TemporaryDirectory(prefix="arbiter-aggregate-") as tmp:
+                root = Path(tmp)
+                for sub in ("cwd", "home", "tmp"):
+                    (root / sub).mkdir()
+                res = await self.cli.run_agent(
+                    rendered,
+                    cwd=root / "cwd",
+                    home=root / "home",
+                    tmpdir=root / "tmp",
+                    tools=[],
+                    settings={"permissions": {"deny": ["WebFetch", "WebSearch"]}},
+                    json_schema=AGGREGATION_SCHEMA,
+                    timeout_s=AGGREGATION_TIMEOUT_SECONDS,
+                    max_budget_usd=self.max_budget_usd or None,
+                    label=f"aggregate (attempt {attempt + 1})",
+                )
+            parsed = self._parse(res.structured, default_severity) if res.ok else None
+            if parsed is not None:
+                return parsed
+        logger.warning(
+            "Claude Code produced no valid merged finding for a group of %d; "
+            "caller will fall back to the representative finding.",
+            len(findings),
+        )
+        return None
+
+    def render_prompt(
+        self, *, findings: list[dict[str, object]], task_title: str, task_description: str
+    ) -> str:
+        """
+        Fill the template placeholders (see aggregation_prompt.py for the token list).
+
+        The task metadata and every finding are attacker-influenced, so they are injected only as
+        JSON-serialized values via :func:`json_block` (escaped quotes/backslashes/newlines: each
+        value stays on one physical line inside its fence) and substituted in a single regex pass
+        via :func:`render_template` (an injected placeholder token is not re-expanded). Escaping
+        prevents structural breakout only; the prompt still tells the model to treat the blocks as
+        data, and the downstream triage verifies every claim against the code.
+        """
+        task_json = json_block(
+            {
+                "title": task_title or "(no title)",
+                "description": task_description or "(no description)",
+            }
+        )
+        replacements = {
+            "{{TASK_JSON}}": task_json,
+            "{{FINDINGS_JSON}}": json_block(findings),
+            "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
+        }
+        return render_template(AGGREGATION_PROMPT, replacements)
+
+    def _parse(
+        self, data: dict[str, object] | None, default_severity: str
+    ) -> AggregatedFinding | None:
+        """Validate the structured merge result."""
+        if not isinstance(data, dict):
+            return None
+        title = str(data.get("title", "")).strip()
+        description = str(data.get("description", "")).strip()
+        # A merge with no title or body is useless; treat it as a failure so we retry/fall back.
+        if not title or not description:
+            return None
+        return AggregatedFinding(
+            title=title,
+            description=description,
+            severity=normalize_severity(str(data.get("severity", "")), default_severity),
+            file_paths=_str_list(data.get("file_paths")),
+            rationale=str(data.get("rationale", "")),
+        )

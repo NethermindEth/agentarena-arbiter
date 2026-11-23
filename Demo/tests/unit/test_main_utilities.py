@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from bson import ObjectId
 
-from app.core.claude_model import FindingEvaluation
-from app.core.evaluation import FindingEvaluator
+from app.core.evaluation import FindingEvaluation, FindingEvaluator
 from app.core.gemini_model import DeduplicationResult, DuplicateFinding
 from app.models.finding_db import FindingDB, Severity, Status
 
@@ -129,7 +128,7 @@ class TestProcessTaskWrites:
             ),
             patch("app.main.post_results", new_callable=AsyncMock) as post,
             patch("app.core.deduplication.find_duplicates_structured") as dedup,
-            patch.object(FindingEvaluator, "evaluate_findings_batch") as evaluate,
+            patch.object(FindingEvaluator, "evaluate_groups") as evaluate,
         ):
             dedup.return_value = DeduplicationResult(
                 results=[
@@ -140,12 +139,16 @@ class TestProcessTaskWrites:
                     )
                 ]
             )
-            evaluate.return_value = [
-                FindingEvaluation(
-                    finding_id=f.str_id, is_valid=True, severity=Severity.MEDIUM, comment="ok"
-                )
-                for f in findings
-            ]
+            # evaluate_groups returns (evaluations, findings that could not be evaluated)
+            evaluate.return_value = (
+                [
+                    FindingEvaluation(
+                        finding_id=f.str_id, is_valid=True, severity=Severity.MEDIUM, comment="ok"
+                    )
+                    for f in findings
+                ],
+                [],
+            )
             yield findings, fetch, post, evaluate
 
     async def test_one_read_and_one_post_carry_every_verdict(self, run):
@@ -175,6 +178,21 @@ class TestProcessTaskWrites:
 
         assert await app_main.process_task("task-1") is False
         post.assert_not_called()
+
+    async def test_unevaluated_unit_does_not_hold_back_the_rest(self, run):
+        """Findings the triage could not judge go out pending; the others get their verdicts."""
+        from app import main as app_main
+
+        findings, _, post, evaluate = run
+        judged = FindingEvaluation(
+            finding_id=findings[0].str_id, is_valid=True, severity=Severity.MEDIUM, comment="ok"
+        )
+        evaluate.return_value = ([judged], [findings[1]])
+
+        assert await app_main.process_task("task-1") is True
+        post.assert_called_once()
+        assert post.call_args.args[:2] == ("task-1", findings)
+        assert findings[0].evaluated_severity == Severity.MEDIUM
 
     async def test_failed_post_is_a_failure(self, run):
         """A refused post is not reported as completed, so the task is not marked processed."""

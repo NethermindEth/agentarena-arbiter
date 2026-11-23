@@ -35,7 +35,8 @@ def _extract_archive(content: bytes, temp_dir: str) -> str:
 
 async def download_repository(repo_url: str, config: Settings) -> tuple[str | None, str | None]:
     """
-    Download repository ZIP file and extract to a temporary directory.
+    Download repository ZIP file and extract it to a temporary directory under
+    ``config.data_dir``, which the triage agents may not read.
 
     Args:
         repo_url: URL to download repository ZIP
@@ -55,8 +56,10 @@ async def download_repository(repo_url: str, config: Settings) -> tuple[str | No
                 f"Downloading repository from {repo_url} (attempt {attempt + 1}/{max_retries})"
             )
 
-            # Create a temporary directory
-            temp_dir = tempfile.mkdtemp()
+            # Under the task-data directory, which the triage agents may not read: the system
+            # temp dir is readable to them, and another task's run may be in progress.
+            os.makedirs(config.data_dir, exist_ok=True)
+            temp_dir = tempfile.mkdtemp(prefix="download-", dir=config.data_dir)
 
             # Download the ZIP file
             async with httpx.AsyncClient(timeout=20.0) as client:
