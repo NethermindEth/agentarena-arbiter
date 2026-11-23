@@ -81,7 +81,8 @@ the sponsor, so every agent is treated as potentially hostile:
   commands they run).
 - Commands run in the Claude Code **bubblewrap sandbox** with `failIfUnavailable` and
   `allowUnsandboxedCommands: false`: writes only inside the agent's own sandbox, no reads of the
-  service user's HOME, the service directory, task data, the container credential mounts
+  service user's HOME, the service directory, task data (repositories are also downloaded and
+  extracted there, not in the readable system temp dir), the container credential mounts
   (`/var/run/secrets`, `/run/secrets`) or anything else in the triage work directory (other
   agents, runs and evidence), no network for finding agents (package
   registries only for the build agent, via `strictAllowlist`). bubblewrap must be >= 0.8.0
@@ -103,7 +104,8 @@ the sponsor, so every agent is treated as potentially hostile:
   commit; its build report lists every dependency fetched without a pin.
 - Wall-clock timeouts kill the agent's whole process group, and any process an agent leaves
   running in its sandbox is killed before its files are read; the service process is marked
-  non-dumpable so agents cannot read its environment through `/proc`.
+  non-dumpable so agents cannot read its environment through `/proc`, and the `cp`, `chmod`
+  and bubblewrap processes it starts get only `PATH`, so they carry no API key either.
 - PoC evidence is kept under `TRIAGE_WORK_DIR/run-*/evidence/` for 30 days (older runs are
   deleted when a run starts); sandboxes are deleted after each run unless `DEBUG` is set. A
   run in progress holds a lock on its directory, so when a run's process dies (a restart, an

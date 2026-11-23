@@ -64,6 +64,7 @@ import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -124,14 +125,24 @@ class SandboxUnavailable(RuntimeError):
     """The command sandbox (or the CLI that runs it) cannot run here."""
 
 
+def _run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """
+    ``subprocess.run`` with only ``PATH`` in the environment. The service's environment holds
+    the API keys, and a child is dumpable again after exec (see :func:`harden_service_process`),
+    so while it ran a process of the same user could read them from its /proc/<pid>/environ.
+    """
+    env = {"PATH": os.environ.get("PATH", os.defpath)}
+    # Callers pass fixed argv: coreutils on paths the service built, or the bwrap shutil.which
+    # found; PATH is the service's own.
+    return subprocess.run(argv, env=env, **kwargs)  # noqa: S603  see above
+
+
 # ----------------------------------------------------------------------------------------
 # Host checks
 # ----------------------------------------------------------------------------------------
 def _bwrap_version(bwrap: str) -> tuple[int, ...] | None:
     try:
-        out = subprocess.run(  # noqa: S603  bwrap is the absolute path shutil.which found
-            [bwrap, "--version"], capture_output=True, text=True, timeout=10
-        ).stdout
+        out = _run([bwrap, "--version"], capture_output=True, text=True, timeout=10).stdout
     except OSError, subprocess.TimeoutExpired:
         return None
     m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", out or "")
@@ -175,7 +186,7 @@ def probe_bubblewrap() -> str | None:
         "true",
     ]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)  # noqa: S603  fixed argv, bwrap from shutil.which
+        proc = _run(argv, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"bubblewrap probe failed: {exc}"
     if proc.returncode != 0:
@@ -189,8 +200,9 @@ def harden_service_process() -> None:
 
     The arbiter's environment holds the Claude, Gemini and backend API keys. A non-dumpable
     process's /proc entries are root-owned, so even a sandbox escape running as the same user
-    cannot read ``/proc/<arbiter pid>/environ``. Children (the ``claude`` CLI) are unaffected:
-    the flag resets on exec.
+    cannot read ``/proc/<arbiter pid>/environ``. Children are dumpable again (the flag resets
+    on exec), so each gets a minimal environment instead: ``child_env`` for the ``claude`` CLI,
+    :func:`_run` for the coreutils and bubblewrap the service runs.
     """
     if not sys.platform.startswith("linux"):
         return
@@ -513,7 +525,7 @@ def _force_rmtree(path: Path) -> None:
     if not stat.S_ISDIR(st.st_mode):
         os.unlink(path)
         return
-    subprocess.run(["chmod", "-R", "u+rwX", "--", str(path)], capture_output=True)  # noqa: S603, S607  fixed coreutils argv on paths the service built; PATH is the service's own
+    _run(["chmod", "-R", "u+rwX", "--", str(path)], capture_output=True)
     shutil.rmtree(path, ignore_errors=True)
     if os.path.lexists(path):
         logger.warning("could not fully delete %s", path)
@@ -527,11 +539,7 @@ def _fresh_dir(path: Path) -> None:
 
 def _copy_tree(src: Path, dst: Path) -> None:
     """``cp -a`` (timestamps preserved so build caches stay valid; symlinks copied as links)."""
-    subprocess.run(  # noqa: S603  fixed coreutils argv on paths the service built; PATH is the service's own
-        ["cp", "-a", "--reflink=auto", f"{src}/.", str(dst)],  # noqa: S607  see above
-        check=True,
-        capture_output=True,
-    )
+    _run(["cp", "-a", "--reflink=auto", f"{src}/.", str(dst)], check=True, capture_output=True)
 
 
 # ----------------------------------------------------------------------------------------
@@ -624,8 +632,8 @@ class TriageWorkspace:
             if not stat.S_ISDIR(st.st_mode):
                 raise RuntimeError(f"{d} is no longer a real directory")
         _fresh_dir(self.base.tmp)
-        subprocess.run(  # noqa: S603  fixed coreutils argv on paths the service built; PATH is the service's own
-            ["chmod", "-R", "u+rwX", "--", str(self.base.repo), str(self.base.home)],  # noqa: S607  see above
+        _run(
+            ["chmod", "-R", "u+rwX", "--", str(self.base.repo), str(self.base.home)],
             capture_output=True,
         )
         restored = self._restore_checkout()
@@ -715,8 +723,10 @@ class TriageWorkspace:
         link in the base is checked on its own, so a virtualenv's ``python3 -> python`` stays
         when ``python -> /usr/bin/python3`` does. An absolute link may name a system path, but
         not lead into the work directory (other runs and agents, or the shared base instead of
-        the agent's own copy), a secret region or a process-relative path, and may not climb
-        with "..", which after a process-relative step leads somewhere else for each process.
+        the agent's own copy), a secret region or a process-relative path, nor to a directory
+        holding one (``/``, ``/var``...), from where the file tools could walk into it; and it
+        may not climb with "..", which after a process-relative step leads somewhere else for
+        each process.
         """
         target = Path(os.readlink(link))
         if target.is_absolute():
@@ -724,7 +734,7 @@ class TriageWorkspace:
                 return False
             forbidden = [self.work_dir, *self.secret_paths, *_PROCESS_RELATIVE]
             return not any(
-                _is_within(path, region)
+                _is_within(path, region) or _is_within(region, path)
                 for path in (target, target.resolve())
                 for region in forbidden
             )

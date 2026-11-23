@@ -1249,6 +1249,7 @@ class TestSealedBaseLinks:
         venv.mkdir(parents=True)
         os.symlink(system, venv / "python")  # a virtualenv's interpreter link
         os.symlink("python", venv / "python3")
+        os.symlink(system.parent, ws.base.repo / "sysbin")  # a system dir holding nothing denied
         other_run = ws.work_dir / "run-other" / "evidence"
         other_run.mkdir(parents=True)
         planted = {
@@ -1264,6 +1265,9 @@ class TestSealedBaseLinks:
                 ws.base.repo / "proc_climb",
             ),
             "process-relative": (Path("/dev/fd/0"), ws.base.repo / "dev_fd"),
+            # Directories holding a denied region, from where the file tools could walk in.
+            "the root": (Path("/"), ws.base.repo / "sys"),
+            "a parent of the work dir and secrets": (tmp_path, ws.base.home / "up"),
         }
         for target, link in planted.values():
             os.symlink(target, link)
@@ -1272,6 +1276,7 @@ class TestSealedBaseLinks:
 
         assert os.readlink(venv / "python") == str(system)
         assert os.readlink(venv / "python3") == "python"
+        assert os.readlink(ws.base.repo / "sysbin") == str(system.parent)
         for name, (_, link) in planted.items():
             assert not os.path.lexists(link), name
 
@@ -1868,3 +1873,48 @@ class TestPromptsWithoutPocs:
             assert bool(found) is with_pocs, (name, found)
             if not with_pocs:
                 assert "no PoC can be run for this finding" in prompt, name
+
+
+class TestHardening:
+    def test_service_subprocesses_get_no_api_keys(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from app.core import triage_sandbox
+
+        monkeypatch.setenv("BACKEND_API_KEY", "backend-secret")
+        envs = []
+        real_run = subprocess.run
+
+        def recording_run(argv, **kwargs):
+            envs.append(kwargs.get("env"))
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(triage_sandbox.subprocess, "run", recording_run)
+        (tmp_path / "secret").mkdir()
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(_make_repo(tmp_path))  # cp
+        ws.seal_base()  # chmod
+        ws.discard(ws.make_sandbox("u000-analyst"))  # cp, then chmod while deleting
+
+        assert len(envs) >= 4
+        assert all(env == {"PATH": os.environ["PATH"]} for env in envs)
+
+    async def test_the_repository_is_extracted_where_agents_cannot_read(self, tmp_path):
+        import io
+        import zipfile
+
+        from app.task_utils import download_repository
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("repo-main/src/Vault.sol", "contract Vault {}\n")
+        response = SimpleNamespace(content=buf.getvalue(), raise_for_status=lambda: None)
+        client = SimpleNamespace(get=AsyncMock(return_value=response))
+        settings = SimpleNamespace(data_dir=str(tmp_path / "task_data"), backend_api_key="k")
+
+        with patch("app.task_utils.httpx.AsyncClient") as client_class:
+            client_class.return_value.__aenter__.return_value = client
+            repo_root, temp_dir = await download_repository("http://backend.test/repo", settings)
+
+        assert Path(temp_dir).parent == tmp_path / "task_data"
+        assert (Path(repo_root) / "src" / "Vault.sol").exists()
