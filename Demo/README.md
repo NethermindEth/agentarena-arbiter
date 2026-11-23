@@ -44,8 +44,8 @@ per unit:  Analyst ─ code trace + PoC in its own sandbox
   rubric (Critical is stored as `High`) and `evaluation_comment` set; `INVALID` →
   `Status.DISPUTED` with `evaluated_severity = Info`; `INFORMATIONAL` (true, no security impact)
   counts as valid `Info` only when the judge says a developer would change code because of it,
-  otherwise it is disputed. A `VALID` / `PARTIALLY_VALID` ruling rated Informational follows
-  the `INFORMATIONAL` rule, and one rated Invalid is disputed.
+  otherwise it is disputed. Any ruling rated Invalid is disputed, and a `VALID` /
+  `PARTIALLY_VALID` one rated Informational follows the `INFORMATIONAL` rule.
 - No verdict is recorded without the judge. A unit whose agents fail (after retries) gets no
   verdict; the run then posts nothing and leaves the task unmarked, so the backend is unchanged
   and `POST /tasks/{task_id}/process` judges the whole task again. If the sandbox preflight
@@ -77,8 +77,9 @@ the sponsor, so every agent is treated as potentially hostile:
   commands they run).
 - Commands run in the Claude Code **bubblewrap sandbox** with `failIfUnavailable` and
   `allowUnsandboxedCommands: false`: writes only inside the agent's own sandbox, no reads of the
-  service user's HOME, the service directory, task data or anything else in the triage work
-  directory (other agents, runs and evidence), no network for finding agents (package
+  service user's HOME, the service directory, task data, the container credential mounts
+  (`/var/run/secrets`, `/run/secrets`) or anything else in the triage work directory (other
+  agents, runs and evidence), no network for finding agents (package
   registries only for the build agent, via `strictAllowlist`). bubblewrap must be >= 0.8.0
   and not setuid (so nested user namespaces are disabled); Claude Code's "weaker nested
   sandbox" mode is not supported because agents could undo its write denies.
@@ -111,6 +112,9 @@ rather than running PoCs unsandboxed or falling back to static analysis.
 each agent's TMPDIR under it, and a Unix socket path is limited to 107 bytes (the preflight
 checks it).
 Use a dedicated, spend-limited Anthropic key for `CLAUDE_API_KEY`.
+On Kubernetes, set `automountServiceAccountToken: false` on the pod: the arbiter never calls
+the cluster API, and agents run untrusted code (the sandbox also denies reads of
+`/var/run/secrets` and `/run/secrets`, but a token that is not mounted cannot leak).
 
 ## Setup and Installation
 

@@ -20,11 +20,12 @@ Isolation model (see also app/core/claude_code_cli.py):
   (never fall back to unsandboxed execution) and ``allowUnsandboxedCommands: false`` (the
   model cannot opt out per command). Writes are confined to the agent's own
   ``repo``/``.home``/``.tmp``; reads of the service user's HOME, the service directory, the
-  task-data directory and the whole triage work directory (every other agent, run and piece of
-  evidence) are denied, except the agent's own sandbox; network is a strict allowlist (empty for
-  finding agents, package registries for the build agent). bubblewrap must be >= 0.8.0 and not
-  setuid so nested user namespaces are disabled; Claude Code's "weaker nested sandbox" mode is
-  deliberately not supported (a nested user namespace can undo its write denies).
+  task-data directory, the container credential mounts and the whole triage work directory
+  (every other agent, run and piece of evidence) are denied, except the agent's own sandbox;
+  network is a strict allowlist (empty for finding agents, package registries for the build
+  agent). bubblewrap must be >= 0.8.0 and not setuid so nested user namespaces are disabled;
+  Claude Code's "weaker nested sandbox" mode is deliberately not supported (a nested user
+  namespace can undo its write denies).
 * PoCs move between agents only through **Python**: after an agent exits (and any process it
   left behind is killed), the PoC files it *created* (new code files under a test, script or
   poc directory, never configuration or dependencies; regular files with plain names only,

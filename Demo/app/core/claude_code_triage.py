@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 
 # The service's own directory (Demo/ locally, /app in the image): agents may never read it.
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
+# Container credential mounts (the Kubernetes service-account token, Docker secrets). The judge's
+# summary is posted as the evaluation comment, so anything an agent can read could reach it.
+SYSTEM_SECRET_PATHS = (Path("/var/run/secrets"), Path("/run/secrets"))
 MAX_COMMENT_CHARS = 2000
 # Wall-clock limits for one finding agent and for the build agent.
 AGENT_TIMEOUT_SECONDS = 1800
@@ -148,11 +151,17 @@ class ClaudeCodeTriage:
     # --- preflight -----------------------------------------------------------------------
     def secret_paths(self) -> list[Path]:
         """
-        Regions no agent may read: the service user's HOME, the service dir, task data, and the
-        service's working directory (where a .env may live). The filesystem root is never one:
-        denying it would deny everything.
+        Regions no agent may read: the service user's HOME, the service dir, task data, the
+        service's working directory (where a .env may live) and the container credential mounts.
+        The filesystem root is never one: denying it would deny everything.
         """
-        candidates = [Path.home(), SERVICE_ROOT, Path(self.cfg.data_dir).resolve(), Path.cwd()]
+        candidates = [
+            Path.home(),
+            SERVICE_ROOT,
+            Path(self.cfg.data_dir).resolve(),
+            Path.cwd(),
+            *SYSTEM_SECRET_PATHS,
+        ]
         return [p for p in candidates if p.resolve() != Path(p.anchor)]
 
     def preflight(self) -> None:
@@ -456,14 +465,16 @@ class ClaudeCodeTriage:
         VALID / PARTIALLY_VALID count at the rated severity (Critical is stored as High);
         INVALID is disputed; INFORMATIONAL (true, but no security impact) counts as Info only
         when the judge says a competent developer would change code because of it. The schema
-        lets the verdict and the severity disagree, so a VALID / PARTIALLY_VALID ruling rated
-        Informational or Invalid is handled as that verdict: the actionable rule cannot be
-        bypassed, and a finding rated Invalid never counts.
+        lets the verdict and the severity disagree, so a ruling rated Invalid is disputed
+        whatever its verdict, and a VALID / PARTIALLY_VALID one rated Informational follows the
+        INFORMATIONAL rule: the actionable check cannot be bypassed.
         """
         verdict = str(final.get("final_verdict", "")).upper()
         rated = str(final.get("final_severity", "")).upper()
-        if verdict in ("VALID", "PARTIALLY_VALID") and rated in ("INFORMATIONAL", "INVALID"):
-            verdict = rated
+        if rated == "INVALID":
+            verdict = "INVALID"
+        elif rated == "INFORMATIONAL" and verdict in ("VALID", "PARTIALLY_VALID"):
+            verdict = "INFORMATIONAL"
         if verdict in ("VALID", "PARTIALLY_VALID"):
             is_valid = True
             severity = normalize_severity(str(final.get("final_severity", "")), "Info")

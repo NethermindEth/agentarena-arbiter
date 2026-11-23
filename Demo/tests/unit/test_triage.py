@@ -1495,6 +1495,40 @@ class TestVerdictSeverityConsistency:
         if severity == "Informational":
             assert v.comment.startswith("Informational:")
 
+    @pytest.mark.parametrize(
+        "verdict,severity",
+        [
+            ("INFORMATIONAL", "Invalid"),  # Invalid disputes whatever the verdict
+            ("SOMETHING_ELSE", "High"),  # outside the schema's enum: never counted
+            ("", ""),
+        ],
+    )
+    def test_invalid_rating_and_unknown_verdicts_are_disputed(self, tmp_path, verdict, severity):
+        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+        v = triage._to_verdict(dict(_final(verdict, severity), actionable=True))
+        assert v.is_valid is False and v.severity == "Info"
+
+
+class TestSystemSecrets:
+    def test_container_credential_mounts_are_denied(self, tmp_path):
+        from app.core.claude_code_triage import SYSTEM_SECRET_PATHS
+
+        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+        assert set(SYSTEM_SECRET_PATHS) <= set(triage.secret_paths())
+        assert {"/var/run/secrets", "/run/secrets"} == {str(p) for p in SYSTEM_SECRET_PATHS}
+
+    def test_an_existing_mount_reaches_the_sandbox_settings(self, tmp_path):
+        # A stand-in for a mounted /run/secrets: an existing secret path is denied to Bash and
+        # to the file tools alike.
+        mount = tmp_path / "run-secrets"
+        (mount / "kubernetes.io").mkdir(parents=True)
+        ws = _workspace(tmp_path, mount)
+        ws.init_base(_make_repo(tmp_path))
+        ws.seal_base()
+        s = ws.settings_for(ws.make_sandbox("u000-judge"), allow_bash=True, allowed_domains=[])
+        assert str(mount.resolve()) in s["sandbox"]["filesystem"]["denyRead"]
+        assert f"Read(/{mount.resolve()}/**)" in s["permissions"]["deny"]
+
 
 class TestUnknownCost:
     def test_runs_without_a_result_have_unknown_cost(self):
