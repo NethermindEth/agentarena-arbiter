@@ -45,11 +45,6 @@ AGGREGATION_SCHEMA = {
 }
 
 
-def _str_list(value: object) -> list[str]:
-    """Return a list or tuple's items as strings, and an empty list for anything else."""
-    return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
-
-
 @dataclass(frozen=True)
 class AggregatedFinding:
     """The consolidated finding produced by merging a group of duplicates."""
@@ -82,7 +77,8 @@ class ClaudeCodeAggregator:
         default_severity: str,
     ) -> AggregatedFinding | None:
         """
-        Merge ``findings`` (dicts of title/description/severity/file_paths) into one finding.
+        Merge ``findings`` into one finding. Each is a dict of ``title``, ``claimed_severity``,
+        ``referenced_files`` and ``description``, already capped: it goes into the prompt as is.
 
         Retries once; returns ``None`` if no valid merge comes back so the caller can fall back
         to the representative finding. The referenced file paths of every input are always
@@ -137,20 +133,9 @@ class ClaudeCodeAggregator:
                 "description": task_description or "(no description)",
             }
         )
-        findings_json = json_block(
-            [
-                {
-                    "title": finding.get("title", ""),
-                    "claimed_severity": finding.get("severity", "unknown"),
-                    "referenced_files": _str_list(finding.get("file_paths")),
-                    "description": finding.get("description", ""),
-                }
-                for finding in findings
-            ]
-        )
         replacements = {
             "{{TASK_JSON}}": task_json,
-            "{{FINDINGS_JSON}}": findings_json,
+            "{{FINDINGS_JSON}}": json_block(findings),
             "{{VALID_SEVERITIES}}": ", ".join(VALID_SEVERITIES),
         }
         return render_template(AGGREGATION_PROMPT, replacements)
@@ -194,5 +179,5 @@ class ClaudeCodeAggregator:
 
         add(model_paths)
         for finding in findings:
-            add(finding.get("file_paths"))
+            add(finding.get("referenced_files"))
         return ordered

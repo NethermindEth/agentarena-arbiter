@@ -21,13 +21,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from app.config import config
-from app.core.claude_code_cli import ClaudeCodeCLI, normalize_severity
+from app.core.claude_code_cli import AgentResult, ClaudeCodeCLI, normalize_severity
 from app.core.triage_prompts import (
     ANALYSIS_SCHEMA,
     BUILD_SCHEMA,
@@ -413,11 +414,47 @@ class ClaudeCodeTriage:
         retries: int,
     ) -> dict[str, Any] | None:
         """Run one role in a fresh sandbox (with retries); collect the PoCs it created."""
-        ws = run.ws
         bash = unit.key in run.poc_units
         tools = ["Read", "Grep", "Glob"] + (["Edit", "Write", "Bash"] if bash else [])
         for attempt in range(retries + 1):
             label = f"{unit.key}-{role}" + (f"-retry{attempt}" if attempt else "")
+            res = await self._attempt(
+                run, unit, role, label, make_prompt, schema, staged=staged, tools=tools, bash=bash
+            )
+            if res is None:
+                error = "its sandbox could not be prepared"
+            else:
+                await self._account(run, res)
+                if res.ok and res.structured:
+                    return res.structured
+                error = res.error
+            logger.warning("[%s] %s attempt %d failed: %s", unit.key, role, attempt + 1, error)
+        return None
+
+    async def _attempt(
+        self,
+        run: _Run,
+        unit: TriageUnit,
+        role: str,
+        label: str,
+        make_prompt: Callable[[str], str],
+        schema: dict[str, Any],
+        *,
+        staged: Sequence[str],
+        tools: list[str],
+        bash: bool,
+    ) -> AgentResult | None:
+        """
+        One attempt of a role in a fresh sandbox; None when no agent ran.
+
+        A disk error preparing the sandbox or saving the evidence fails this attempt only, so
+        the role's retry still runs. An agent that already ran was paid for, so its result is
+        returned, as failed: the PoCs it cites did not reach the evidence, and later agents
+        could not re-run them.
+        """
+        ws = run.ws
+        res: AgentResult | None = None
+        try:
             # The semaphore covers sandbox creation too, so disk use is bounded by it.
             async with run.sem:
                 sb = await asyncio.to_thread(ws.make_sandbox, label)
@@ -441,13 +478,12 @@ class ClaudeCodeTriage:
                         await asyncio.to_thread(ws.collect_evidence, sb, unit.key, role, changes)
                 finally:
                     await asyncio.to_thread(ws.discard, sb)
-            await self._account(run, res)
-            if res.ok and res.structured:
-                return res.structured
-            logger.warning("[%s] %s attempt %d failed: %s", unit.key, role, attempt + 1, res.error)
-        return None
+        except (OSError, subprocess.CalledProcessError) as exc:
+            logger.warning("[%s] sandbox error: %r", label, exc)
+            return None if res is None else replace(res, ok=False, error=f"sandbox error: {exc!r}")
+        return res
 
-    async def _account(self, run: _Run, res) -> None:
+    async def _account(self, run: _Run, res: AgentResult) -> None:
         async with run.lock:
             run.agents += 1
             if res.cost_usd is None:

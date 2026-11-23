@@ -698,9 +698,13 @@ class TriageWorkspace:
         logger.debug("sandbox %s is %s", name, sb.root)
         _force_rmtree(sb.root)
         sb.root.mkdir(mode=0o700)
-        _copy_tree(self.base.root, sb.root)
-        _fresh_dir(sb.tmp)
-        _fresh_dir(sb.repo / TRIAGE_DIR)
+        try:
+            _copy_tree(self.base.root, sb.root)
+            _fresh_dir(sb.tmp)
+            _fresh_dir(sb.repo / TRIAGE_DIR)
+        except BaseException:
+            _force_rmtree(sb.root)  # a half-made copy would hold its disk space until the run ends
+            raise
         return sb
 
     def finish(self, sb: Sandbox) -> None:

@@ -733,13 +733,20 @@ class TestAggregator:
         agg = ClaudeCodeAggregator(cli=cli)
         merged = await agg.aggregate(
             findings=[
-                {"title": "x", "description": "y", "severity": "Low", "file_paths": ["b.sol"]}
+                {
+                    "title": "x",
+                    "claimed_severity": "Low",
+                    "referenced_files": ["b.sol"],
+                    "description": "y",
+                }
             ],
             task_title="t",
             task_description="d",
             default_severity="Low",
         )
         assert merged.title == "Merged" and merged.file_paths == ["a.sol", "b.sol"]
+        prompt = cli.run_agent.call_args.args[0]
+        assert '"claimed_severity": "Low"' in prompt and '"b.sol"' in prompt
         kw = cli.run_agent.call_args.kwargs
         assert kw["tools"] == [] and "sandbox" not in kw["settings"]
         assert "checkout" not in str(kw["cwd"])
@@ -1592,3 +1599,87 @@ class TestTaskTextCaps:
 
         task = _task_cache(tmp_path).model_copy(update={"description": None})
         assert _capped_task(task) == task
+
+
+class TestSandboxErrors:
+    """A disk error around one agent fails that attempt only, so the role's retry still runs."""
+
+    def _triage(self, tmp_path, cli):
+        t = ClaudeCodeTriage(cli=cli, settings=_cfg(tmp_path))
+        (tmp_path / "secret").mkdir(exist_ok=True)
+        t.secret_paths = lambda: [tmp_path / "secret"]
+        return t
+
+    @staticmethod
+    def _cli(analyses: int):
+        return _fake_cli(
+            {
+                "build": [{"build_succeeded": True, "projects": []}],
+                "analyst": [ANALYSIS] * analyses,
+                "refute": [AGREE],
+                "severity": [AGREE],
+                "judge": [_final()],
+            }
+        )
+
+    def test_half_made_sandbox_is_removed(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from app.core import triage_sandbox
+
+        (tmp_path / "secret").mkdir()
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(_make_repo(tmp_path))
+        ws.seal_base()
+
+        def copy_fails_midway(src, dst):
+            (dst / "partial").write_text("x")
+            raise subprocess.CalledProcessError(1, ["cp"])
+
+        monkeypatch.setattr(triage_sandbox, "_copy_tree", copy_fails_midway)
+        with pytest.raises(subprocess.CalledProcessError):
+            ws.make_sandbox("u000-analyst")
+        assert list(ws.agents_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_sandbox_error_before_the_agent_retries_the_role(self, tmp_path, monkeypatch):
+        original = TriageWorkspace.make_sandbox
+        failed: list[str] = []
+
+        def flaky(self, name):
+            if name == "u000-analyst" and not failed:
+                failed.append(name)
+                raise OSError(28, "No space left on device")
+            return original(self, name)
+
+        monkeypatch.setattr(TriageWorkspace, "make_sandbox", flaky)
+        cli, calls = self._cli(analyses=1)
+        verdicts = await self._triage(tmp_path, cli).run_task(
+            _task_cache(tmp_path), [_unit(severity="High")]
+        )
+        assert failed and not verdicts["u000"].error and verdicts["u000"].is_valid
+        assert [r for r, _ in calls].count("analyst") == 1  # the failed attempt ran no agent
+
+    @pytest.mark.asyncio
+    async def test_evidence_error_after_a_paid_run_is_counted_and_retried(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        original = TriageWorkspace.collect_evidence
+        failed: list[str] = []
+
+        def flaky(self, sb, unit, role, changes):
+            if role == "analyst" and not failed:
+                failed.append(role)
+                raise OSError(28, "No space left on device")
+            return original(self, sb, unit, role, changes)
+
+        monkeypatch.setattr(TriageWorkspace, "collect_evidence", flaky)
+        cli, calls = self._cli(analyses=2)
+        with caplog.at_level("INFO", logger="app.core.claude_code_triage"):
+            verdicts = await self._triage(tmp_path, cli).run_task(
+                _task_cache(tmp_path), [_unit(severity="High")]
+            )
+        assert not verdicts["u000"].error and verdicts["u000"].is_valid
+        assert [r for r, _ in calls].count("analyst") == 2
+        # build, 2 analysts, 2 verifiers and the judge, $0.10 each; the lost analyst is a failure.
+        assert "6 agents (1 failed), total cost $0.60" in caplog.text

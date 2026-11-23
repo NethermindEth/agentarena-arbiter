@@ -27,23 +27,13 @@ class TestFindingEvaluator:
     @pytest.fixture
     def evaluator(self):
         """Create FindingEvaluator instance."""
-        return FindingEvaluator(batch_size=5)
-
-    def test_initialization(self, evaluator):
-        """Test evaluator initializes with correct batch size."""
-        assert evaluator.batch_size == 5
+        return FindingEvaluator()
 
     def test_group_findings_for_evaluation_no_duplicates(self, evaluator, sample_findings):
-        """Test grouping findings when there are no duplicates."""
-        duplicate_relationships = []
+        """With no duplicates, every finding is a group (a unit) of its own."""
+        groups = evaluator.group_findings_for_evaluation(sample_findings, [])
 
-        related_groups, individual_groups = evaluator.group_findings_for_evaluation(
-            sample_findings, duplicate_relationships
-        )
-
-        # With no duplicates, all findings should have been batched together in an individual group
-        assert len(individual_groups) == 1
-        assert len(individual_groups[0]) == len(sample_findings)
+        assert groups == [[f] for f in sample_findings]
 
     def test_group_findings_for_evaluation_with_duplicates(self, evaluator, sample_findings):
         """Test grouping findings when there are duplicates."""
@@ -56,24 +46,10 @@ class TestFindingEvaluator:
             )
         ]
 
-        related_groups, individual_groups = evaluator.group_findings_for_evaluation(
-            sample_findings, duplicate_relationships
-        )
+        groups = evaluator.group_findings_for_evaluation(sample_findings, duplicate_relationships)
 
-        # Should have at least one group with multiple findings (the duplicates)
-        has_group_with_multiple = any(len(group) > 1 for group in related_groups)
-        assert has_group_with_multiple
-
-        # Related groups should contain the first two findings
-        assert len(related_groups) == 1
-        assert len(related_groups[0]) == 2
-        assert related_groups[0][0] == sample_findings[0]
-        assert related_groups[0][1] == sample_findings[1]
-
-        # Individual groups should contain the third finding alone
-        assert len(individual_groups) == 1
-        assert len(individual_groups[0]) == 1
-        assert individual_groups[0][0] == sample_findings[2]
+        # The duplicate group first, its original leading; then the third finding alone.
+        assert groups == [[sample_findings[0], sample_findings[1]], [sample_findings[2]]]
 
     @pytest.mark.asyncio
     async def test_evaluate_all_findings_empty_list(self, evaluator, sample_task_cache):
@@ -192,23 +168,17 @@ class TestTransitiveGrouping:
         if reverse:
             relationships.reverse()
 
-        related, individual = FindingEvaluator().group_findings_for_evaluation(
-            [a, b, c], relationships
-        )
+        groups = FindingEvaluator().group_findings_for_evaluation([a, b, c], relationships)
 
-        assert related == [[c, a, b]]
-        assert individual == []
+        assert groups == [[c, a, b]]
 
     def test_groups_joined_through_a_shared_member_merge(self):
         a, b, c, d, e = (_finding(i) for i in range(5))
         relationships = [_dup(a, b), _dup(c, d), _dup(b, d)]
 
-        related, individual = FindingEvaluator().group_findings_for_evaluation(
-            [a, b, c, d, e], relationships
-        )
+        groups = FindingEvaluator().group_findings_for_evaluation([a, b, c, d, e], relationships)
 
-        assert related == [[d, a, b, c]]
-        assert individual == [[e]]
+        assert groups == [[d, a, b, c], [e]]
 
     def test_self_and_unknown_relationships_are_ignored(self):
         a, b = _finding(0), _finding(1)
@@ -217,12 +187,9 @@ class TestTransitiveGrouping:
             DuplicateFinding(findingId=b.str_id, duplicateOf="missing", explanation=""),
         ]
 
-        related, individual = FindingEvaluator().group_findings_for_evaluation(
-            [a, b], relationships
-        )
+        groups = FindingEvaluator().group_findings_for_evaluation([a, b], relationships)
 
-        assert related == []
-        assert individual == [[a, b]]
+        assert groups == [[a], [b]]
 
 
 class TestPromptBudgets:

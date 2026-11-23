@@ -116,7 +116,7 @@ class TestCompleteWorkflow:
             # evaluate_groups returns (evaluations, findings that could not be evaluated)
             mock_evaluate_groups.return_value = (expected_evaluations, [])
 
-            evaluator = FindingEvaluator(batch_size=10)
+            evaluator = FindingEvaluator()
             eval_result = await evaluator.evaluate_all_findings(
                 workflow_findings, duplicate_relationships, sample_task_cache
             )
@@ -177,7 +177,7 @@ class TestCompleteWorkflow:
                     [],
                 )
 
-                evaluator = FindingEvaluator(batch_size=10)
+                evaluator = FindingEvaluator()
 
                 # Get duplicate relationships from deduplication result
                 duplicate_rels = dedup_result["deduplication"]["duplicate_relationships"]
@@ -224,7 +224,7 @@ class TestCompleteWorkflow:
                 # evaluate_groups returns (evaluations, findings that could not be evaluated)
                 mock_evaluate_groups.return_value = (mock_evaluations, [])
 
-                evaluator = FindingEvaluator(batch_size=10)
+                evaluator = FindingEvaluator()
                 eval_result = await evaluator.evaluate_all_findings(
                     workflow_findings,
                     [],  # No duplicate relationships
@@ -279,7 +279,7 @@ class TestCompleteWorkflow:
             with patch.object(FindingEvaluator, "evaluate_groups") as mock_evaluate_groups:
                 mock_evaluate_groups.side_effect = Exception("Evaluation API error")
 
-                evaluator = FindingEvaluator(batch_size=10)
+                evaluator = FindingEvaluator()
 
                 with pytest.raises(Exception, match="Evaluation API error"):
                     await evaluator.evaluate_all_findings(workflow_findings, [], sample_task_cache)

@@ -151,16 +151,10 @@ class FindingEvaluator:
     to the backend.
     """
 
-    def __init__(self, batch_size: int = 10):
-        """
-        Initialize the finding evaluator.
-
-        Args:
-            batch_size: Maximum number of individual findings per grouping batch
-        """
+    def __init__(self) -> None:
+        """Initialize the finding evaluator with its triage pipeline and duplicate merger."""
         self.triage = ClaudeCodeTriage()
         self.aggregator = ClaudeCodeAggregator()
-        self.batch_size = batch_size
 
     def preflight(self) -> None:
         """
@@ -196,21 +190,18 @@ class FindingEvaluator:
 
     def group_findings_for_evaluation(
         self, findings: list[FindingDB], duplicate_relationships: list[DuplicateFinding]
-    ) -> tuple[list[list[FindingDB]], list[list[FindingDB]]]:
+    ) -> list[list[FindingDB]]:
         """
-        Group findings for evaluation based on duplicate relationships.
+        Group findings for evaluation based on duplicate relationships; each group is one unit.
 
         Relationships are merged transitively, in any order: "A duplicates B" and "B duplicates
         C" make one group. Each group starts with its root original, the finding the others
-        duplicate, and lists the rest in the order of ``findings``. Findings in no relationship
-        are batched by ``batch_size``.
+        duplicate, and lists the rest in the order of ``findings``. The duplicate groups come
+        first, then every finding in no relationship as a group of its own.
 
         Args:
             findings: List of findings to group
             duplicate_relationships: List of duplicate relationships from deduplication
-
-        Returns:
-            ``(related_groups, individual_batches)``
         """
         finding_map = {f.str_id: f for f in findings}
         # Union-find over finding ids: a duplicate's root is linked under its original's root.
@@ -246,17 +237,12 @@ class FindingEvaluator:
             for root_id, group in groups.items()
         ]
 
-        remaining_findings = [f for f in findings if f.str_id not in linked]
-        individual_findings_groups = [
-            remaining_findings[i : i + self.batch_size]
-            for i in range(0, len(remaining_findings), self.batch_size)
-        ]
-
+        individual = [[f] for f in findings if f.str_id not in linked]
         logger.info(
-            f"Created {len(related_findings_groups)} related findings groups and {len(individual_findings_groups)} individual findings groups from {len(findings)} findings"
+            f"Grouped {len(findings)} findings into {len(related_findings_groups)} duplicate "
+            f"group(s) and {len(individual)} individual finding(s)"
         )
-
-        return related_findings_groups, individual_findings_groups
+        return related_findings_groups + individual
 
     @staticmethod
     def _finding_json(finding: FindingDB) -> dict[str, Any]:
@@ -337,14 +323,7 @@ class FindingEvaluator:
                     len(findings_batch),
                 )
                 break
-            payload.append(
-                {
-                    "title": report["title"],
-                    "description": report["description"],
-                    "severity": report["claimed_severity"],
-                    "file_paths": report["referenced_files"],
-                }
-            )
+            payload.append(report)
         return payload
 
     async def _aggregate(self, findings_batch: list[FindingDB], task_cache: TaskCache) -> FindingDB:
@@ -533,19 +512,7 @@ class FindingEvaluator:
 
         logger.info(f"Starting triage evaluation of {len(findings)} findings")
 
-        # Group findings: each duplicate group is one unit; every other finding is its own unit.
-        if duplicate_relationships:
-            related_findings_groups, individual_findings_groups = (
-                self.group_findings_for_evaluation(findings, duplicate_relationships)
-            )
-        else:
-            individual_findings_groups = [
-                findings[i : i + self.batch_size] for i in range(0, len(findings), self.batch_size)
-            ]
-            related_findings_groups = []
-        groups = related_findings_groups + [
-            [f] for batch in individual_findings_groups for f in batch
-        ]
+        groups = self.group_findings_for_evaluation(findings, duplicate_relationships)
 
         all_evaluation_results, failed_findings = await self.evaluate_groups(groups, task_cache)
 
