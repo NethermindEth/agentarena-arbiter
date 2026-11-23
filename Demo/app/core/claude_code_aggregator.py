@@ -45,6 +45,13 @@ AGGREGATION_SCHEMA = {
 }
 
 
+def _str_list(value: object) -> list[str]:
+    """The non-blank items of a list or tuple as stripped strings; empty for anything else."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [text for item in value if (text := str(item).strip())]
+
+
 @dataclass(frozen=True)
 class AggregatedFinding:
     """The consolidated finding produced by merging a group of duplicates."""
@@ -81,8 +88,8 @@ class ClaudeCodeAggregator:
         ``referenced_files`` and ``description``, already capped: it goes into the prompt as is.
 
         Retries once; returns ``None`` if no valid merge comes back so the caller can fall back
-        to the representative finding. The referenced file paths of every input are always
-        unioned into the result so no evidence is dropped even if the model omits some.
+        to the representative finding. The result's file paths are the model's only: the caller
+        adds every member's full paths, which the prompt shows capped.
         """
         rendered = self.render_prompt(
             findings=findings, task_title=task_title, task_description=task_description
@@ -104,7 +111,7 @@ class ClaudeCodeAggregator:
                     max_budget_usd=self.max_budget_usd or None,
                     label=f"aggregate (attempt {attempt + 1})",
                 )
-            parsed = self._parse(res.structured, default_severity, findings) if res.ok else None
+            parsed = self._parse(res.structured, default_severity) if res.ok else None
             if parsed is not None:
                 return parsed
         logger.warning(
@@ -141,10 +148,7 @@ class ClaudeCodeAggregator:
         return render_template(AGGREGATION_PROMPT, replacements)
 
     def _parse(
-        self,
-        data: dict[str, object] | None,
-        default_severity: str,
-        findings: list[dict[str, object]],
+        self, data: dict[str, object] | None, default_severity: str
     ) -> AggregatedFinding | None:
         """Validate the structured merge result."""
         if not isinstance(data, dict):
@@ -158,26 +162,6 @@ class ClaudeCodeAggregator:
             title=title,
             description=description,
             severity=normalize_severity(str(data.get("severity", "")), default_severity),
-            file_paths=self._union_file_paths(data.get("file_paths"), findings),
+            file_paths=_str_list(data.get("file_paths")),
             rationale=str(data.get("rationale", "")),
         )
-
-    @staticmethod
-    def _union_file_paths(model_paths: object, findings: list[dict[str, object]]) -> list[str]:
-        """Union the model's file paths with every input finding's, preserving first-seen order."""
-        ordered: list[str] = []
-        seen = set()
-
-        def add(paths: object) -> None:
-            if not isinstance(paths, (list, tuple)):
-                return
-            for p in paths:
-                text = str(p).strip()
-                if text and text not in seen:
-                    seen.add(text)
-                    ordered.append(text)
-
-        add(model_paths)
-        for finding in findings:
-            add(finding.get("referenced_files"))
-        return ordered

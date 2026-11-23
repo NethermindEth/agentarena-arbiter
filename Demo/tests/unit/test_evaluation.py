@@ -256,6 +256,20 @@ class TestPromptBudgets:
         assert set(merged.file_paths) == expected
 
 
+class TestMergedPaths:
+    async def test_merged_paths_come_first_then_every_members_full_paths(self, sample_task_cache):
+        long_path = "src/" + "deep/" * 80 + "Vault.sol"  # longer than the prompt's 300 chars
+        group = [_finding(0, paths=["src/A.sol"]), _finding(1, paths=["src/B.sol", long_path])]
+        evaluator = FindingEvaluator()
+        evaluator.aggregator.aggregate = AsyncMock(
+            return_value=AggregatedFinding("Merged", "m", "High", ["src/Merged.sol", "src/A.sol"])
+        )
+
+        merged = await evaluator._aggregate(group, sample_task_cache)
+
+        assert merged.file_paths == ["src/Merged.sol", "src/A.sol", "src/B.sol", long_path]
+
+
 class TestClaimedSeverity:
     """A unit claims the highest severity of its reports; it decides whether it gets PoCs."""
 

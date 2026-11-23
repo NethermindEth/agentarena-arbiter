@@ -124,7 +124,6 @@ class _Run:
     unknown_cost: int = 0  # runs that reported no cost (killed at the timeout, or no result)
     agents: int = 0
     failures: int = 0
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class ClaudeCodeTriage:
@@ -302,7 +301,7 @@ class ClaudeCodeTriage:
                 max_budget_usd=self.cfg.triage_agent_max_budget_usd or None,
                 label=f"{run.ws.root.name}/build",
             )
-        await self._account(run, res)
+        self._account(run, res)
         if not res.ok:
             logger.error(
                 "build agent failed (%s); agents will work without a prebuilt project", res.error
@@ -424,7 +423,7 @@ class ClaudeCodeTriage:
             if res is None:
                 error = "its sandbox could not be prepared"
             else:
-                await self._account(run, res)
+                self._account(run, res)
                 if res.ok and res.structured:
                     return res.structured
                 error = res.error
@@ -483,15 +482,16 @@ class ClaudeCodeTriage:
             return None if res is None else replace(res, ok=False, error=f"sandbox error: {exc!r}")
         return res
 
-    async def _account(self, run: _Run, res: AgentResult) -> None:
-        async with run.lock:
-            run.agents += 1
-            if res.cost_usd is None:
-                run.unknown_cost += 1
-            else:
-                run.cost_usd += res.cost_usd
-            if not res.ok:
-                run.failures += 1
+    @staticmethod
+    def _account(run: _Run, res: AgentResult) -> None:
+        # Synchronous: the counters only change on the event loop, never across an await.
+        run.agents += 1
+        if res.cost_usd is None:
+            run.unknown_cost += 1
+        else:
+            run.cost_usd += res.cost_usd
+        if not res.ok:
+            run.failures += 1
 
     # --- mapping ---------------------------------------------------------------------------
     def _to_verdict(self, final: dict[str, Any]) -> TriageVerdict:

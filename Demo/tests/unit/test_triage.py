@@ -744,7 +744,8 @@ class TestAggregator:
             task_description="d",
             default_severity="Low",
         )
-        assert merged.title == "Merged" and merged.file_paths == ["a.sol", "b.sol"]
+        # The model's paths only: the evaluator adds every member's full paths.
+        assert merged.title == "Merged" and merged.file_paths == ["a.sol"]
         prompt = cli.run_agent.call_args.args[0]
         assert '"claimed_severity": "Low"' in prompt and '"b.sol"' in prompt
         kw = cli.run_agent.call_args.kwargs
@@ -1542,13 +1543,10 @@ class TestUnknownCost:
         res = ClaudeCodeCLI._parse("t", 1, "", "boom", 1.0, True)
         assert res.cost_usd is None
 
-    @pytest.mark.asyncio
-    async def test_unknown_costs_are_counted_not_added(self, tmp_path):
-        triage = ClaudeCodeTriage(cli=SimpleNamespace(), settings=_cfg(tmp_path))
+    def test_unknown_costs_are_counted_not_added(self):
         run = SimpleNamespace(agents=0, failures=0, cost_usd=0.0, unknown_cost=0)
-        run.lock = asyncio.Lock()
-        await triage._account(run, AgentResult(True, {}, "", 1.5, 1.0))
-        await triage._account(run, AgentResult(False, None, "", None, 1.0, "timeout after 1s"))
+        ClaudeCodeTriage._account(run, AgentResult(True, {}, "", 1.5, 1.0))
+        ClaudeCodeTriage._account(run, AgentResult(False, None, "", None, 1.0, "timeout after 1s"))
         assert (run.agents, run.failures, run.cost_usd, run.unknown_cost) == (2, 1, 1.5, 1)
 
 
