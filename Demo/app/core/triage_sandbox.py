@@ -7,7 +7,8 @@ Layout of one run (``<work_dir>/run-<random>/``, created 0700)::
     base/.home    the build agent's HOME (toolchain caches: solc builds, cargo registry...)
     a/<id>/{repo,.home,t}       one private copy of ``base`` per agent (``t`` is its TMPDIR)
     evidence/<unit>/<role>/...  PoC files each agent created (kept after the run, until
-                                :func:`prune_old_runs` deletes the run)
+                                :func:`prune_runs` deletes the run)
+    .active       locked while the run is in progress (see ``RUN_LOCK``)
 
 The agent directories have short names because the CLI binds its sandbox proxy sockets in
 TMPDIR, and a Unix socket path is limited to 107 bytes (see :func:`check_socket_paths`).
@@ -47,6 +48,7 @@ from __future__ import annotations
 
 import ctypes
 import difflib
+import fcntl
 import json
 import logging
 import os
@@ -69,24 +71,21 @@ TRIAGE_DIR = ".triage"
 AGENTS_DIR = "a"
 TMP_DIR = "t"
 RUN_PREFIX = "run-"
-# Directory basenames skipped when computing what an agent changed: build outputs and caches
-# (noise; never propagated) plus the system's own staging dir and VCS metadata.
-SKIP_DIFF_DIRS = frozenset(
-    {
-        ".triage",
-        ".git",
-        "out",
-        "cache",
-        "target",
-        "artifacts",
-        "broadcast",
-        "node_modules",
-        "typechain",
-        "typechain-types",
-        "coverage",
-        "__pycache__",
-        ".pytest_cache",
-    }
+# Held (flock) by the process running the run, here or in another process sharing the work dir;
+# the kernel drops it when that process dies, so a run whose lock can be taken has ended.
+RUN_LOCK = ".active"
+# Directories never compared, restored or indexed, at any depth: the system's own staging dir,
+# VCS metadata, installed packages and bytecode caches. None of it is code under audit.
+SKIP_DIFF_DIRS = frozenset({".triage", ".git", "node_modules", "__pycache__", ".pytest_cache"})
+# Build output, skipped only next to a build manifest (a project root), where the build writes
+# it. Elsewhere a directory with one of these names may hold sources: src/cache/, a crate named
+# target.
+BUILD_OUTPUT_DIRS = frozenset(
+    {"out", "cache", "target", "artifacts", "broadcast", "typechain", "typechain-types", "coverage"}
+)
+_BUILD_MANIFEST = re.compile(
+    r"foundry\.toml|Cargo\.toml|Scarb\.toml|package\.json|truffle(-config)?\.js"
+    r"|hardhat\.config\.[cm]?[jt]s"
 )
 MAX_STAGED_FILES = 100
 MAX_STAGED_FILE_BYTES = 1_000_000
@@ -300,16 +299,36 @@ def check_socket_paths(work_dir: Path) -> None:
         )
 
 
-def prune_old_runs(work_dir: Path, max_age_days: int, active: Iterable[Path] = ()) -> int:
+def _lock_run(root: Path, *, wait: bool) -> int | None:
     """
-    Delete run directories (with their PoC evidence) last changed over ``max_age_days`` ago.
+    Take the run's lock (see ``RUN_LOCK``) and return its descriptor, or None when another
+    open file holds it (a run in progress, even in this process). Closing the descriptor
+    releases the lock.
+    """
+    fd = os.open(root / RUN_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
-    Only real ``run-*`` directories owned by this user are removed, never one in ``active``
-    (runs in progress). Returns how many were removed.
+
+def prune_runs(work_dir: Path, max_age_days: int, *, keep_sandboxes: bool) -> int:
+    """
+    Tidy the runs no process is working on any more: delete those last changed over
+    ``max_age_days`` ago, evidence included, and the base and sandboxes a run left behind when
+    its process died (a full repository copy each). With ``keep_sandboxes`` (``DEBUG``) those
+    stay until the run ages out.
+
+    Only real ``run-*`` directories owned by this user are touched, never a run in progress.
+    Returns how many runs were deleted.
     """
     cutoff = time.time() - max_age_days * 86_400
-    keep = {Path(p).resolve() for p in active}
-    removed = 0
+    removed = cleared = 0
     with os.scandir(work_dir) as entries:
         for entry in entries:
             if not entry.name.startswith(RUN_PREFIX):
@@ -318,19 +337,37 @@ def prune_old_runs(work_dir: Path, max_age_days: int, active: Iterable[Path] = (
                 st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
-            path = Path(entry.path)
-            if (
-                not stat.S_ISDIR(st.st_mode)
-                or st.st_uid != os.getuid()
-                or st.st_mtime >= cutoff
-                or path.resolve() in keep
-            ):
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
                 continue
-            _force_rmtree(path)
-            removed += 1
+            path = Path(entry.path)
+            # Held while tidying, so a run being created waits for it before making its dirs.
+            try:
+                fd = _lock_run(path, wait=False)
+            except OSError:
+                continue
+            if fd is None:
+                continue  # in progress
+            try:
+                if st.st_mtime < cutoff:
+                    _force_rmtree(path)
+                    removed += 1
+                elif not keep_sandboxes and any(
+                    os.path.lexists(path / d) for d in ("base", AGENTS_DIR)
+                ):
+                    _force_rmtree(path / "base")
+                    _force_rmtree(path / AGENTS_DIR)
+                    cleared += 1
+            finally:
+                os.close(fd)
     if removed:
         logger.info(
             "removed %d triage run(s) older than %d days from %s", removed, max_age_days, work_dir
+        )
+    if cleared:
+        logger.warning(
+            "deleted the sandboxes of %d triage run(s) that ended without cleaning up (the "
+            "process died); their evidence stays",
+            cleared,
         )
     return removed
 
@@ -427,9 +464,17 @@ def is_poc_file(rel: str) -> bool:
 
 
 def _walk_files(root: Path) -> Iterable[tuple[str, os.stat_result]]:
-    """Yield ``(relpath, lstat)`` for regular files under ``root``; never follows symlinks."""
+    """
+    Yield ``(relpath, lstat)`` for regular files under ``root``; never follows symlinks. Skips
+    ``SKIP_DIFF_DIRS`` everywhere and ``BUILD_OUTPUT_DIRS`` at project roots.
+    """
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIFF_DIRS]
+        project_root = any(_BUILD_MANIFEST.fullmatch(name) for name in filenames)
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in SKIP_DIFF_DIRS and not (project_root and d in BUILD_OUTPUT_DIRS)
+        ]
         for name in filenames:
             full = Path(dirpath) / name
             try:
@@ -537,6 +582,8 @@ class TriageWorkspace:
     ) -> None:
         self.work_dir = Path(work_dir).resolve()
         self.root = Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=self.work_dir))  # 0700, unique
+        # Taken before anything else is created in the run, and held until cleanup().
+        self._lock_fd: int | None = _lock_run(self.root, wait=True)
         self.base = Sandbox("base", self.root / "base")
         self.agents_dir = self.root / AGENTS_DIR
         self.evidence_dir = self.root / "evidence"
@@ -548,8 +595,12 @@ class TriageWorkspace:
         self._source: Path | None = None
         self._next_id = 0
         self._id_lock = threading.Lock()  # sandboxes are made from worker threads
-        for d in (self.base.root, self.agents_dir, self.evidence_dir):
-            d.mkdir(mode=0o700)
+        try:
+            for d in (self.base.root, self.agents_dir, self.evidence_dir):
+                d.mkdir(mode=0o700)
+        except BaseException:
+            self._release()
+            raise
 
     # --- base ----------------------------------------------------------------------
     def init_base(self, source_repo: Path) -> None:
@@ -601,8 +652,9 @@ class TriageWorkspace:
         """
         Put back every file of the task checkout that the build agent modified, deleted or
         replaced, so all agents judge the sponsor's code. Files it added stay (dependencies,
-        build output); so do files under ``SKIP_DIFF_DIRS`` (build output and installed
-        packages, which a build legitimately rewrites). The build agent's version is saved as
+        build output); so do the directories :func:`_walk_files` skips (build output at project
+        roots and installed packages, which a build legitimately rewrites; a source directory
+        that merely shares such a name is restored). The build agent's version is saved as
         ``evidence/build-restored.diff``. Call only once nothing runs in the base any more.
         """
         if self._source is None:
@@ -718,12 +770,22 @@ class TriageWorkspace:
             _force_rmtree(sb.root)
 
     def cleanup(self) -> None:
-        """Delete the base and every sandbox; keep the (small) evidence directory."""
-        kill_processes_under(self.root)
-        if self.keep_sandboxes:
-            return
-        _force_rmtree(self.base.root)
-        _force_rmtree(self.agents_dir)
+        """
+        Delete the base and every sandbox, keep the (small) evidence directory, and end the run
+        (release its lock).
+        """
+        try:
+            kill_processes_under(self.root)
+            if not self.keep_sandboxes:
+                _force_rmtree(self.base.root)
+                _force_rmtree(self.agents_dir)
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)
+            self._lock_fd = None
 
     def changes(self, sb: Sandbox) -> AgentChanges:
         """

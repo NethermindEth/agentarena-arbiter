@@ -46,7 +46,7 @@ from app.core.triage_sandbox import (
     TriageWorkspace,
     check_socket_paths,
     probe_bubblewrap,
-    prune_old_runs,
+    prune_runs,
     resolve_work_dir,
 )
 from app.types import TaskCache
@@ -136,8 +136,6 @@ class ClaudeCodeTriage:
         # One limit for the whole service, shared by concurrent runs (e.g. a manual trigger
         # while a scheduled run is in progress).
         self._sem: asyncio.Semaphore | None = None
-        # Run directories in use by this process, which evidence pruning must not touch.
-        self._active_runs: set[Path] = set()
 
     @property
     def semaphore(self) -> asyncio.Semaphore:
@@ -214,10 +212,10 @@ class ClaudeCodeTriage:
         work_dir = resolve_work_dir(self.cfg.triage_work_dir, self.secret_paths())
         try:
             await asyncio.to_thread(
-                prune_old_runs,
+                prune_runs,
                 work_dir,
                 EVIDENCE_RETENTION_DAYS,
-                set(self._active_runs),
+                keep_sandboxes=self.cfg.debug,
             )
         except OSError as exc:  # housekeeping only: never fail a run over it
             logger.warning("could not prune old triage runs in %s: %s", work_dir, exc)
@@ -226,7 +224,6 @@ class ClaudeCodeTriage:
             secret_paths=self.secret_paths(),
             keep_sandboxes=self.cfg.debug,
         )
-        self._active_runs.add(ws.root)
         run = _Run(
             ws=ws,
             sem=self.semaphore,
@@ -258,10 +255,7 @@ class ClaudeCodeTriage:
                     outcome = self._error_verdict(unit, f"internal error: {type(outcome).__name__}")
                 verdicts[unit.key] = outcome
         finally:
-            try:
-                await asyncio.to_thread(ws.cleanup)
-            finally:
-                self._active_runs.discard(ws.root)
+            await asyncio.to_thread(ws.cleanup)
         cap = self.cfg.triage_agent_max_budget_usd
         unknown = (
             f" plus {run.unknown_cost} run(s) of unknown cost (killed or without a result"
@@ -324,13 +318,15 @@ class ClaudeCodeTriage:
 
     # --- per-unit pipeline -----------------------------------------------------------------
     async def _triage_unit(self, run: _Run, unit: TriageUnit) -> TriageVerdict:
-        ctx, finding = run.contexts[unit.key in run.poc_units], unit.finding
+        poc = unit.key in run.poc_units
+        ctx, finding = run.contexts[poc], unit.finding
 
         analysis = await self._role(
             run,
             unit,
             "analyst",
-            lambda _note: analyst_prompt(ctx, finding),  # the analyst gets no earlier evidence
+            # The analyst gets no earlier evidence.
+            lambda _note: analyst_prompt(ctx, finding, poc_enabled=poc),
             ANALYSIS_SCHEMA,
             staged=[],
             retries=1,
@@ -352,7 +348,7 @@ class ClaudeCodeTriage:
                 run,
                 unit,
                 "refute",
-                lambda note: refute_prompt(ctx, finding, analysis, note),
+                lambda note: refute_prompt(ctx, finding, analysis, note, poc_enabled=poc),
                 VERIFY_SCHEMA,
                 staged=["analyst"],
                 retries=0,
@@ -361,7 +357,7 @@ class ClaudeCodeTriage:
                 run,
                 unit,
                 "severity",
-                lambda note: severity_prompt(ctx, finding, analysis, note),
+                lambda note: severity_prompt(ctx, finding, analysis, note, poc_enabled=poc),
                 VERIFY_SCHEMA,
                 staged=["analyst"],
                 retries=0,
@@ -384,7 +380,7 @@ class ClaudeCodeTriage:
             run,
             unit,
             "judge",
-            lambda note: judge_prompt(ctx, finding, analysis, verifiers, note),
+            lambda note: judge_prompt(ctx, finding, analysis, verifiers, note, poc_enabled=poc),
             FINAL_SCHEMA,
             staged=["analyst", "refute", "severity"],
             retries=1,
@@ -402,9 +398,7 @@ class ClaudeCodeTriage:
         )
         # Without PoCs the claim caps the severity: the claim decides whether a unit gets PoCs, so
         # rating above it statically would pay a participant for claiming low to avoid them.
-        cap = (
-            None if unit.key in run.poc_units else normalize_severity(unit.claimed_severity, "High")
-        )
+        cap = None if poc else normalize_severity(unit.claimed_severity, "High")
         return self._to_verdict(final, cap=cap)
 
     async def _role(

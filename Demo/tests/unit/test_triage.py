@@ -74,6 +74,7 @@ def _make_repo(root: Path) -> Path:
     (repo / "test").mkdir()
     (repo / "src" / "Vault.sol").write_text("contract Vault { function withdraw() external {} }\n")
     (repo / "test" / "Vault.t.sol").write_text("contract VaultTest {}\n")
+    (repo / "foundry.toml").write_text("[profile.default]\n")  # makes out/ and cache/ build output
     return repo
 
 
@@ -1283,8 +1284,19 @@ class TestEvidenceRetention:
         os.utime(path, (old, old))
         return path
 
+    @staticmethod
+    def _hold(path: Path) -> int:
+        """Lock a run as its (live) process would; closing the descriptor ends the run."""
+        import fcntl
+
+        from app.core.triage_sandbox import RUN_LOCK
+
+        fd = os.open(path / RUN_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
     def test_old_runs_are_pruned(self, tmp_path):
-        from app.core.triage_sandbox import prune_old_runs
+        from app.core.triage_sandbox import prune_runs
 
         work = tmp_path / "work"
         old = self._run_dir(work, "run-old", 40)
@@ -1293,12 +1305,50 @@ class TestEvidenceRetention:
         other = self._run_dir(work, "keep-me", 40)
         os.symlink(old, work / "run-link")
         os.utime(work / "run-link", (0, 0), follow_symlinks=False)
-
-        assert prune_old_runs(work, 30, active=[active]) == 1
+        os.utime(active, (0, 0))
+        fd = self._hold(active)
+        try:
+            assert prune_runs(work, 30, keep_sandboxes=False) == 1
+        finally:
+            os.close(fd)
 
         assert not old.exists()
         assert active.exists() and recent.exists() and other.exists()
         assert os.path.islink(work / "run-link")
+
+    @pytest.mark.parametrize("keep_sandboxes", [False, True])
+    def test_a_dead_runs_sandboxes_go_and_its_evidence_stays(self, tmp_path, keep_sandboxes):
+        from app.core.triage_sandbox import AGENTS_DIR, prune_runs
+
+        work = tmp_path / "work"
+        dead, live = self._run_dir(work, "run-dead", 1), self._run_dir(work, "run-live", 1)
+        for run in (dead, live):
+            (run / "base" / "repo").mkdir(parents=True)
+            (run / AGENTS_DIR / "000000").mkdir(parents=True)
+        # The dead run's process left its lock file behind, but no longer holds it.
+        os.close(self._hold(dead))
+        fd = self._hold(live)
+        try:
+            assert prune_runs(work, 30, keep_sandboxes=keep_sandboxes) == 0
+        finally:
+            os.close(fd)
+
+        assert (dead / "evidence").exists() and (live / "base").exists()
+        assert (dead / "base").exists() is keep_sandboxes
+        assert (dead / AGENTS_DIR).exists() is keep_sandboxes
+
+    def test_a_workspace_holds_its_lock_until_cleanup(self, tmp_path):
+        from app.core.triage_sandbox import prune_runs
+
+        (tmp_path / "secret").mkdir()
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(_make_repo(tmp_path))
+        prune_runs(tmp_path / "work", 30, keep_sandboxes=False)
+        assert ws.base.repo.exists()  # in progress: untouched, even from this process
+
+        ws.cleanup()
+        os.utime(ws.root, (0, 0))
+        assert prune_runs(tmp_path / "work", 30, keep_sandboxes=False) == 1
 
     async def test_a_run_prunes_old_runs_first(self, tmp_path):
         (tmp_path / "secret").mkdir()
@@ -1313,7 +1363,6 @@ class TestEvidenceRetention:
 
         assert not old.exists()
         assert len(list((tmp_path / "work").glob("run-*"))) == 1  # this run's evidence
-        assert triage._active_runs == set()
 
 
 class TestSocketPaths:
@@ -1499,6 +1548,25 @@ class TestBuildChangesArePutBack:
         sb = ws.make_sandbox("u000-analyst")
         changes = ws.changes(sb)
         assert not changes.modified_files and not changes.deleted_files
+
+    def test_build_output_is_skipped_only_at_a_project_root(self, tmp_path):
+        (tmp_path / "secret").mkdir()
+        repo = _make_repo(tmp_path)
+        (repo / "src" / "cache").mkdir()
+        (repo / "src" / "cache" / "PriceCache.sol").write_text("contract PriceCache {}\n")
+        (repo / "cache").mkdir()  # committed build cache next to foundry.toml
+        (repo / "cache" / "solidity-files-cache.json").write_text("{}")
+        ws = _workspace(tmp_path, tmp_path / "secret")
+        ws.init_base(repo)
+        base = ws.base.repo
+        (base / "src" / "cache" / "PriceCache.sol").write_text("contract PriceCache { patched }\n")
+        (base / "cache" / "solidity-files-cache.json").write_text('{"rebuilt": true}')
+
+        restored = ws.seal_base()
+
+        assert restored == ["src/cache/PriceCache.sol"]  # source, though named like output
+        assert (base / "src" / "cache" / "PriceCache.sol").read_text() == "contract PriceCache {}\n"
+        assert "rebuilt" in (base / "cache" / "solidity-files-cache.json").read_text()
 
     def test_untouched_checkout_restores_nothing(self, tmp_path):
         (tmp_path / "secret").mkdir()
@@ -1771,3 +1839,32 @@ class TestClaimCapsStaticUnits:
         v = triage._to_verdict(final, cap="Low")
         assert v.severity == "Low" and len(v.comment) <= 2000
         assert v.comment.endswith("capped at the claimed Low]")
+
+
+class TestPromptsWithoutPocs:
+    """Agents that cannot run commands are never told to write, copy or re-run PoCs."""
+
+    POC_ONLY = (
+        "Write and run a PoC",
+        ".triage/pocs",
+        "copy it into place",
+        "prove it with a PoC in YOUR sandbox",
+        "re-run or adapt the PoCs",
+        "List every PoC file you created",
+    )
+
+    async def test_each_role_gets_the_variant_for_its_unit(self, tmp_path):
+        cli, calls = TestPocScope._recording_cli()
+        units = [_unit("u000", "High"), _unit("u001", "Low")]
+        await TestPocScope()._triage(tmp_path, cli).run_task(_task_cache(tmp_path), units)
+
+        roles = {name.split("-")[1] for name, _, _ in calls if name != "build"}
+        assert roles == {"analyst", "refute", "severity", "judge"}
+        for name, _, prompt in calls:
+            if name == "build":
+                continue
+            with_pocs = name.startswith("u000")
+            found = [text for text in self.POC_ONLY if text in prompt]
+            assert bool(found) is with_pocs, (name, found)
+            if not with_pocs:
+                assert "no PoC can be run for this finding" in prompt, name

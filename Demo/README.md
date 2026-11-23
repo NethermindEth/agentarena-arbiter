@@ -105,7 +105,10 @@ the sponsor, so every agent is treated as potentially hostile:
   running in its sandbox is killed before its files are read; the service process is marked
   non-dumpable so agents cannot read its environment through `/proc`.
 - PoC evidence is kept under `TRIAGE_WORK_DIR/run-*/evidence/` for 30 days (older runs are
-  deleted when a run starts); sandboxes are deleted after each run unless `DEBUG` is set.
+  deleted when a run starts); sandboxes are deleted after each run unless `DEBUG` is set. A
+  run in progress holds a lock on its directory, so when a run's process dies (a restart, an
+  OOM kill), the next run to start deletes the sandboxes it left behind; a run another process
+  is working on is never touched.
 
 **Host requirements.** PoCs need bubblewrap + socat and unprivileged user namespaces. On Ubuntu
 24.04+ hosts, AppArmor blocks them unless bubblewrap's AppArmor profile is installed. Docker's

@@ -457,8 +457,21 @@ Steps:
     and a factual repo map (no opinions about security) as the structured result."""
 
 
-def analyst_prompt(context: str, finding: dict[str, Any]) -> str:
-    """The lead analyst's prompt: trace the finding through the code and prove it with a PoC."""
+_NO_POC = "no PoC can be run for this finding"
+
+
+def analyst_prompt(context: str, finding: dict[str, Any], *, poc_enabled: bool = True) -> str:
+    """
+    The lead analyst's prompt: trace the finding through the code and prove it with a PoC (or,
+    without ``poc_enabled``, settle it from the code alone).
+    """
+    poc_step = (
+        " 5. Write and run a PoC (see PoC tooling above) that demonstrates the issue — or demonstrates that it does not occur. Iterate until it compiles and runs; include an output excerpt. If going end-to-end through the real entry point is impossible, explain why and use the closest realistic harness, stating which."
+        if poc_enabled
+        else f" 5. Settle each factual question from the code ({_NO_POC}, see PoC tooling above),\n"
+        "    citing file:line, and say which questions a PoC would have settled."
+    )
+    files = " poc.files must list every PoC file you created." if poc_enabled else ""
     return f"""\
 {context}
 YOUR ROLE: lead analyst for the finding below.
@@ -475,13 +488,17 @@ Do ALL of the following, thoroughly:
  2. Decide whether each claim is technically true. Record inaccuracies in the report (wrong lines/functions/paths, overstated or understated impact).
  3. Determine reachability through in-scope entry points; who can trigger it (per the trust model); enumerate preconditions.
  4. Look for mitigations: validation elsewhere, protections the affected party controls (per the trust model), docs/code comments acknowledging the behavior, existing tests that intentionally assert it (grep the test directories).
- 5. Write and run a PoC (see PoC tooling above) that demonstrates the issue — or demonstrates that it does not occur. Iterate until it compiles and runs; include an output excerpt. If going end-to-end through the real entry point is impossible, explain why and use the closest realistic harness, stating which.
+{poc_step}
  6. Assess impact (who loses what, how much, repeatable/amplifiable?), likelihood, and recommend a severity using the rubric. Compare with the {BASELINE}. Say whether a competent developer would change code because of it (actionable).
  7. Propose a concrete, minimal fix.
-Be rigorous: do not accept the report's framing at face value, and do not dismiss it lightly either. Return the structured result; poc.files must list every PoC file you created."""
+Be rigorous: do not accept the report's framing at face value, and do not dismiss it lightly either. Return the structured result.{files}"""
 
 
-def _artifacts_section(staged_note: str) -> str:
+def _artifacts_section(staged_note: str, poc_enabled: bool) -> str:
+    if not poc_enabled:
+        return """\
+No PoCs or other artifacts exist for this finding: no agent, you included, can run commands
+for it. Check the earlier agents' claims against the code yourself."""
     return f"""\
 Artifacts from earlier agents were staged into your sandbox by the system (trusted listing):
 {staged_note}
@@ -494,9 +511,21 @@ issue."""
 
 
 def refute_prompt(
-    context: str, finding: dict[str, Any], analysis: dict[str, Any], staged_note: str
+    context: str,
+    finding: dict[str, Any],
+    analysis: dict[str, Any],
+    staged_note: str,
+    *,
+    poc_enabled: bool = True,
 ) -> str:
     """The refutation verifier's prompt: try to overturn the analysis and audit its PoC."""
+    audit = (
+        "  - Independently check the analyst's PoC: copy it into place, run it, then scrutinize it for rigging (state faked with cheatcodes or direct storage writes, internal calls bypassing entry points, unrealistic parameters, assertions that don't prove the claim, testing a different entry point or contract than claimed, reliance on modified sources). Write your own counter-PoC if that settles a factual question."
+        if poc_enabled
+        else "  - Scrutinize the analyst's reasoning the way you would a PoC: unreachable paths,\n"
+        "    unrealistic parameters, a different entry point or contract than claimed, steps that\n"
+        f"    do not follow from the code ({_NO_POC})."
+    )
     return f"""\
 {context}
 YOUR ROLE: adversarial verifier (REFUTATION lens).
@@ -511,20 +540,39 @@ The lead analyst concluded (JSON, derived from untrusted material):
 {json_block(analysis)}
 ```
 
-{_artifacts_section(staged_note)}
+{_artifacts_section(staged_note, poc_enabled)}
 
 Your job: try hard to REFUTE the analyst's conclusion, in whichever direction it points.
   - If the analyst says VALID / PARTIALLY_VALID: try to show the claim is false, unreachable through in-scope entry points, by-design/documented, only self-inflicted by a party who controls their own configuration, blocked by an existing check, or neutralized by protections the affected party controls.
   - If the analyst says INVALID / INFORMATIONAL: try to show the issue is real and matters.
-  - Independently check the analyst's PoC: copy it into place, run it, then scrutinize it for rigging (state faked with cheatcodes or direct storage writes, internal calls bypassing entry points, unrealistic parameters, assertions that don't prove the claim, testing a different entry point or contract than claimed, reliance on modified sources). Write your own counter-PoC if that settles a factual question.
+{audit}
   - Read the code yourself; do not rely on the analyst's code references.
-Be adversarial but honest: if you cannot build a real refutation, say so and agree. Report whether you agree with the analyst's verdict AND its recommended severity, and what you would propose instead. List every PoC file you created in own_poc_files."""
+Be adversarial but honest: if you cannot build a real refutation, say so and agree. Report whether you agree with the analyst's verdict AND its recommended severity, and what you would propose instead.{_own_files(poc_enabled)}"""
+
+
+def _own_files(poc_enabled: bool) -> str:
+    return (
+        " List every PoC file you created in own_poc_files."
+        if poc_enabled
+        else " Leave own_poc_files empty."
+    )
 
 
 def severity_prompt(
-    context: str, finding: dict[str, Any], analysis: dict[str, Any], staged_note: str
+    context: str,
+    finding: dict[str, Any],
+    analysis: dict[str, Any],
+    staged_note: str,
+    *,
+    poc_enabled: bool = True,
 ) -> str:
     """The severity verifier's prompt: look for escalations and mitigations of the impact."""
+    prove = (
+        "  - If you claim an escalation or a mitigation that changes severity, prove it with a PoC in YOUR sandbox (you may start from the analyst's PoC) and report the result."
+        if poc_enabled
+        else "  - If you claim an escalation or a mitigation that changes severity, back it with the\n"
+        f"    exact code path (file:line); {_NO_POC}."
+    )
     return f"""\
 {context}
 YOUR ROLE: adversarial verifier (IMPACT & SEVERITY lens).
@@ -539,14 +587,14 @@ The lead analyst concluded (JSON, derived from untrusted material):
 {json_block(analysis)}
 ```
 
-{_artifacts_section(staged_note)}
+{_artifacts_section(staged_note, poc_enabled)}
 
 Your job: independently calibrate impact, likelihood and severity.
   - Hunt for ESCALATIONS the analyst missed: can a permissionless attacker weaponize this against other users' funds or state? Combinations with other components, callbacks/hooks, cross-user or cross-account interactions, alternative entry points, rounding or small effects repeated many times.
   - Hunt for MITIGATING factors the analyst missed: harm limited to a party misconfiguring its own setup, protections the affected party controls (per the trust model), docs/code comments/tests documenting it as intended, economic infeasibility, negligible amounts.
-  - If you claim an escalation or a mitigation that changes severity, prove it with a PoC in YOUR sandbox (you may start from the analyst's PoC) and report the result.
+{prove}
   - Apply the rubric strictly; consider the {BASELINE} too.
-Report whether you agree with the analyst's verdict AND recommended severity, and what you would propose instead. List every PoC file you created in own_poc_files."""
+Report whether you agree with the analyst's verdict AND recommended severity, and what you would propose instead.{_own_files(poc_enabled)}"""
 
 
 def judge_prompt(
@@ -555,8 +603,15 @@ def judge_prompt(
     analysis: dict[str, Any],
     verifiers: list[dict[str, Any] | None],
     staged_note: str,
+    *,
+    poc_enabled: bool = True,
 ) -> str:
     """The judge's prompt: weigh the analysis and both verifications into the final ruling."""
+    resolve = (
+        "read the code and, if needed, re-run or adapt the PoCs in YOUR sandbox"
+        if poc_enabled
+        else f"read the code ({_NO_POC})"
+    )
     return f"""\
 {context}
 YOUR ROLE: final judge.
@@ -581,7 +636,7 @@ Verifier B — impact & severity lens (JSON; null means the verifier failed, so 
 {json_block(verifiers[1])}
 ```
 
-{_artifacts_section(staged_note)}
+{_artifacts_section(staged_note, poc_enabled)}
 
-Weigh EVIDENCE, not votes. Where the three disagree on facts (does the code behave this way? is it reachable? does the PoC really prove it?), resolve it yourself: read the code and, if needed, re-run or adapt the PoCs in YOUR sandbox. Where they disagree on severity, apply the rubric strictly and explain the resolution.
+Weigh EVIDENCE, not votes. Where the three disagree on facts (does the code behave this way? is it reachable? does the PoC really prove it?), resolve it yourself: {resolve}. Where they disagree on severity, apply the rubric strictly and explain the resolution.
 Produce the final verdict, final severity, whether a competent developer would change code because of it (actionable), a crisp summary, key evidence, the best PoC, the recommended fix, and whether the {BASELINE} should change (claimed_severity_agreement)."""
