@@ -225,6 +225,8 @@ The application requires the following environment variables:
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `LITELLM_SERVER_URL`: Base URL (`http://...` or `https://...`) of the LiteLLM server that serves both models through its OpenAI-compatible API
 - `LITELLM_API_KEY`: LiteLLM API key, sent in the `X-LiteLLM-API-Key` header
+- `LITELLM_TIMEOUT_SECONDS`: Seconds to wait for one model reply (default: 1800). Replies are not streamed, so this bounds the whole reply; size it for the longest evaluation batch (up to `EVALUATION_MAX_TOKENS` of output) and keep it below the LiteLLM server's own `request_timeout`. Connecting to the server times out after 10 seconds.
+- `LITELLM_MAX_RETRIES`: Retries after a timeout, connection error, 429 or 5xx from LiteLLM (default: 1). Each retry repeats the whole call, so a run can wait up to (retries + 1) × `LITELLM_TIMEOUT_SECONDS` per call.
 - `EVALUATION_MODEL`: LiteLLM model key used for evaluation (Claude) (default: `anthropic/claude-opus-4-8`)
 - `EVALUATION_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
 - `EVALUATION_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (`claude-opus-4-7`, `claude-opus-4-8`).

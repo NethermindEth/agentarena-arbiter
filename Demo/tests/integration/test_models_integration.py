@@ -129,6 +129,8 @@ class TestLiteLLMClient:
         ):
             mock_config.litellm_server_url = "https://litellm.test/"
             mock_config.litellm_api_key = "litellm-test-key"
+            mock_config.litellm_timeout_seconds = 1800.0
+            mock_config.litellm_max_retries = 1
 
             getattr(module, factory)(model_name=model, temperature=0.5)
 
@@ -138,6 +140,22 @@ class TestLiteLLMClient:
             assert kwargs["default_headers"] == {"X-LiteLLM-API-Key": "litellm-test-key"}
             # Both default models think, so the temperature is dropped.
             assert "temperature" not in kwargs
+
+    def test_client_has_timeout_and_retries(self):
+        """The OpenAI client gets a bounded timeout and the configured retries, never no timeout."""
+        from app.core.evaluation_model import create_evaluation_model
+
+        with patch("app.core.litellm_client.config") as mock_config:
+            mock_config.litellm_server_url = "https://litellm.test"
+            mock_config.litellm_api_key = "litellm-test-key"
+            mock_config.litellm_timeout_seconds = 900.0
+            mock_config.litellm_max_retries = 0
+
+            client = create_evaluation_model().async_client._client
+
+        assert client.timeout.read == 900.0
+        assert client.timeout.connect == 10.0
+        assert client.max_retries == 0
 
     def test_deduplication_thinking_level_becomes_reasoning_effort(self):
         """A Gemini 3 deduplication thinking level reaches LiteLLM as the reasoning effort."""

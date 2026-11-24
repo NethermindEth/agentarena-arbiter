@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+import httpx
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
@@ -10,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 # The LiteLLM proxy authenticates clients with this header instead of `Authorization`.
 LITELLM_API_KEY_HEADER = "X-LiteLLM-API-Key"
+
+# Reaching the proxy should be quick; only the reply itself may take long.
+CONNECT_TIMEOUT_SECONDS = 10.0
 
 
 def create_litellm_chat_model(
@@ -50,6 +54,11 @@ def create_litellm_chat_model(
         # key from LITELLM_API_KEY_HEADER, so both carry the same LiteLLM key.
         "api_key": SecretStr(key),
         "default_headers": {LITELLM_API_KEY_HEADER: key},
+        # Without an explicit timeout the OpenAI client waits forever on a stalled proxy. Replies
+        # are not streamed, so the read timeout bounds the wait for the whole reply. Each retry
+        # repeats the full call, so the worst case is (retries + 1) times the timeout.
+        "timeout": httpx.Timeout(config.litellm_timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS),
+        "max_retries": config.litellm_max_retries,
     }
     if temperature is not None:
         kwargs["temperature"] = temperature

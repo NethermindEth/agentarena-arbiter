@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     # LiteLLM proxy serving both models below
     litellm_server_url: str = Field(..., description="LiteLLM server base URL (http/https)")
     litellm_api_key: str = Field(..., description="LiteLLM API key, sent as X-LiteLLM-API-Key")
+    litellm_timeout_seconds: float = Field(
+        1800.0,
+        gt=0,
+        description="Seconds to wait for one model reply; keep it below the server's request_timeout",
+    )
+    litellm_max_retries: int = Field(
+        1, ge=0, description="Retries after a timeout, connection error, 429 or 5xx from LiteLLM"
+    )
 
     # Configuration for evaluation
     evaluation_model: str = Field(
