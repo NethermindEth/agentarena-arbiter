@@ -36,9 +36,9 @@ def get_model_config() -> dict[str, Any]:
         Dictionary with model configuration parameters
     """
     return {
-        "model_name": config.claude_model,
-        "max_tokens": config.claude_max_tokens,
-        "temperature": config.claude_temperature,
+        "model_name": config.evaluation_model,
+        "max_tokens": config.evaluation_max_tokens,
+        "temperature": config.evaluation_temperature,
     }
 
 

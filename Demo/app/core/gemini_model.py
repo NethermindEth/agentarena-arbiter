@@ -35,10 +35,10 @@ def get_gemini_config() -> dict[str, Any]:
         Dictionary with model configuration parameters
     """
     return {
-        "model": config.gemini_model,
-        "max_output_tokens": config.gemini_max_tokens,
-        "temperature": config.gemini_temperature,
-        "thinking_level": config.gemini_thinking_level,
+        "model": config.deduplication_model,
+        "max_output_tokens": config.deduplication_max_tokens,
+        "temperature": config.deduplication_temperature,
+        "thinking_level": config.deduplication_thinking_level,
     }
 
 

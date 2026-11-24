@@ -217,13 +217,13 @@ The application requires the following environment variables:
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
 - `LITELLM_SERVER_URL`: Base URL (`http://...` or `https://...`) of the LiteLLM server that serves both models through its OpenAI-compatible API
 - `LITELLM_API_KEY`: LiteLLM API key, sent in the `X-LiteLLM-API-Key` header
-- `CLAUDE_MODEL`: LiteLLM model key used for evaluation (default: `anthropic/claude-opus-4-8`)
-- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
-- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (`claude-opus-4-7`, `claude-opus-4-8`).
-- `GEMINI_MODEL`: LiteLLM model key used for deduplication (default: `gemini/gemini-3.8-flash`)
-- `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
-- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`), sent to LiteLLM as the reasoning effort. Used only for thinking models (`gemini-3*`); ignored with a warning for other Gemini models.
-- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (`gemini-3*`).
+- `EVALUATION_MODEL`: LiteLLM model key used for evaluation (Claude) (default: `anthropic/claude-opus-4-8`)
+- `EVALUATION_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
+- `EVALUATION_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (`claude-opus-4-7`, `claude-opus-4-8`).
+- `DEDUPLICATION_MODEL`: LiteLLM model key used for deduplication (Gemini) (default: `gemini/gemini-3.8-flash`)
+- `DEDUPLICATION_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
+- `DEDUPLICATION_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`), sent to LiteLLM as the reasoning effort. Used only for thinking models (`gemini-3*`); ignored with a warning for other Gemini models.
+- `DEDUPLICATION_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (`gemini-3*`).
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
