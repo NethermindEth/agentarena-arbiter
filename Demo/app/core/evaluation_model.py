@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -28,9 +28,9 @@ class EvaluationResult(BaseModel):
     results: list[FindingEvaluation] = Field(description="List of evaluation results")
 
 
-def get_model_config() -> dict[str, Any]:
+def get_evaluation_config() -> dict[str, Any]:
     """
-    Get Claude model configuration from environment variables.
+    Get the evaluation model configuration from environment variables.
 
     Returns:
         Dictionary with model configuration parameters
@@ -46,15 +46,20 @@ def get_model_config() -> dict[str, Any]:
 # override (extended thinking).
 _TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
 
+# How the evaluation schema is requested through LiteLLM. A forced, non-strict tool call is what
+# Claude used before the proxy; OpenAI's strict json_schema would need LiteLLM to translate
+# every schema keyword for Anthropic. tests/live/test_litellm_structured_output.py checks both.
+STRUCTURED_OUTPUT_METHOD: Literal["function_calling", "json_schema"] = "function_calling"
 
-def create_claude_model(
+
+def create_evaluation_model(
     model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
     api_key: str | None = None,
 ) -> ChatOpenAI:
     """
-    Create a Claude model served by the LiteLLM proxy, from parameters or environment variables.
+    Create the evaluation model served by the LiteLLM proxy, from parameters or the environment.
 
     Args:
         model_name: Optional LiteLLM model key override
@@ -69,17 +74,17 @@ def create_claude_model(
     Raises:
         ValueError: If the LiteLLM server URL or API key is not configured.
     """
-    claude_config = get_model_config()
+    evaluation_config = get_evaluation_config()
 
     if model_name:
-        claude_config["model_name"] = model_name
+        evaluation_config["model_name"] = model_name
     if max_tokens:
-        claude_config["max_tokens"] = max_tokens
+        evaluation_config["max_tokens"] = max_tokens
     if temperature is not None:
-        claude_config["temperature"] = temperature
+        evaluation_config["temperature"] = temperature
 
-    model = claude_config["model_name"]
-    effective_temperature = claude_config["temperature"]
+    model = evaluation_config["model_name"]
+    effective_temperature = evaluation_config["temperature"]
     if effective_temperature is not None and model_base_name(model).startswith(
         _TEMPERATURE_INCOMPATIBLE_PREFIXES
     ):
@@ -92,7 +97,7 @@ def create_claude_model(
 
     return create_litellm_chat_model(
         model=model,
-        max_tokens=claude_config["max_tokens"],
+        max_tokens=evaluation_config["max_tokens"],
         temperature=effective_temperature,
         api_key=api_key,
     )
@@ -100,7 +105,7 @@ def create_claude_model(
 
 def create_structured_evaluation_model(model: ChatOpenAI | None = None) -> Any:
     """
-    Create a Claude model with structured output for finding evaluation.
+    Create the evaluation model with structured output for finding evaluation.
 
     Args:
         model: Optional ChatOpenAI model (created from environment if not provided)
@@ -109,9 +114,9 @@ def create_structured_evaluation_model(model: ChatOpenAI | None = None) -> Any:
         Configured model with structured output for batch evaluation
     """
     if not model:
-        model = create_claude_model()
+        model = create_evaluation_model()
 
-    return model.with_structured_output(EvaluationResult)
+    return model.with_structured_output(EvaluationResult, method=STRUCTURED_OUTPUT_METHOD)
 
 
 async def evaluate_findings_structured(

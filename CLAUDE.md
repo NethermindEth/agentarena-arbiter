@@ -37,9 +37,9 @@ the `tests` job in `.github/workflows/ci-tests.yaml`. The integration tests writ
 - **`app/main.py`**: the HTTP surface (`/process_findings`, `/test/process_findings`, the
   backend-key endpoints), the APScheduler job per approved task, and the deadline processing that
   downloads the repository, runs both LLM stages and posts the verdicts.
-- **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
+- **`app/core/deduplication.py`** and **`app/core/deduplication_model.py`**: one structured Gemini call
   groups findings that describe the same bug.
-- **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
+- **`app/core/evaluation.py`** and **`app/core/evaluation_model.py`**: Claude judges each group or
   batch for validity and severity.
 - **`app/core/litellm_client.py`**: both models are reached through the LiteLLM proxy's
   OpenAI-compatible API (`LITELLM_SERVER_URL`), authenticated with `X-LiteLLM-API-Key`; the model

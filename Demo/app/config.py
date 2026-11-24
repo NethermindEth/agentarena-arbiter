@@ -16,26 +16,28 @@ class Settings(BaseSettings):
 
     # Configuration for evaluation
     evaluation_model: str = Field(
-        "anthropic/claude-opus-4-8", description="Claude model key in the LiteLLM server"
+        "anthropic/claude-opus-4-8", description="Evaluation model key in the LiteLLM server"
     )
-    evaluation_max_tokens: int = Field(60000, description="Claude max tokens")
+    evaluation_max_tokens: int = Field(60000, description="Evaluation model max tokens")
     evaluation_temperature: float | None = Field(
         None,
-        description="Optional Claude temperature; leave unset for thinking models (e.g. claude-opus-4-8)",
+        description="Optional evaluation model temperature; leave unset for thinking models (e.g. claude-opus-4-8)",
     )
 
     # Configuration for deduplication
     deduplication_model: str = Field(
-        "gemini/gemini-3.8-flash", description="Gemini model key in the LiteLLM server"
+        "gemini/gemini-3.8-flash", description="Deduplication model key in the LiteLLM server"
     )
-    deduplication_max_tokens: int = Field(65536, description="Gemini max output tokens")
+    deduplication_max_tokens: int = Field(
+        65536, description="Deduplication model max output tokens"
+    )
     deduplication_thinking_level: str | None = Field(
         None,
-        description="Optional Gemini thinking level (low/medium/high); only used for thinking models (gemini-3*)",
+        description="Optional deduplication model thinking level (low/medium/high); only used for thinking models (gemini-3*)",
     )
     deduplication_temperature: float | None = Field(
         None,
-        description="Optional Gemini temperature; ignored for thinking models (gemini-3*)",
+        description="Optional deduplication model temperature; ignored for thinking models (gemini-3*)",
     )
 
     debug: bool = Field(False, description="Debug mode flag")

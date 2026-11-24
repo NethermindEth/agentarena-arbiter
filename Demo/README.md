@@ -92,6 +92,14 @@ Settings are read at import time, so the required variables must be set, with
 placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
 them. The integration tests write to the MongoDB at `MONGODB_URL`.
 
+`tests/live/` is skipped unless `LITELLM_LIVE_TESTS=1`. It makes real calls through the LiteLLM
+server, one per model and structured-output method, and is the check to run after changing a
+model, the LiteLLM server or a result schema:
+
+```bash
+LITELLM_LIVE_TESTS=1 LITELLM_SERVER_URL=https://... LITELLM_API_KEY=... uv run pytest tests/live -v
+```
+
 ### Prerequisites for Testing
 - A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
   backend calls are mocked

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.deduplication import FindingDeduplication
-from app.core.gemini_model import DeduplicationResult, DuplicateFinding
+from app.core.deduplication_model import DeduplicationResult, DuplicateFinding
 from tests.conftest import mock_mongodb
 
 

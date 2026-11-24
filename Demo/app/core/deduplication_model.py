@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -27,9 +27,9 @@ class DeduplicationResult(BaseModel):
     results: list[DuplicateFinding] = Field(description="List of duplicate relationships")
 
 
-def get_gemini_config() -> dict[str, Any]:
+def get_deduplication_config() -> dict[str, Any]:
     """
-    Get Gemini model configuration from environment variables.
+    Get the deduplication model configuration from environment variables.
 
     Returns:
         Dictionary with model configuration parameters
@@ -46,8 +46,13 @@ def get_gemini_config() -> dict[str, Any]:
 # ignore temperature: every Gemini 3 model thinks.
 _THINKING_MODEL_PREFIXES = ("gemini-3",)
 
+# How the deduplication schema is requested through LiteLLM. json_schema becomes Gemini's native
+# response schema, which is what Gemini used before the proxy.
+# tests/live/test_litellm_structured_output.py checks both methods.
+STRUCTURED_OUTPUT_METHOD: Literal["function_calling", "json_schema"] = "json_schema"
 
-def create_gemini_model(
+
+def create_deduplication_model(
     model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
@@ -55,7 +60,7 @@ def create_gemini_model(
     api_key: str | None = None,
 ) -> ChatOpenAI:
     """
-    Create a Gemini model served by the LiteLLM proxy, from parameters or environment variables.
+    Create the deduplication model served by the LiteLLM proxy, from parameters or the environment.
 
     For thinking models (see _THINKING_MODEL_PREFIXES), `thinking_level` is sent as the
     reasoning effort and `temperature` is ignored (with a warning). For other Gemini models,
@@ -74,42 +79,42 @@ def create_gemini_model(
     Raises:
         ValueError: If the LiteLLM server URL or API key is not configured
     """
-    gemini_config = get_gemini_config()
+    deduplication_config = get_deduplication_config()
 
     if model_name:
-        gemini_config["model"] = model_name
+        deduplication_config["model"] = model_name
     if max_tokens:
-        gemini_config["max_output_tokens"] = max_tokens
+        deduplication_config["max_output_tokens"] = max_tokens
     if temperature is not None:
-        gemini_config["temperature"] = temperature
+        deduplication_config["temperature"] = temperature
     if thinking_level:
-        gemini_config["thinking_level"] = thinking_level
+        deduplication_config["thinking_level"] = thinking_level
 
-    model = gemini_config["model"]
+    model = deduplication_config["model"]
     is_thinking_model = model_base_name(model).startswith(_THINKING_MODEL_PREFIXES)
     effective_temperature: float | None = None
     reasoning_effort: str | None = None
 
     if is_thinking_model:
-        if gemini_config["temperature"] is not None:
+        if deduplication_config["temperature"] is not None:
             logger.warning(
                 "Ignoring temperature=%s for model '%s' (thinking models use thinking_level instead).",
-                gemini_config["temperature"],
+                deduplication_config["temperature"],
                 model,
             )
-        reasoning_effort = gemini_config["thinking_level"]
+        reasoning_effort = deduplication_config["thinking_level"]
     else:
-        if gemini_config["thinking_level"] is not None:
+        if deduplication_config["thinking_level"] is not None:
             logger.warning(
                 "Ignoring thinking_level=%s for model '%s' (non-thinking models use temperature instead).",
-                gemini_config["thinking_level"],
+                deduplication_config["thinking_level"],
                 model,
             )
-        effective_temperature = gemini_config["temperature"]
+        effective_temperature = deduplication_config["temperature"]
 
     return create_litellm_chat_model(
         model=model,
-        max_tokens=gemini_config["max_output_tokens"],
+        max_tokens=deduplication_config["max_output_tokens"],
         temperature=effective_temperature,
         reasoning_effort=reasoning_effort,
         api_key=api_key,
@@ -118,7 +123,7 @@ def create_gemini_model(
 
 def create_structured_deduplication_model(model: ChatOpenAI | None = None) -> Any:
     """
-    Create a Gemini model with structured output for deduplication.
+    Create the deduplication model with structured output.
 
     Args:
         model: Optional ChatOpenAI model (created from environment if not provided)
@@ -127,9 +132,11 @@ def create_structured_deduplication_model(model: ChatOpenAI | None = None) -> An
         Configured model with structured output for deduplication
     """
     if not model:
-        model = create_gemini_model()
+        model = create_deduplication_model()
 
-    return model.with_structured_output(DeduplicationResult, include_raw=True)
+    return model.with_structured_output(
+        DeduplicationResult, method=STRUCTURED_OUTPUT_METHOD, include_raw=True
+    )
 
 
 async def find_duplicates_structured(
@@ -231,16 +238,16 @@ Analyze systematically: group similar findings, examine each vulnerability again
     usage = getattr(raw, "usage_metadata", None) if raw is not None else None
     if usage:
         logger.info(
-            "Gemini dedup token usage: input=%s, output=%s, total=%s, output_details=%s",
+            "Deduplication token usage: input=%s, output=%s, total=%s, output_details=%s",
             usage.get("input_tokens"),
             usage.get("output_tokens"),
             usage.get("total_tokens"),
             usage.get("output_token_details"),
         )
     else:
-        logger.warning("Gemini dedup: no usage_metadata on raw response")
+        logger.warning("Deduplication: no usage_metadata on raw response")
 
     if parsing_error is not None or parsed is None:
-        raise ValueError(f"Failed to parse Gemini deduplication response: {parsing_error}")
+        raise ValueError(f"Failed to parse the deduplication response: {parsing_error}")
 
     return parsed

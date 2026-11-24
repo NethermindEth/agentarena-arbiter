@@ -1,12 +1,12 @@
 """
 Finding deduplication module for security findings submissions.
-Uses Gemini 2.5 Pro to identify duplicates across all findings in a single prompt.
+Uses the deduplication model to identify duplicates across all findings in a single prompt.
 """
 
 import logging
 from typing import Any
 
-from app.core.gemini_model import (
+from app.core.deduplication_model import (
     DeduplicationResult,
     DuplicateFinding,
     create_structured_deduplication_model,
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class FindingDeduplication:
     """
-    Handles deduplication of findings using Gemini.
+    Handles deduplication of findings using the deduplication model.
     Processes all findings in a single prompt to identify duplicates.
     """
 
@@ -41,7 +41,7 @@ class FindingDeduplication:
         self, findings: list[FindingDB], task_cache: TaskCache
     ) -> dict[str, Any]:
         """
-        Deduplicate findings using Gemini with structured output.
+        Deduplicate findings using the deduplication model with structured output.
 
         Args:
             findings: List of findings to deduplicate
