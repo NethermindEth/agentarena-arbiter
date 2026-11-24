@@ -32,8 +32,8 @@ jobs:
     # are placeholders, since every outbound call is mocked except the MongoDB service.
     env:
       MONGODB_URL: mongodb://localhost:27017
-      CLAUDE_API_KEY: test
-      GEMINI_API_KEY: test
+      LITELLM_SERVER_URL: http://litellm.test
+      LITELLM_API_KEY: test
       BACKEND_API_KEY: test
       BACKEND_FINDINGS_ENDPOINT: http://backend.test/api/insert-findings
       BACKEND_SUBMISSIONS_ENDPOINT: http://backend.test/api/submissions

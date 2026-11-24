@@ -1,10 +1,11 @@
 import logging
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.config import config
+from app.core.litellm_client import create_litellm_chat_model, model_base_name
 from app.core.prompt_utils import build_context_section
 from app.models.finding_db import FindingDB
 from app.types import TaskCache
@@ -38,12 +39,12 @@ def get_model_config() -> dict[str, Any]:
         "model_name": config.claude_model,
         "max_tokens": config.claude_max_tokens,
         "temperature": config.claude_temperature,
-        "anthropic_api_key": config.claude_api_key,
     }
 
 
-# Model name prefixes that do not accept a temperature override (extended thinking).
-_TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7",)
+# Model name prefixes (without the LiteLLM provider prefix) that do not accept a temperature
+# override (extended thinking).
+_TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
 
 
 def create_claude_model(
@@ -51,75 +52,65 @@ def create_claude_model(
     max_tokens: int | None = None,
     temperature: float | None = None,
     api_key: str | None = None,
-) -> ChatAnthropic:
+) -> ChatOpenAI:
     """
-    Create a Claude model instance with specified parameters or from environment variables.
+    Create a Claude model served by the LiteLLM proxy, from parameters or environment variables.
 
     Args:
-        model_name: Optional model name override
+        model_name: Optional LiteLLM model key override
         max_tokens: Optional max tokens override
         temperature: Optional temperature override; ignored (with a warning) for
             models in _TEMPERATURE_INCOMPATIBLE_PREFIXES (extended thinking).
-        api_key: Optional API key override
+        api_key: Optional LiteLLM API key override
 
     Returns:
-        Configured ChatAnthropic instance
+        Configured ChatOpenAI instance pointed at the LiteLLM server
 
     Raises:
-        ValueError: If API key is missing.
+        ValueError: If the LiteLLM server URL or API key is not configured.
     """
-    # Get config from environment variables
     claude_config = get_model_config()
 
-    # Override with any provided parameters
     if model_name:
         claude_config["model_name"] = model_name
     if max_tokens:
         claude_config["max_tokens"] = max_tokens
     if temperature is not None:
         claude_config["temperature"] = temperature
-    if api_key:
-        claude_config["anthropic_api_key"] = api_key
 
-    # Validate API key
-    if not claude_config["anthropic_api_key"]:
-        raise ValueError("CLAUDE_API_KEY environment variable is not set")
+    model = claude_config["model_name"]
+    effective_temperature = claude_config["temperature"]
+    if effective_temperature is not None and model_base_name(model).startswith(
+        _TEMPERATURE_INCOMPATIBLE_PREFIXES
+    ):
+        logger.warning(
+            "Ignoring temperature=%s for model '%s' (extended-thinking models require the default temperature).",
+            effective_temperature,
+            model,
+        )
+        effective_temperature = None
 
-    kwargs: dict[str, Any] = {
-        "model": claude_config["model_name"],
-        "max_tokens": claude_config["max_tokens"],
-        "anthropic_api_key": claude_config["anthropic_api_key"],
-    }
-
-    # Only pass temperature for models that accept it; warn and drop it otherwise.
-    if claude_config["temperature"] is not None:
-        if claude_config["model_name"].startswith(_TEMPERATURE_INCOMPATIBLE_PREFIXES):
-            logger.warning(
-                "Ignoring temperature=%s for model '%s' (extended-thinking models require the default temperature).",
-                claude_config["temperature"],
-                claude_config["model_name"],
-            )
-        else:
-            kwargs["temperature"] = claude_config["temperature"]
-
-    return ChatAnthropic(**kwargs)
+    return create_litellm_chat_model(
+        model=model,
+        max_tokens=claude_config["max_tokens"],
+        temperature=effective_temperature,
+        api_key=api_key,
+    )
 
 
-def create_structured_evaluation_model(model: ChatAnthropic | None = None) -> Any:
+def create_structured_evaluation_model(model: ChatOpenAI | None = None) -> Any:
     """
     Create a Claude model with structured output for finding evaluation.
 
     Args:
-        model: Optional ChatAnthropic model (created from environment if not provided)
+        model: Optional ChatOpenAI model (created from environment if not provided)
 
     Returns:
         Configured model with structured output for batch evaluation
     """
-    # Create model if not provided
     if not model:
         model = create_claude_model()
 
-    # Create structured output model
     return model.with_structured_output(EvaluationResult)
 
 

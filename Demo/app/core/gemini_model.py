@@ -1,10 +1,11 @@
 import logging
 from typing import Any
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.config import config
+from app.core.litellm_client import create_litellm_chat_model, model_base_name
 from app.core.prompt_utils import build_context_section
 from app.models.finding_db import FindingDB
 from app.types import TaskCache
@@ -38,12 +39,12 @@ def get_gemini_config() -> dict[str, Any]:
         "max_output_tokens": config.gemini_max_tokens,
         "temperature": config.gemini_temperature,
         "thinking_level": config.gemini_thinking_level,
-        "google_api_key": config.gemini_api_key,
     }
 
 
-# Model name prefixes that accept thinking_level (and ignore temperature).
-_THINKING_MODEL_PREFIXES = ("gemini-3.5-flash",)
+# Model name prefixes (without the LiteLLM provider prefix) that accept a thinking level and
+# ignore temperature: every Gemini 3 model thinks.
+_THINKING_MODEL_PREFIXES = ("gemini-3",)
 
 
 def create_gemini_model(
@@ -52,31 +53,29 @@ def create_gemini_model(
     temperature: float | None = None,
     thinking_level: str | None = None,
     api_key: str | None = None,
-) -> ChatGoogleGenerativeAI:
+) -> ChatOpenAI:
     """
-    Create a Gemini model instance with specified parameters or from environment variables.
+    Create a Gemini model served by the LiteLLM proxy, from parameters or environment variables.
 
-    For thinking models (see _THINKING_MODEL_PREFIXES), `thinking_level` is used and
-    `temperature` is ignored (with a warning). For other Gemini models, `temperature`
-    is used and `thinking_level` is ignored (with a warning).
+    For thinking models (see _THINKING_MODEL_PREFIXES), `thinking_level` is sent as the
+    reasoning effort and `temperature` is ignored (with a warning). For other Gemini models,
+    `temperature` is used and `thinking_level` is ignored (with a warning).
 
     Args:
-        model_name: Optional model name override
+        model_name: Optional LiteLLM model key override
         max_tokens: Optional max tokens override
         temperature: Optional temperature override; ignored for thinking models
         thinking_level: Optional thinking level override (low/medium/high); ignored for non-thinking models
-        api_key: Optional API key override
+        api_key: Optional LiteLLM API key override
 
     Returns:
-        Configured ChatGoogleGenerativeAI instance
+        Configured ChatOpenAI instance pointed at the LiteLLM server
 
     Raises:
-        ValueError: If API key is not provided and not in environment variables
+        ValueError: If the LiteLLM server URL or API key is not configured
     """
-    # Get config from environment variables
     gemini_config = get_gemini_config()
 
-    # Override with any provided parameters
     if model_name:
         gemini_config["model"] = model_name
     if max_tokens:
@@ -85,49 +84,44 @@ def create_gemini_model(
         gemini_config["temperature"] = temperature
     if thinking_level:
         gemini_config["thinking_level"] = thinking_level
-    if api_key:
-        gemini_config["google_api_key"] = api_key
 
-    # Validate API key
-    if not gemini_config["google_api_key"]:
-        raise ValueError("GEMINI_API_KEY environment variable is not set")
-
-    kwargs: dict[str, Any] = {
-        "model": gemini_config["model"],
-        "max_output_tokens": gemini_config["max_output_tokens"],
-        "api_key": gemini_config["google_api_key"],
-    }
-
-    is_thinking_model = gemini_config["model"].startswith(_THINKING_MODEL_PREFIXES)
+    model = gemini_config["model"]
+    is_thinking_model = model_base_name(model).startswith(_THINKING_MODEL_PREFIXES)
+    effective_temperature: float | None = None
+    reasoning_effort: str | None = None
 
     if is_thinking_model:
         if gemini_config["temperature"] is not None:
             logger.warning(
                 "Ignoring temperature=%s for model '%s' (thinking models use thinking_level instead).",
                 gemini_config["temperature"],
-                gemini_config["model"],
+                model,
             )
-        if gemini_config["thinking_level"] is not None:
-            kwargs["thinking_level"] = gemini_config["thinking_level"]
+        reasoning_effort = gemini_config["thinking_level"]
     else:
         if gemini_config["thinking_level"] is not None:
             logger.warning(
                 "Ignoring thinking_level=%s for model '%s' (non-thinking models use temperature instead).",
                 gemini_config["thinking_level"],
-                gemini_config["model"],
+                model,
             )
-        if gemini_config["temperature"] is not None:
-            kwargs["temperature"] = gemini_config["temperature"]
+        effective_temperature = gemini_config["temperature"]
 
-    return ChatGoogleGenerativeAI(**kwargs)
+    return create_litellm_chat_model(
+        model=model,
+        max_tokens=gemini_config["max_output_tokens"],
+        temperature=effective_temperature,
+        reasoning_effort=reasoning_effort,
+        api_key=api_key,
+    )
 
 
-def create_structured_deduplication_model(model: ChatGoogleGenerativeAI | None = None) -> Any:
+def create_structured_deduplication_model(model: ChatOpenAI | None = None) -> Any:
     """
     Create a Gemini model with structured output for deduplication.
 
     Args:
-        model: Optional ChatGoogleGenerativeAI model (created from environment if not provided)
+        model: Optional ChatOpenAI model (created from environment if not provided)
 
     Returns:
         Configured model with structured output for deduplication

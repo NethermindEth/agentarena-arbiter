@@ -10,28 +10,32 @@ class Settings(BaseSettings):
 
     mongodb_url: str = Field(..., description="MongoDB connection URL")
 
+    # LiteLLM proxy serving both models below
+    litellm_server_url: str = Field(..., description="LiteLLM server base URL (http/https)")
+    litellm_api_key: str = Field(..., description="LiteLLM API key, sent as X-LiteLLM-API-Key")
+
     # Claude configuration for evaluation
-    claude_api_key: str = Field(..., description="Claude API key")
-    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
+    claude_model: str = Field(
+        "anthropic/claude-opus-4-8", description="Claude model key in the LiteLLM server"
+    )
     claude_max_tokens: int = Field(60000, description="Claude max tokens")
     claude_temperature: float | None = Field(
         None,
-        description="Optional Claude temperature; leave unset for thinking models (e.g. claude-opus-4-7)",
+        description="Optional Claude temperature; leave unset for thinking models (e.g. claude-opus-4-8)",
     )
 
     # Gemini configuration for deduplication
-    gemini_api_key: str = Field(..., description="Gemini API key")
-    gemini_model: str = Field("gemini-3.5-flash", description="Gemini model name")
-    gemini_max_tokens: int = Field(
-        65536, description="Gemini max output tokens (model cap for gemini-3.5-flash)"
+    gemini_model: str = Field(
+        "gemini/gemini-3.8-flash", description="Gemini model key in the LiteLLM server"
     )
+    gemini_max_tokens: int = Field(65536, description="Gemini max output tokens")
     gemini_thinking_level: str | None = Field(
         None,
-        description="Optional Gemini thinking level (low/medium/high); only used for thinking models (e.g. gemini-3.5-flash)",
+        description="Optional Gemini thinking level (low/medium/high); only used for thinking models (gemini-3*)",
     )
     gemini_temperature: float | None = Field(
         None,
-        description="Optional Gemini temperature; ignored for thinking models (e.g. gemini-3.5-flash)",
+        description="Optional Gemini temperature; ignored for thinking models (gemini-3*)",
     )
 
     debug: bool = Field(False, description="Debug mode flag")

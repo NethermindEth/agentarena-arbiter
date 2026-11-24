@@ -37,11 +37,11 @@
 ### Prerequisites
 - [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
 - MongoDB
-- Claude and Gemini API keys
+- A LiteLLM server serving the Claude and Gemini models, and an API key for it
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
-2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
+2. Set `LITELLM_SERVER_URL` and `LITELLM_API_KEY` in the `.env` file
 3. Configure MongoDB connection string (defaults to localhost if not specified)
 4. Set desired similarity threshold (default: 0.8)
 
@@ -215,15 +215,15 @@ class FindingDB(Finding):
 The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
-- `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
-- `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
+- `LITELLM_SERVER_URL`: Base URL (`http://...` or `https://...`) of the LiteLLM server that serves both models through its OpenAI-compatible API
+- `LITELLM_API_KEY`: LiteLLM API key, sent in the `X-LiteLLM-API-Key` header
+- `CLAUDE_MODEL`: LiteLLM model key used for evaluation (default: `anthropic/claude-opus-4-8`)
 - `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
-- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (e.g. `claude-opus-4-7`).
-- `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
-- `GEMINI_MODEL`: Gemini model version to use (default: `gemini-3.5-flash`)
+- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (`claude-opus-4-7`, `claude-opus-4-8`).
+- `GEMINI_MODEL`: LiteLLM model key used for deduplication (default: `gemini/gemini-3.8-flash`)
 - `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
-- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`). Used only for thinking models (e.g. `gemini-3.5-flash`); ignored with a warning for other Gemini models.
-- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (e.g. `gemini-3.5-flash`).
+- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`), sent to LiteLLM as the reasoning effort. Used only for thinking models (`gemini-3*`); ignored with a warning for other Gemini models.
+- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (`gemini-3*`).
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend
