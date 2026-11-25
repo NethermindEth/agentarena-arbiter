@@ -130,7 +130,7 @@ class TestLiteLLMClient:
             mock_config.litellm_server_url = "https://litellm.test/"
             mock_config.litellm_api_key = "litellm-test-key"
             mock_config.litellm_timeout_seconds = 1800.0
-            mock_config.litellm_max_retries = 1
+            mock_config.litellm_max_retries = 3
 
             getattr(module, factory)(model_name=model, temperature=0.5)
 

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         description="Seconds to wait for one model reply; keep it below the server's request_timeout",
     )
     litellm_max_retries: int = Field(
-        1, ge=0, description="Retries after a timeout, connection error, 429 or 5xx from LiteLLM"
+        3, ge=0, description="Retries after a timeout, connection error, 429 or 5xx from LiteLLM"
     )
 
     # Configuration for evaluation
