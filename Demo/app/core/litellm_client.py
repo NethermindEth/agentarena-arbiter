@@ -1,5 +1,4 @@
 import logging
-from typing import Any
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -46,14 +45,18 @@ def create_litellm_chat_model(
     if not key:
         raise ValueError("LITELLM_API_KEY environment variable is not set")
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "base_url": config.litellm_server_url.rstrip("/"),
+    # Temperature and reasoning effort default to None in ChatOpenAI, which leaves them out of
+    # the request, so passing None here is the same as not passing them.
+    return ChatOpenAI(
+        model=model,
+        max_completion_tokens=max_tokens,
+        temperature=temperature,
+        reasoning_effort=reasoning_effort,
+        base_url=config.litellm_server_url.rstrip("/"),
         # The OpenAI client always sends `Authorization: Bearer <api_key>`; the proxy reads the
         # key from LITELLM_API_KEY_HEADER, so both carry the same LiteLLM key.
-        "api_key": SecretStr(key),
-        "default_headers": {LITELLM_API_KEY_HEADER: key},
+        api_key=SecretStr(key),
+        default_headers={LITELLM_API_KEY_HEADER: key},
         # Without an explicit timeout the OpenAI client waits forever on a stalled proxy. Replies
         # are not streamed, so the read timeout bounds the wait for the whole reply. Each retry
         # repeats the full call, so the worst case is (retries + 1) times the timeout.
@@ -62,15 +65,9 @@ def create_litellm_chat_model(
         # its upstream call first. LiteLLM's default (6000 s) is above this setting's default
         # (1800 s); left unchanged, the client gives up first and a retry can overlap a reply
         # the proxy is still generating, billing that generation twice.
-        "timeout": httpx.Timeout(config.litellm_timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS),
-        "max_retries": config.litellm_max_retries,
-    }
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    if reasoning_effort is not None:
-        kwargs["reasoning_effort"] = reasoning_effort
-
-    return ChatOpenAI(**kwargs)
+        timeout=httpx.Timeout(config.litellm_timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS),
+        max_retries=config.litellm_max_retries,
+    )
 
 
 def model_base_name(model: str) -> str:
