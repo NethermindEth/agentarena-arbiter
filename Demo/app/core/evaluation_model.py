@@ -111,12 +111,17 @@ def create_structured_evaluation_model(model: ChatOpenAI | None = None) -> Any:
         model: Optional ChatOpenAI model (created from environment if not provided)
 
     Returns:
-        Configured model with structured output for batch evaluation
+        Configured model with structured output for batch evaluation; its reply is a dict with
+        the `raw` message, the `parsed` EvaluationResult and the `parsing_error`
     """
     if not model:
         model = create_evaluation_model()
 
-    return model.with_structured_output(EvaluationResult, method=STRUCTURED_OUTPUT_METHOD)
+    # include_raw keeps the raw reply, so a reply that fails to parse (cut off at max_tokens,
+    # refused, or plain text) can be reported with its finish_reason instead of becoming None.
+    return model.with_structured_output(
+        EvaluationResult, method=STRUCTURED_OUTPUT_METHOD, include_raw=True
+    )
 
 
 async def evaluate_findings_structured(
@@ -136,6 +141,9 @@ async def evaluate_findings_structured(
 
     Returns:
         Structured evaluation result with guaranteed format
+
+    Raises:
+        ValueError: If the reply could not be parsed into an EvaluationResult.
     """
 
     if related_findings:
@@ -143,7 +151,15 @@ async def evaluate_findings_structured(
     else:
         prompt = _get_individual_findings_prompt(findings_batch, task_cache)
 
-    return await model_with_structured_output.ainvoke(prompt)
+    response = await model_with_structured_output.ainvoke(prompt)
+    parsed = response["parsed"]
+    if parsed is None:
+        metadata = getattr(response["raw"], "response_metadata", {})
+        raise ValueError(
+            f"No usable evaluation (finish_reason={metadata.get('finish_reason')}): "
+            f"{response['parsing_error']}"
+        )
+    return parsed
 
 
 def _get_related_findings_prompt(findings_batch: list[FindingDB], task_cache: TaskCache) -> str:

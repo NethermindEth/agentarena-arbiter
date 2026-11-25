@@ -138,8 +138,9 @@ class TestLiteLLMClient:
             assert kwargs["model"] == model
             assert kwargs["base_url"] == "https://litellm.test"
             assert kwargs["default_headers"] == {"X-LiteLLM-API-Key": "litellm-test-key"}
-            # Both default models think, so the temperature is dropped.
-            assert "temperature" not in kwargs
+            # Both default models think, so the temperature is dropped (None leaves it out of
+            # the request).
+            assert kwargs["temperature"] is None
 
     def test_client_has_timeout_and_retries(self):
         """The OpenAI client gets a bounded timeout and the configured retries, never no timeout."""

@@ -97,5 +97,5 @@ async def test_production_factories_round_trip():
         DEDUPLICATION_PROMPT
     )
 
-    assert isinstance(evaluation, EvaluationResult)
+    assert isinstance(evaluation["parsed"], EvaluationResult)
     assert isinstance(deduplication["parsed"], DeduplicationResult)
