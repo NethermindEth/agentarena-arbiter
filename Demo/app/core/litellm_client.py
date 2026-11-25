@@ -56,7 +56,9 @@ def create_litellm_chat_model(
         "default_headers": {LITELLM_API_KEY_HEADER: key},
         # Without an explicit timeout the OpenAI client waits forever on a stalled proxy. Replies
         # are not streamed, so the read timeout bounds the wait for the whole reply. Each retry
-        # repeats the full call, so the worst case is (retries + 1) times the timeout.
+        # repeats the full call, so the worst case is (retries + 1) times the timeout. The setting
+        # sits slightly above the server's request_timeout, so a retry never overlaps a reply
+        # the proxy is still generating.
         "timeout": httpx.Timeout(config.litellm_timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS),
         "max_retries": config.litellm_max_retries,
     }

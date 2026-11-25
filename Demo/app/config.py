@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     litellm_timeout_seconds: float = Field(
         1800.0,
         gt=0,
-        description="Seconds to wait for one model reply; keep it below the server's request_timeout",
+        description=(
+            "Seconds to wait for one model reply; set it slightly above the LiteLLM server's"
+            " request_timeout, so the proxy times out, and cancels the upstream call, first"
+        ),
     )
     litellm_max_retries: int = Field(
         3, ge=0, description="Retries after a timeout, connection error, 429 or 5xx from LiteLLM"
