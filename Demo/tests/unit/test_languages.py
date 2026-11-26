@@ -37,6 +37,11 @@ class TestLanguageLine:
     def test_excluded_extension_does_not_match(self):
         assert languages_of_files(["test/Vault.t.sol", "src/lib.rs"], TASK_LANGUAGES) == [RUST]
 
+    def test_line_references_are_ignored(self):
+        paths = ["src/Vault.sol:42", "src/lib.rs#L10-L20", "app/main.js:10-20 "]
+        assert languages_of_files(paths, TASK_LANGUAGES) == [SOLIDITY, RUST, JAVASCRIPT]
+        assert languages_of_files(["test/Vault.t.sol:7"], TASK_LANGUAGES) == TASK_LANGUAGES
+
     def test_no_matching_file_names_all_task_languages(self):
         line = language_line(["README.md"], [SOLIDITY, RUST])
         assert line == "Language: Solidity and Rust"

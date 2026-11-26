@@ -172,7 +172,7 @@ Since these findings are related:
 2. **Collective Analysis**: Use information from all findings to make the most comprehensive assessment
 3. **Cross-Reference**: Look for complementary details across findings to build complete picture
 4. **Consistency**: Apply the same evaluation criteria to all findings in the batch
-5. **Context-Aware**: Use the smart contract context above to validate technical accuracy and assess real-world impact
+5. **Context-Aware**: Use the project context above to validate technical accuracy and assess real-world impact
 
 ## EVALUATION CRITERIA
 
@@ -180,7 +180,7 @@ Since these findings are related:
 - Analyze the core vulnerability described across all findings
 - Determine if this represents a legitimate security issue or false positive
 - Consider the technical accuracy and potential impact of the underlying issue
-- **Use the smart contract context to validate claims and assess if the vulnerability actually exists in the provided code**
+- **Use the project context to validate claims and assess if the vulnerability actually exists in the provided code**
 
 **Severity Assessment:**
 - **High**: High or critical impact on contract functionality, user funds, or security with feasible exploitation
@@ -232,7 +232,7 @@ Return a JSON object with the following structure:
 4. **Comprehensive Comments**: Explain the shared vulnerability and why all findings receive the same rating
 5. **Use Exact IDs**: Include evaluation for each finding using its exact ID
 
-Provide one evaluation per finding, but ensure all evaluations are consistent since they refer to the same underlying issue. Base your analysis on the actual smart contract context provided.
+Provide one evaluation per finding, but ensure all evaluations are consistent since they refer to the same underlying issue. Base your analysis on the actual project context provided.
 """
 
 
@@ -257,7 +257,7 @@ Since these findings are unrelated:
 2. **Individual Context**: Consider each finding within its specific context and scope
 3. **Separate Ratings**: Each finding may have different validity and severity ratings
 4. **Focused Analysis**: Analyze each finding's specific claims and evidence
-5. **Context-Aware**: Use the smart contract context above to validate each finding's technical accuracy
+5. **Context-Aware**: Use the project context above to validate each finding's technical accuracy
 
 ## EVALUATION CRITERIA
 
@@ -265,7 +265,7 @@ Since these findings are unrelated:
 - Analyze the core vulnerability described in each finding
 - Determine if this represents a legitimate security issue or false positive
 - Consider the technical accuracy and potential impact of the underlying issue
-- **Use the smart contract context to validate claims and assess if each vulnerability actually exists in the provided code**
+- **Use the project context to validate claims and assess if each vulnerability actually exists in the provided code**
 
 **Severity Assessment:**
 - **High**: High or critical impact on contract functionality, user funds, or security with feasible exploitation
@@ -318,5 +318,5 @@ Return a JSON object with the following structure:
 5. **Use Exact IDs**: Include one evaluation per finding using its exact ID
 6. **Varied Results**: It's expected and appropriate for findings to have different validity and severity ratings
 
-Analyze each finding on its individual merits and provide separate, independent evaluations based on the actual smart contract context provided.
+Analyze each finding on its individual merits and provide separate, independent evaluations based on the actual project context provided.
 """

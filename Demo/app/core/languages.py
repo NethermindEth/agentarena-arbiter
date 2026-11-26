@@ -1,13 +1,21 @@
 """The languages of a task's files, as the evaluation and deduplication prompts state them."""
 
+import re
 from collections.abc import Iterable
 
 from app.types import LanguageDefinition
 
+# A line reference agents append to a path, as in "src/Vault.sol:42", "src/Vault.sol:10-20" or
+# "src/lib.rs#L10-L20"; it hides the file's extension.
+_LINE_REFERENCE = re.compile(r"(?::\d[\d:-]*|#L\d[\dL-]*)$")
+
 
 def matches_language(file_path: str, language: LanguageDefinition) -> bool:
-    """Tell whether a file is code of the language, by its extensions; case is ignored."""
-    name = file_path.lower()
+    """
+    Tell whether a file is code of the language, by its extensions; case and a trailing line
+    reference are ignored.
+    """
+    name = _LINE_REFERENCE.sub("", file_path.strip()).lower()
     return any(name.endswith(ext.lower()) for ext in language.file_extensions) and not any(
         name.endswith(ext.lower()) for ext in language.excluded_extensions
     )
