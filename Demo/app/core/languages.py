@@ -4,17 +4,6 @@ from collections.abc import Iterable
 
 from app.types import LanguageDefinition
 
-# A task's languages when the backend gives none: every task before the language catalogue was
-# Solidity.
-DEFAULT_LANGUAGES = [
-    LanguageDefinition(
-        slug="solidity",
-        caption="Solidity",
-        file_extensions=[".sol"],
-        excluded_extensions=[".t.sol"],
-    )
-]
-
 
 def matches_language(file_path: str, language: LanguageDefinition) -> bool:
     """Tell whether a file is code of the language, by its extensions; case is ignored."""

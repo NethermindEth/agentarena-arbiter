@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class QAPair(BaseModel):
@@ -24,6 +24,27 @@ class LanguageDefinition(BaseModel):
     file_extensions: list[str] = []
     excluded_extensions: list[str] = []
 
+    @field_validator("file_extensions", "excluded_extensions", mode="before")
+    @classmethod
+    def _null_as_empty(cls, value: object) -> object:
+        """Read a null extension list as an empty one."""
+        return [] if value is None else value
+
+
+def default_languages() -> list[LanguageDefinition]:
+    """
+    Give a task's languages when the backend gives none: Solidity, the language of every task
+    before the language catalogue. Each call builds new objects, so no two tasks share them.
+    """
+    return [
+        LanguageDefinition(
+            slug="solidity",
+            caption="Solidity",
+            file_extensions=[".sol"],
+            excluded_extensions=[".t.sol"],
+        )
+    ]
+
 
 class Task(BaseModel):
     """Response model for task creation."""
@@ -38,7 +59,7 @@ class Task(BaseModel):
     deadline: str
     selectedBranch: str
     selectedFiles: list[str]
-    languages: list[LanguageDefinition] = []
+    languages: list[LanguageDefinition] | None = []
     selectedDocs: list[str] | None = []
     additionalLinks: list[str] | None = []
     additionalDocs: str | None = None
@@ -53,8 +74,15 @@ class TaskCache(BaseModel):
     startTime: datetime | None = None
     deadline: datetime | None = None
     selectedFilesContent: str | None = None
-    languages: list[LanguageDefinition] = []
+    # Never empty, so the prompts always name a language and the fence keeps its tag
+    languages: list[LanguageDefinition] = Field(default_factory=default_languages)
     selectedDocsContent: str | None = None
     additionalLinks: list[str] | None = []
     additionalDocs: str | None = None
     qaResponses: list[QAPair] | None = []
+
+    @field_validator("languages", mode="before")
+    @classmethod
+    def _default_when_none_given(cls, value: object) -> object:
+        """Fall back to Solidity when the languages are null or empty."""
+        return value or default_languages()
