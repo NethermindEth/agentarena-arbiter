@@ -162,7 +162,7 @@ async def find_duplicates_structured(
     )
 
     prompt = f"""
-You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
+You are a security expert with deep expertise in smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
 ## TASK:
 1. **Group duplicate findings** - Identify vulnerabilities that describe the same underlying security issue affecting the same function and code section
@@ -223,14 +223,14 @@ Return a JSON object with the following structure:
 }}
 ```
 
-## SMART CONTRACT CONTEXT
+## PROJECT CONTEXT
 {context_section}
 
 ## FINDINGS TO ANALYZE
 {languages}
 {[finding.dump() for finding in findings]}
 
-Analyze systematically: group similar findings, examine each vulnerability against the smart contract context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
+Analyze systematically: group similar findings, examine each vulnerability against the project context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
 """  # noqa: S608  an LLM prompt, not a SQL query
 
     response = await model_with_structured_output.ainvoke(prompt)

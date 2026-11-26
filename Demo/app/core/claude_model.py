@@ -218,7 +218,7 @@ Return a JSON object with the following structure:
 }}
 ```
 
-## SMART CONTRACT CONTEXT
+## PROJECT CONTEXT
 {context_section}
 
 ## FINDINGS TO ANALYZE
@@ -303,7 +303,7 @@ Return a JSON object with the following structure:
 }}
 ```
 
-## SMART CONTRACT CONTEXT
+## PROJECT CONTEXT
 {context_section}
 
 ## FINDINGS TO ANALYZE
