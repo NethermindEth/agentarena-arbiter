@@ -84,3 +84,48 @@ def test_task_parses_languages_from_backend():
         }
     )
     assert task.languages == [SOLIDITY]
+
+
+TASK_FIELDS = {
+    "taskId": "t",
+    "projectRepo": "r",
+    "title": "t",
+    "description": "d",
+    "status": "Open",
+    "startTime": "0",
+    "deadline": "1",
+    "selectedBranch": "main",
+    "selectedFiles": ["src/Vault.sol"],
+}
+
+
+def test_task_accepts_null_languages():
+    """A task the backend serializes with null languages still parses."""
+    task = Task.model_validate({**TASK_FIELDS, "languages": None})
+    assert task.languages is None
+
+
+def test_language_accepts_null_extensions():
+    """Null extension lists read as empty ones."""
+    language = LanguageDefinition.model_validate(
+        {"slug": "rust", "caption": "Rust", "file_extensions": None, "excluded_extensions": None}
+    )
+    assert language.file_extensions == []
+    assert language.excluded_extensions == []
+
+
+class TestTaskCacheLanguages:
+    def test_missing_languages_default_to_solidity(self):
+        assert TaskCache(taskId="t").languages == [SOLIDITY]
+
+    def test_null_or_empty_languages_default_to_solidity(self):
+        assert TaskCache(taskId="t", languages=None).languages == [SOLIDITY]
+        assert TaskCache(taskId="t", languages=[]).languages == [SOLIDITY]
+
+    def test_default_lists_are_not_shared(self):
+        assert TaskCache().languages[0] is not TaskCache().languages[0]
+
+    def test_cache_without_languages_keeps_the_prompt_line_and_fence(self):
+        cache = TaskCache(taskId="t", selectedFilesContent="code")
+        assert language_line(["README.md"], cache.languages) == "Language: Solidity"
+        assert "```solidity\ncode" in build_context_section(cache)

@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.core.languages import DEFAULT_LANGUAGES
-from app.types import LanguageDefinition, TaskCache
+from app.types import LanguageDefinition, TaskCache, default_languages
 
 RUST = LanguageDefinition(slug="rust", caption="Rust", file_extensions=[".rs"])
 
@@ -19,7 +18,7 @@ class TestFetchTaskData:
     """Unit tests for fetch_task_data functionality."""
 
     @pytest.mark.parametrize(
-        ("task_languages", "expected"), [([], DEFAULT_LANGUAGES), ([RUST], [RUST])]
+        ("task_languages", "expected"), [([], default_languages()), ([RUST], [RUST])]
     )
     @patch("app.main.remove_tree")
     @patch("app.main._store_repository", return_value="/repo")
