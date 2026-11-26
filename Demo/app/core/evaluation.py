@@ -2,13 +2,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.claude_model import (
+from app.core.deduplication_model import DuplicateFinding
+from app.core.evaluation_model import (
     EvaluationResult,
     FindingEvaluation,
     create_structured_evaluation_model,
     evaluate_findings_structured,
 )
-from app.core.gemini_model import DuplicateFinding
 from app.database.mongodb_handler import mongodb
 from app.models.finding_db import FindingDB, Status
 from app.models.finding_input import Severity
@@ -41,7 +41,7 @@ class FindingEvaluator:
         Setup structured output model for batch finding evaluation.
 
         Returns:
-            Claude model configured with structured output for evaluation
+            Evaluation model configured with structured output
         """
         return create_structured_evaluation_model()
 

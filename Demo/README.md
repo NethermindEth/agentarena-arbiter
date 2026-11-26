@@ -37,11 +37,11 @@
 ### Prerequisites
 - [uv](https://docs.astral.sh/uv/), which installs the pinned Python 3.14 itself
 - MongoDB
-- Claude and Gemini API keys
+- A LiteLLM server serving the Claude and Gemini models, and an API key for it
 
 ### Environment Setup
 1. Create a `.env` file based on `.env.example`
-2. Add your Claude API key to the `.env` file: `CLAUDE_API_KEY=your_api_key_here`
+2. Set `LITELLM_SERVER_URL` and `LITELLM_API_KEY` in the `.env` file
 3. Configure MongoDB connection string (defaults to localhost if not specified)
 4. Set desired similarity threshold (default: 0.8)
 
@@ -91,6 +91,14 @@ uv run pytest --cov=app --cov-report=term-missing
 Settings are read at import time, so the required variables must be set, with
 placeholders for everything but MongoDB; `.github/workflows/ci-tests.yaml` lists
 them. The integration tests write to the MongoDB at `MONGODB_URL`.
+
+`tests/live/` is skipped unless `LITELLM_LIVE_TESTS=1`. It makes real calls through the LiteLLM
+server, one per model and structured-output method, and is the check to run after changing a
+model, the LiteLLM server or a result schema:
+
+```bash
+LITELLM_LIVE_TESTS=1 LITELLM_SERVER_URL=https://... LITELLM_API_KEY=... uv run pytest tests/live -v
+```
 
 ### Prerequisites for Testing
 - A MongoDB at `MONGODB_URL`; every other setting takes a placeholder, the LLM and
@@ -215,15 +223,17 @@ class FindingDB(Finding):
 The application requires the following environment variables:
 
 - `MONGODB_URL`: MongoDB connection string (default: mongodb://localhost:27017)
-- `CLAUDE_API_KEY`: API key for Claude AI model (used for evaluation)
-- `CLAUDE_MODEL`: Model version to use (default: `claude-sonnet-4-20250514`)
-- `CLAUDE_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
-- `CLAUDE_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (e.g. `claude-opus-4-7`).
-- `GEMINI_API_KEY`: API key for Gemini AI model (used for deduplication)
-- `GEMINI_MODEL`: Gemini model version to use (default: `gemini-3.5-flash`)
-- `GEMINI_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
-- `GEMINI_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`). Used only for thinking models (e.g. `gemini-3.5-flash`); ignored with a warning for other Gemini models.
-- `GEMINI_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (e.g. `gemini-3.5-flash`).
+- `LITELLM_SERVER_URL`: Base URL (`http://...` or `https://...`) of the LiteLLM server that serves both models through its OpenAI-compatible API
+- `LITELLM_API_KEY`: LiteLLM API key, sent in the `X-LiteLLM-API-Key` header
+- `LITELLM_TIMEOUT_SECONDS`: Seconds to wait for one model reply (default: 1800). Replies are not streamed, so this bounds the whole reply; size it for the longest evaluation batch (up to `EVALUATION_MAX_TOKENS` of output). Set it slightly above the LiteLLM server's own `request_timeout` (per model or global; LiteLLM's default is 6000 seconds), and bound the wait with the server's value. That way the proxy times out first, ends its upstream call and returns an error, and the client's retry starts a fresh call. With the client timeout below the server's, the client disconnects and retries while the proxy may still be generating the first reply, unless the deployment cancels upstream calls on client disconnect, so the same long generation can be billed twice. Connecting to the server times out after 10 seconds.
+- `LITELLM_MAX_RETRIES`: Retries after a timeout, connection error, 429 or 5xx from LiteLLM (default: 3). Each retry repeats the whole call, so a run can wait up to (retries + 1) × `LITELLM_TIMEOUT_SECONDS` per call.
+- `EVALUATION_MODEL`: LiteLLM model key used for evaluation (Claude) (default: `anthropic/claude-opus-4-8`)
+- `EVALUATION_MAX_TOKENS`: Maximum tokens for Claude AI model (default: 60000)
+- `EVALUATION_TEMPERATURE`: Optional temperature for Claude (0.0-1.0). Unset by default. Ignored with a warning for extended-thinking models (`claude-opus-4-7`, `claude-opus-4-8`).
+- `DEDUPLICATION_MODEL`: LiteLLM model key used for deduplication (Gemini) (default: `gemini/gemini-3.8-flash`)
+- `DEDUPLICATION_MAX_TOKENS`: Maximum output tokens for Gemini AI model (default: 65536)
+- `DEDUPLICATION_THINKING_LEVEL`: Optional thinking level (`low`/`medium`/`high`), sent to LiteLLM as the reasoning effort. Used only for thinking models (`gemini-3*`); ignored with a warning for other Gemini models.
+- `DEDUPLICATION_TEMPERATURE`: Optional temperature for Gemini (0.0-2.0). Unset by default. Used only for non-thinking Gemini models; ignored with a warning for thinking models (`gemini-3*`).
 - `DEBUG`: Enable debug mode (default: true)
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - `BACKEND_API_KEY`: API key for AgentArena backend

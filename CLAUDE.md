@@ -29,18 +29,21 @@ pre-commit install       # once per clone, from the repository root; runs the sa
 
 Settings are read when `app.config` is imported and the required ones have no defaults, so the
 tests need `MONGODB_URL`, the three `BACKEND_*_ENDPOINT` values, `BACKEND_API_KEY`,
-`CLAUDE_API_KEY` and `GEMINI_API_KEY` set, with placeholders for everything but MongoDB; see the
-`tests` job in `.github/workflows/ci-tests.yaml`. The integration tests write to that MongoDB.
+`LITELLM_SERVER_URL` and `LITELLM_API_KEY` set, with placeholders for everything but MongoDB; see
+the `tests` job in `.github/workflows/ci-tests.yaml`. The integration tests write to that MongoDB.
 
 ## Architecture
 
 - **`app/main.py`**: the HTTP surface (`/process_findings`, `/test/process_findings`, the
   backend-key endpoints), the APScheduler job per approved task, and the deadline processing that
   downloads the repository, runs both LLM stages and posts the verdicts.
-- **`app/core/deduplication.py`** and **`app/core/gemini_model.py`**: one structured Gemini call
+- **`app/core/deduplication.py`** and **`app/core/deduplication_model.py`**: one structured Gemini call
   groups findings that describe the same bug.
-- **`app/core/evaluation.py`** and **`app/core/claude_model.py`**: Claude judges each group or
+- **`app/core/evaluation.py`** and **`app/core/evaluation_model.py`**: Claude judges each group or
   batch for validity and severity.
+- **`app/core/litellm_client.py`**: both models are reached through the LiteLLM proxy's
+  OpenAI-compatible API (`LITELLM_SERVER_URL`), authenticated with `X-LiteLLM-API-Key`; the model
+  settings are LiteLLM model keys such as `anthropic/claude-opus-4-8`.
 - **`app/database/mongodb_handler.py`**: Motor access to the arbiter's `security_findings`
   database and the backend's `agent_arena` database (agents and tasks).
 - **`app/task_utils.py`**: downloads and extracts the task repository from the backend.

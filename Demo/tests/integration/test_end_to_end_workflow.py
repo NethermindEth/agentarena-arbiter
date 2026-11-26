@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from bson import ObjectId
 
-from app.core.claude_model import FindingEvaluation
 from app.core.deduplication import FindingDeduplication
+from app.core.deduplication_model import DeduplicationResult, DuplicateFinding
 from app.core.evaluation import FindingEvaluator
-from app.core.gemini_model import DeduplicationResult, DuplicateFinding
+from app.core.evaluation_model import FindingEvaluation
 from app.models.finding_db import FindingDB, Severity, Status
 
 

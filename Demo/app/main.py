@@ -409,7 +409,7 @@ async def process_task(task_id: str):
     """
     Process all findings for a task that has ended.
     This function is called automatically when a task deadline passes.
-    Uses the Gemini-based deduplication and batch evaluation system.
+    Uses the deduplication and batch evaluation stages.
 
     Args:
         task_id: Task identifier for the ended task

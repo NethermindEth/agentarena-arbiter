@@ -2,14 +2,15 @@
 Unit tests for evaluation logic.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from app.core.claude_model import FindingEvaluation
+from app.core.deduplication_model import DuplicateFinding
 from app.core.evaluation import FindingEvaluator
-from app.core.gemini_model import DuplicateFinding
+from app.core.evaluation_model import FindingEvaluation, evaluate_findings_structured
 from app.models.finding_db import Severity
+from app.types import TaskCache
 from tests.conftest import mock_mongodb
 
 
@@ -108,3 +109,18 @@ class TestFindingEvaluator:
 
             # Verify database update was called
             mock_mongodb.update_finding.assert_called()
+
+
+async def test_unparsed_evaluation_reply_raises_with_finish_reason(sample_findings):
+    """A reply that does not parse (here cut off at max_tokens) raises instead of returning None."""
+    model = Mock()
+    model.ainvoke = AsyncMock(
+        return_value={
+            "raw": Mock(response_metadata={"finish_reason": "length"}),
+            "parsed": None,
+            "parsing_error": None,
+        }
+    )
+
+    with pytest.raises(ValueError, match="finish_reason=length"):
+        await evaluate_findings_structured(model, sample_findings, TaskCache())

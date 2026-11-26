@@ -131,8 +131,8 @@ jobs:
                error paths that will reliably fail in real use, incorrect env-var
                wiring (recall: MONGODB_URL names the cluster shared with the backend,
                the BACKEND_*_ENDPOINT values and BACKEND_API_KEY must match the
-               backend, and CLAUDE_MODEL and GEMINI_MODEL must exist), or a finding
-               shape that no longer matches the backend's FindingInput.
+               backend, and EVALUATION_MODEL and DEDUPLICATION_MODEL must exist), or
+               a finding shape that no longer matches the backend's FindingInput.
             5. MINOR — Code & style. Readability, naming, the 100-column wrap for
                .py (the lint check runs Ruff for the lint rules),
                file-size/separation-of-concerns per CLAUDE.md,
@@ -298,7 +298,7 @@ jobs:
                error paths that will reliably fail in real use, incorrect env-var
                wiring (recall: MONGODB_URL names the cluster shared with the backend,
                the BACKEND_*_ENDPOINT values and BACKEND_API_KEY must match the
-               backend, and CLAUDE_MODEL and GEMINI_MODEL must exist), or a finding
+               backend, and EVALUATION_MODEL and DEDUPLICATION_MODEL must exist), or a finding
                shape that no longer matches the backend's FindingInput.
             5. MINOR — Code & style. Readability, naming, the 100-column wrap for
                .py (the lint check runs Ruff for the lint rules),

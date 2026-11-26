@@ -10,28 +10,45 @@ class Settings(BaseSettings):
 
     mongodb_url: str = Field(..., description="MongoDB connection URL")
 
-    # Claude configuration for evaluation
-    claude_api_key: str = Field(..., description="Claude API key")
-    claude_model: str = Field("claude-sonnet-4-20250514", description="Claude model name")
-    claude_max_tokens: int = Field(60000, description="Claude max tokens")
-    claude_temperature: float | None = Field(
-        None,
-        description="Optional Claude temperature; leave unset for thinking models (e.g. claude-opus-4-7)",
+    # LiteLLM proxy serving both models below
+    litellm_server_url: str = Field(..., description="LiteLLM server base URL (http/https)")
+    litellm_api_key: str = Field(..., description="LiteLLM API key, sent as X-LiteLLM-API-Key")
+    litellm_timeout_seconds: float = Field(
+        1800.0,
+        gt=0,
+        description=(
+            "Seconds to wait for one model reply; set it slightly above the LiteLLM server's"
+            " request_timeout, so the proxy times out, and cancels the upstream call, first"
+        ),
+    )
+    litellm_max_retries: int = Field(
+        3, ge=0, description="Retries after a timeout, connection error, 429 or 5xx from LiteLLM"
     )
 
-    # Gemini configuration for deduplication
-    gemini_api_key: str = Field(..., description="Gemini API key")
-    gemini_model: str = Field("gemini-3.5-flash", description="Gemini model name")
-    gemini_max_tokens: int = Field(
-        65536, description="Gemini max output tokens (model cap for gemini-3.5-flash)"
+    # Configuration for evaluation
+    evaluation_model: str = Field(
+        "anthropic/claude-opus-4-8", description="Evaluation model key in the LiteLLM server"
     )
-    gemini_thinking_level: str | None = Field(
+    evaluation_max_tokens: int = Field(60000, description="Evaluation model max tokens")
+    evaluation_temperature: float | None = Field(
         None,
-        description="Optional Gemini thinking level (low/medium/high); only used for thinking models (e.g. gemini-3.5-flash)",
+        description="Optional evaluation model temperature; leave unset for thinking models (e.g. claude-opus-4-8)",
     )
-    gemini_temperature: float | None = Field(
+
+    # Configuration for deduplication
+    deduplication_model: str = Field(
+        "gemini/gemini-3.8-flash", description="Deduplication model key in the LiteLLM server"
+    )
+    deduplication_max_tokens: int = Field(
+        65536, description="Deduplication model max output tokens"
+    )
+    deduplication_thinking_level: str | None = Field(
         None,
-        description="Optional Gemini temperature; ignored for thinking models (e.g. gemini-3.5-flash)",
+        description="Optional deduplication model thinking level (low/medium/high); only used for thinking models (gemini-3*)",
+    )
+    deduplication_temperature: float | None = Field(
+        None,
+        description="Optional deduplication model temperature; ignored for thinking models (gemini-3*)",
     )
 
     debug: bool = Field(False, description="Debug mode flag")
