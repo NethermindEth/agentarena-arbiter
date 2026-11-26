@@ -44,7 +44,7 @@ def get_deduplication_config() -> dict[str, Any]:
 
 # Model name prefixes (without the LiteLLM provider prefix) that accept a thinking level and
 # ignore temperature: every Gemini 3 model thinks.
-_THINKING_MODEL_PREFIXES = ("gemini-3",)
+_THINKING_MODEL_PREFIXES = ("gemini-3", "gemini-4")
 
 # How the deduplication schema is requested through LiteLLM. json_schema becomes Gemini's native
 # response schema, which is what Gemini used before the proxy.

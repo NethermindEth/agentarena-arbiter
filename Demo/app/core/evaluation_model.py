@@ -44,7 +44,7 @@ def get_evaluation_config() -> dict[str, Any]:
 
 # Model name prefixes (without the LiteLLM provider prefix) that do not accept a temperature
 # override (extended thinking).
-_TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
+_TEMPERATURE_INCOMPATIBLE_PREFIXES = ("claude-opus-4", "claude-opus-5")
 
 # How the evaluation schema is requested through LiteLLM. A forced, non-strict tool call is what
 # Claude used before the proxy; OpenAI's strict json_schema would need LiteLLM to translate
