@@ -180,6 +180,22 @@ class FindingDB(Finding):
     updated_at: datetime
 ```
 
+### Task languages
+The backend's task payload carries `languages`, the entries of its language catalogue that the
+task's code is written in; the arbiter ignores any other field of an entry.
+```python
+class LanguageDefinition(BaseModel):
+    slug: str  # also the code fence tag when the task has a single language
+    caption: str  # the name the prompts use, e.g. "Rust"
+    file_extensions: list[str] = []  # e.g. [".sol"]
+    excluded_extensions: list[str] = []  # e.g. [".t.sol"], checked after file_extensions
+```
+A task whose `languages` is missing, null or empty, such as one from a backend older than the
+catalogue, is treated as Solidity; so is a cached task built without languages. A null extension
+list reads as an empty one. The deduplication and evaluation prompts state the languages of the
+files the findings refer to in a `Language: ...` line (all of the task's languages when no file
+matches any).
+
 ## Configuration
 The application requires the following environment variables:
 
