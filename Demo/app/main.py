@@ -28,7 +28,7 @@ from app.core.deduplication import FindingDeduplication
 from app.core.evaluation import FindingEvaluator
 from app.models.finding_db import FindingDB, Status
 from app.task_utils import download_repository, read_and_concatenate_files, remove_tree
-from app.types import TaskCache
+from app.types import TaskCache, default_languages
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -324,10 +324,10 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
             # Always clean up temp directory
             await asyncio.to_thread(remove_tree, temp_dir)
 
-        # Concatenate contract files
-        concatenated_contracts = read_and_concatenate_files(repo_storage_path, selected_files)
-        if not concatenated_contracts:
-            logger.warning(f"No valid contracts content found for task {task_id}")
+        # Concatenate the selected files
+        concatenated_files = read_and_concatenate_files(repo_storage_path, selected_files)
+        if not concatenated_files:
+            logger.warning(f"No valid content found in the selected files of task {task_id}")
             return None
 
         # Concatenate documentation files
@@ -338,12 +338,16 @@ async def fetch_task_data(task_id: str) -> TaskCache | None:
         if not concatenated_docs:
             logger.warning(f"No valid docs content found for task {task_id}")
 
+        if not task.selectedProfiles:
+            logger.warning(f"Task {task_id} has no language profiles, treating it as Solidity")
+
         # Create TaskCache object
         task_cache = TaskCache(
             taskId=task_id,
             startTime=datetime.fromtimestamp(float(task.startTime), tz=UTC),
             deadline=datetime.fromtimestamp(float(task.deadline), tz=UTC),
-            selectedFilesContent=concatenated_contracts,
+            selectedFilesContent=concatenated_files,
+            languages=task.selectedProfiles or default_languages(),
             selectedDocsContent=concatenated_docs,
             additionalLinks=task.additionalLinks,
             additionalDocs=task.additionalDocs,
@@ -431,7 +435,7 @@ async def _process_task(task_id: str, client: httpx.AsyncClient) -> bool:
     task_cache = await fetch_task_data(task_id)
     if not task_cache:
         logger.error(
-            f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without smart contract context."
+            f"Failed to fetch task data for task_id: {task_id}. Evaluation cannot proceed without the project context."
         )
         return False
 

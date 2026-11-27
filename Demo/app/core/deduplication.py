@@ -334,7 +334,7 @@ class FindingDeduplication:
         Args:
             task_id: Task identifier
             findings: List of findings to process
-            task_cache: Task context containing smart contract files and documentation
+            task_cache: Task context containing the project's files and documentation
 
         Returns:
             Complete processing results with detailed status information

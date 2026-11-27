@@ -8,12 +8,51 @@ from unittest.mock import patch
 
 import pytest
 
-from app.types import TaskCache
+from app.types import LanguageDefinition, TaskCache, default_languages
+
+RUST = LanguageDefinition(slug="rust", name="Rust", source_patterns=["**/*.rs"])
 
 
 @pytest.mark.asyncio
 class TestFetchTaskData:
     """Unit tests for fetch_task_data functionality."""
+
+    @pytest.mark.parametrize(
+        ("task_languages", "expected"), [([], default_languages()), ([RUST], [RUST])]
+    )
+    @patch("app.main.remove_tree")
+    @patch("app.main._store_repository", return_value="/repo")
+    @patch("app.main.read_and_concatenate_files", return_value="code")
+    @patch("app.main.download_repository")
+    @patch("app.main.fetch_task")
+    async def test_fetch_task_data_languages(
+        self,
+        mock_fetch_task,
+        mock_download,
+        _mock_read,
+        _mock_store,
+        _mock_remove,
+        sample_task,
+        task_languages,
+        expected,
+        caplog,
+    ):
+        """
+        The cache carries the task's languages, or Solidity with a warning when the backend gives
+        none.
+        """
+        from app import main as app_main
+
+        sample_task.selectedProfiles = task_languages
+        mock_fetch_task.return_value = sample_task
+        mock_download.return_value = ("extracted/repo", "extracted")
+
+        result = await app_main.fetch_task_data(sample_task.taskId)
+
+        assert result is not None
+        assert result.languages == expected
+        fallback_logged = "has no language profiles, treating it as Solidity" in caplog.text
+        assert fallback_logged == (not task_languages)
 
     @patch("app.main.fetch_task")
     async def test_fetch_task_data_task_not_found(self, mock_fetch_task):

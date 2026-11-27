@@ -5,7 +5,7 @@ Unit tests for prompt_utils module.
 from datetime import UTC, datetime
 
 from app.core.prompt_utils import build_context_section
-from app.types import QAPair, TaskCache
+from app.types import QAPair, TaskCache, default_languages
 
 
 class TestBuildContextSection:
@@ -18,6 +18,7 @@ class TestBuildContextSection:
             startTime=datetime.now(UTC),
             deadline=datetime.now(UTC),
             selectedFilesContent="contract Test { function example() {} }",
+            languages=default_languages(),
             selectedDocsContent="This is documentation content",
             additionalLinks=["https://example.com", "https://docs.example.com"],
             additionalDocs="Additional documentation text",
@@ -30,7 +31,7 @@ class TestBuildContextSection:
         result = build_context_section(task_cache)
 
         # Should contain smart contract section
-        assert "### SMART CONTRACT CODE:" in result
+        assert "### SOURCE CODE:" in result
         assert "```solidity" in result
         assert "contract Test { function example() {} }" in result
 
@@ -70,7 +71,7 @@ class TestBuildContextSection:
         result = build_context_section(task_cache)
 
         # Should contain smart contract section
-        assert "### SMART CONTRACT CODE:" in result
+        assert "### SOURCE CODE:" in result
         assert "contract Minimal {}" in result
 
         # Should not contain other sections
@@ -94,7 +95,7 @@ class TestBuildContextSection:
 
         result = build_context_section(task_cache)
 
-        assert result == "No smart contract context available."
+        assert result == "No project context available."
 
     def test_build_context_with_docs_only(self):
         """Test building context with only documentation."""
@@ -113,7 +114,7 @@ class TestBuildContextSection:
 
         assert "### DOCUMENTATION:" in result
         assert "Only documentation here" in result
-        assert "### SMART CONTRACT CODE:" not in result
+        assert "### SOURCE CODE:" not in result
 
     def test_build_context_with_single_qa(self):
         """Test building context with single Q&A pair."""

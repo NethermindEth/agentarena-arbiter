@@ -108,12 +108,12 @@ def read_and_concatenate_files(repo_dir: str, selected_files: list) -> str:
                 try:
                     with open(full_path, encoding="utf-8") as f:
                         file_content = f.read()
-                        concatenated += f"// {file_path}\n{file_content}\n\n"
+                        concatenated += f"===== {file_path} =====\n{file_content}\n\n"
                 except UnicodeDecodeError:
                     # Try with different encoding if utf-8 fails
                     with open(full_path, encoding="latin-1") as f:
                         file_content = f.read()
-                        concatenated += f"// {file_path}\n{file_content}\n\n"
+                        concatenated += f"===== {file_path} =====\n{file_content}\n\n"
             else:
                 logger.warning(f"Selected file not found: {file_path}")
 

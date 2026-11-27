@@ -5,6 +5,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
 from app.config import config
+from app.core.languages import language_line
 from app.core.prompt_utils import build_context_section
 from app.models.finding_db import FindingDB
 from app.types import TaskCache
@@ -148,7 +149,7 @@ async def find_duplicates_structured(
     Args:
         model_with_structured_output: Model configured with structured output
         findings: List of findings to analyze for duplicates
-        task_context: Task context containing smart contract files and documentation
+        task_context: Task context containing the project's files and documentation
 
     Returns:
         Structured deduplication result with guaranteed JSON format
@@ -156,9 +157,12 @@ async def find_duplicates_structured(
 
     # Build context section
     context_section = build_context_section(task_cache)
+    languages = language_line(
+        (path for finding in findings for path in finding.file_paths), task_cache.languages
+    )
 
     prompt = f"""
-You are a security expert with deep expertise in Solidity smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
+You are a security expert with deep expertise in software vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
 ## TASK:
 1. **Group duplicate findings** - Identify vulnerabilities that describe the same underlying security issue affecting the same function and code section
@@ -166,7 +170,7 @@ You are a security expert with deep expertise in Solidity smart contract vulnera
 3. **Provide explanation** - Explain why each finding is considered a duplicate of the original
 
 ## DUPLICATE IDENTIFICATION - Four-Step Validation:
-1. **Same contract file**: Do findings reference the same contract?
+1. **Same file**: Do findings reference the same file?
 2. **Same function**: Do findings reference the exact same function name?
 3. **Same code section**: Do findings reference the same or overlapping code lines?
 4. **Same root cause**: Is the underlying vulnerability mechanism identical?
@@ -177,7 +181,7 @@ You are a security expert with deep expertise in Solidity smart contract vulnera
 
 ❌ **THESE ARE NOT DUPLICATES:**
 - Similar vulnerability types in different functions (e.g., reentrancy in different functions)
-- Similar descriptions but different contract files or code sections
+- Similar descriptions but different files or code sections
 - Different root causes, attack vectors, or consequences despite similar terminology
 
 ## CRITICAL RULES TO PREVENT ERRORS:
@@ -188,7 +192,7 @@ You are a security expert with deep expertise in Solidity smart contract vulnera
 - No finding can appear as both original and duplicate
 
 🚫 **NO OVER-GROUPING:**
-- Findings affecting different functions or code sectionsare never duplicates, even if vulnerability types are similar
+- Findings affecting different functions or code sections are never duplicates, even if vulnerability types are similar
 - Example: "Missing access control in withdraw()" vs "Missing access control in deposit()" = NOT duplicates
 - Example: "Reentrancy in claimReward()" vs "Reentrancy in processRefund()" = NOT duplicates
 
@@ -219,13 +223,14 @@ Return a JSON object with the following structure:
 }}
 ```
 
-## SMART CONTRACT CONTEXT
+## PROJECT CONTEXT
 {context_section}
 
 ## FINDINGS TO ANALYZE
+{languages}
 {[finding.dump() for finding in findings]}
 
-Analyze systematically: group similar findings, examine each vulnerability against the smart contract context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
+Analyze systematically: group similar findings, examine each vulnerability against the project context above, compare affected functions, code sections and root causes, and rank quality within duplicate groups. Be conservative - only mark findings as duplicates if you're confident they describe the same underlying security vulnerability in the same function and code section.
 """  # noqa: S608  an LLM prompt, not a SQL query
 
     response = await model_with_structured_output.ainvoke(prompt)

@@ -10,7 +10,7 @@ import pytest
 from bson import ObjectId
 
 from app.models.finding_db import Severity, Status
-from app.types import Task, TaskCache
+from app.types import Task, TaskCache, default_languages
 
 
 @pytest.fixture
@@ -63,6 +63,7 @@ def sample_task_cache() -> TaskCache:
         startTime=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
         deadline=datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC),
         selectedFilesContent="contract Test { function withdraw() {} }",
+        languages=default_languages(),
         selectedDocsContent="Documentation for the test contract",
         additionalLinks=[],
         additionalDocs="",
