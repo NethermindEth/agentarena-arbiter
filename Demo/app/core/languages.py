@@ -2,23 +2,30 @@
 
 import re
 from collections.abc import Iterable
+from pathlib import PurePosixPath
 
 from app.types import LanguageDefinition
 
 # A line reference agents append to a path, as in "src/Vault.sol:42", "src/Vault.sol:10-20" or
-# "src/lib.rs#L10-L20"; it hides the file's extension.
-_LINE_REFERENCE = re.compile(r"(?::\d[\d:-]*|#L\d[\dL-]*)$")
+# "src/lib.rs#L10-L20"; it hides the file's extension. A colon reference starts only at the
+# beginning of a run of digits, colons and hyphens: trying a match at every colon of a long run
+# would take time quadratic in the path, which an agent writes.
+_LINE_REFERENCE = re.compile(r"(?:(?<![\d:-]):\d[\d:-]*|#L\d[\dL-]*)$")
 
 
 def matches_language(file_path: str, language: LanguageDefinition) -> bool:
     """
-    Tell whether a file is code of the language, by its extensions; case and a trailing line
-    reference are ignored.
+    Tell whether a file is code of the language, matching its path against the language's globs
+    as the backend does; case, a trailing line reference and a leading "./" or "/" are ignored.
     """
-    name = _LINE_REFERENCE.sub("", file_path.strip()).lower()
-    return any(name.endswith(ext.lower()) for ext in language.file_extensions) and not any(
-        name.endswith(ext.lower()) for ext in language.excluded_extensions
+    path = PurePosixPath(_LINE_REFERENCE.sub("", file_path.strip()).removeprefix("./").lstrip("/"))
+    return _matches_any(path, language.source_patterns) and not _matches_any(
+        path, language.excluded_patterns
     )
+
+
+def _matches_any(path: PurePosixPath, patterns: list[str]) -> bool:
+    return any(path.full_match(pattern, case_sensitive=False) for pattern in patterns)
 
 
 def languages_of_files(
@@ -40,12 +47,12 @@ def languages_of_files(
     return matched or list(languages)
 
 
-def join_captions(languages: list[LanguageDefinition]) -> str:
-    """Join the languages' captions as "A", "A and B" or "A, B and C"."""
-    captions = [lang.caption for lang in languages]
-    if len(captions) <= 1:
-        return "".join(captions)
-    return f"{', '.join(captions[:-1])} and {captions[-1]}"
+def join_names(languages: list[LanguageDefinition]) -> str:
+    """Join the languages' names as "A", "A and B" or "A, B and C"."""
+    names = [lang.name for lang in languages]
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def language_line(file_paths: Iterable[str], languages: list[LanguageDefinition]) -> str:
@@ -59,4 +66,4 @@ def language_line(file_paths: Iterable[str], languages: list[LanguageDefinition]
     Returns:
         A line such as "Language: Solidity" or "Language: Solidity, Rust and Javascript"
     """
-    return f"Language: {join_captions(languages_of_files(file_paths, languages))}"
+    return f"Language: {join_names(languages_of_files(file_paths, languages))}"
