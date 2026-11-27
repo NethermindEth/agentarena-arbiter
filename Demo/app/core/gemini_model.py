@@ -149,7 +149,7 @@ async def find_duplicates_structured(
     Args:
         model_with_structured_output: Model configured with structured output
         findings: List of findings to analyze for duplicates
-        task_context: Task context containing smart contract files and documentation
+        task_context: Task context containing the project's files and documentation
 
     Returns:
         Structured deduplication result with guaranteed JSON format
@@ -162,7 +162,7 @@ async def find_duplicates_structured(
     )
 
     prompt = f"""
-You are a security expert with deep expertise in smart contract vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
+You are a security expert with deep expertise in software vulnerabilities, tasked with identifying duplicate findings among security vulnerability reports.
 
 ## TASK:
 1. **Group duplicate findings** - Identify vulnerabilities that describe the same underlying security issue affecting the same function and code section
@@ -170,7 +170,7 @@ You are a security expert with deep expertise in smart contract vulnerabilities,
 3. **Provide explanation** - Explain why each finding is considered a duplicate of the original
 
 ## DUPLICATE IDENTIFICATION - Four-Step Validation:
-1. **Same contract file**: Do findings reference the same contract?
+1. **Same file**: Do findings reference the same file?
 2. **Same function**: Do findings reference the exact same function name?
 3. **Same code section**: Do findings reference the same or overlapping code lines?
 4. **Same root cause**: Is the underlying vulnerability mechanism identical?
@@ -181,7 +181,7 @@ You are a security expert with deep expertise in smart contract vulnerabilities,
 
 ❌ **THESE ARE NOT DUPLICATES:**
 - Similar vulnerability types in different functions (e.g., reentrancy in different functions)
-- Similar descriptions but different contract files or code sections
+- Similar descriptions but different files or code sections
 - Different root causes, attack vectors, or consequences despite similar terminology
 
 ## CRITICAL RULES TO PREVENT ERRORS:
@@ -192,7 +192,7 @@ You are a security expert with deep expertise in smart contract vulnerabilities,
 - No finding can appear as both original and duplicate
 
 🚫 **NO OVER-GROUPING:**
-- Findings affecting different functions or code sectionsare never duplicates, even if vulnerability types are similar
+- Findings affecting different functions or code sections are never duplicates, even if vulnerability types are similar
 - Example: "Missing access control in withdraw()" vs "Missing access control in deposit()" = NOT duplicates
 - Example: "Reentrancy in claimReward()" vs "Reentrancy in processRefund()" = NOT duplicates
 

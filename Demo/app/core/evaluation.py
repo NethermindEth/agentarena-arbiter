@@ -143,7 +143,7 @@ class FindingEvaluator:
         Args:
             findings_batch: List of findings to evaluate (should be related to same vulnerability)
             related_findings: Whether the findings are related to each other
-            task_cache: Task context containing smart contract files and documentation
+            task_cache: Task context containing the project's files and documentation
 
         Returns:
             List of evaluation results
@@ -226,7 +226,7 @@ class FindingEvaluator:
         Args:
             findings: List of findings to evaluate
             duplicate_relationships: Duplicate relationships for grouping
-            task_cache: Task context containing smart contract files and documentation
+            task_cache: Task context containing the project's files and documentation
 
         Returns:
             Summary of evaluation results
