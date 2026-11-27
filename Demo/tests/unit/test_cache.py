@@ -10,7 +10,7 @@ import pytest
 
 from app.types import LanguageDefinition, TaskCache, default_languages
 
-RUST = LanguageDefinition(slug="rust", caption="Rust", file_extensions=[".rs"])
+RUST = LanguageDefinition(slug="rust", name="Rust", source_patterns=["**/*.rs"])
 
 
 @pytest.mark.asyncio
@@ -35,11 +35,15 @@ class TestFetchTaskData:
         sample_task,
         task_languages,
         expected,
+        caplog,
     ):
-        """The cache carries the task's languages, or Solidity when the backend gives none."""
+        """
+        The cache carries the task's languages, or Solidity with a warning when the backend gives
+        none.
+        """
         from app import main as app_main
 
-        sample_task.languages = task_languages
+        sample_task.selectedProfiles = task_languages
         mock_fetch_task.return_value = sample_task
         mock_download.return_value = ("extracted/repo", "extracted")
 
@@ -47,6 +51,8 @@ class TestFetchTaskData:
 
         assert result is not None
         assert result.languages == expected
+        fallback_logged = "has no language profiles, treating it as Solidity" in caplog.text
+        assert fallback_logged == (not task_languages)
 
     @patch("app.main.fetch_task")
     async def test_fetch_task_data_task_not_found(self, mock_fetch_task):

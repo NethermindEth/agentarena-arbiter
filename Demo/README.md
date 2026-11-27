@@ -181,20 +181,27 @@ class FindingDB(Finding):
 ```
 
 ### Task languages
-The backend's task payload carries `languages`, the entries of its language catalogue that the
-task's code is written in; the arbiter ignores any other field of an entry.
+The backend's task payload carries `selectedProfiles`, the language profiles the task's code is
+written in, in the task's order; the arbiter ignores any other field of a profile, such as its
+`color`.
 ```python
 class LanguageDefinition(BaseModel):
     slug: str  # also the code fence tag when the task has a single language
-    caption: str  # the name the prompts use, e.g. "Rust"
-    file_extensions: list[str] = []  # e.g. [".sol"]
-    excluded_extensions: list[str] = []  # e.g. [".t.sol"], checked after file_extensions
+    name: str  # the name the prompts use, e.g. "Rust"
+    source_patterns: list[str] = []  # e.g. ["**/*.rs"]
+    excluded_patterns: list[str] = []  # e.g. ["**/tests/**"], checked after source_patterns
 ```
-A task whose `languages` is missing, null or empty, such as one from a backend older than the
-catalogue, is treated as Solidity; so is a cached task built without languages. A null extension
-list reads as an empty one. The deduplication and evaluation prompts state the languages of the
-files the findings refer to in a `Language: ...` line (all of the task's languages when no file
-matches any).
+The patterns are globs over a file's whole path, matched as the backend matches them
+(`PurePosixPath.full_match`, case ignored); `**` matches any number of folders, none included. A
+finding's path is matched without a trailing line reference (`:42`, `#L10-L20`) or a leading `./`
+or `/`.
+
+A profile that fails validation is dropped with a warning, so it costs only that language rather
+than the task or the whole approved-tasks listing. A task whose `selectedProfiles` is missing, null
+or empty, such as one from a backend older than the profiles, is treated as Solidity and logged as
+a warning; so is a cached task built without languages. A null pattern list reads as an empty one.
+The deduplication and evaluation prompts state the languages of the files the findings refer to in
+a `Language: ...` line (all of the task's languages when no file matches any).
 
 ## Configuration
 The application requires the following environment variables:
